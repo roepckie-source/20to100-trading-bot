@@ -1,6 +1,7 @@
 # ==========================================
 # 20to100 Trading Bot
 # Main Backtest Runner
+# Strategy v2.0
 # ==========================================
 
 from pathlib import Path
@@ -38,6 +39,189 @@ from backtest.metrics import (
 )
 
 
+# ==========================================
+# EXIT ANALYSIS
+# ==========================================
+
+def print_exit_analysis(
+    trades,
+    symbol,
+):
+    """
+    Analyse der Performance je Exit-Grund.
+    """
+
+    print()
+    print("=" * 60)
+    print(
+        f"EXIT ANALYSIS: {symbol}"
+    )
+    print("=" * 60)
+
+    if not trades:
+
+        print(
+            "No trades available."
+        )
+
+        print("=" * 60)
+
+        return
+
+    exit_reasons = [
+        "STOP_LOSS",
+        "EMA_EXIT",
+        "RSI_EXIT",
+        "TIME_STOP",
+        "END_OF_TEST",
+    ]
+
+    total_net_profit = sum(
+        trade.net_profit
+        for trade in trades
+    )
+
+    print(
+        f"Total trades:      {len(trades)}"
+    )
+
+    print(
+        f"Total net P/L:     "
+        f"${total_net_profit:+.4f}"
+    )
+
+    print("-" * 60)
+
+    print(
+        f"{'Exit':<18}"
+        f"{'Trades':>8}"
+        f"{'Wins':>8}"
+        f"{'Losses':>8}"
+        f"{'Win %':>9}"
+        f"{'Net P/L':>12}"
+        f"{'Avg R':>10}"
+    )
+
+    print("-" * 60)
+
+    for reason in exit_reasons:
+
+        reason_trades = [
+            trade
+            for trade in trades
+            if trade.exit_reason == reason
+        ]
+
+        count = len(
+            reason_trades
+        )
+
+        if count == 0:
+
+            print(
+                f"{reason:<18}"
+                f"{0:>8}"
+                f"{0:>8}"
+                f"{0:>8}"
+                f"{0.0:>8.2f}%"
+                f"{0.0:>12.4f}"
+                f"{0.0:>10.3f}"
+            )
+
+            continue
+
+        wins = sum(
+            1
+            for trade in reason_trades
+            if trade.net_profit > 0
+        )
+
+        losses = sum(
+            1
+            for trade in reason_trades
+            if trade.net_profit < 0
+        )
+
+        win_rate = (
+            wins /
+            count *
+            100
+        )
+
+        net_profit = sum(
+            trade.net_profit
+            for trade in reason_trades
+        )
+
+        avg_r = sum(
+            trade.r_multiple
+            for trade in reason_trades
+        ) / count
+
+        print(
+            f"{reason:<18}"
+            f"{count:>8}"
+            f"{wins:>8}"
+            f"{losses:>8}"
+            f"{win_rate:>8.2f}%"
+            f"{net_profit:>12.4f}"
+            f"{avg_r:>10.3f}"
+        )
+
+    print("-" * 60)
+
+    # ======================================
+    # Best / Worst exit
+    # ======================================
+
+    grouped = {}
+
+    for reason in exit_reasons:
+
+        reason_trades = [
+            trade
+            for trade in trades
+            if trade.exit_reason == reason
+        ]
+
+        if reason_trades:
+
+            grouped[reason] = sum(
+                trade.net_profit
+                for trade in reason_trades
+            )
+
+    if grouped:
+
+        best_reason = max(
+            grouped,
+            key=grouped.get,
+        )
+
+        worst_reason = min(
+            grouped,
+            key=grouped.get,
+        )
+
+        print(
+            f"Best exit:         "
+            f"{best_reason} "
+            f"(${grouped[best_reason]:+.4f})"
+        )
+
+        print(
+            f"Worst exit:        "
+            f"{worst_reason} "
+            f"(${grouped[worst_reason]:+.4f})"
+        )
+
+    print("=" * 60)
+
+
+# ==========================================
+# RESULT LINE
+# ==========================================
+
 def print_result_line(
     symbol,
     starting_capital,
@@ -45,7 +229,7 @@ def print_result_line(
     trades,
 ):
     """
-    Print compact result for one market.
+    Compact 20→100 result.
     """
 
     profit_loss = (
@@ -89,11 +273,13 @@ def print_result_line(
     print("=" * 60)
 
     print(
-        f"Starting capital:  ${starting_capital:.2f}"
+        f"Starting capital:  "
+        f"${starting_capital:.2f}"
     )
 
     print(
-        f"Final capital:     ${final_capital:.2f}"
+        f"Final capital:     "
+        f"${final_capital:.2f}"
     )
 
     print(
@@ -117,32 +303,27 @@ def print_result_line(
     )
 
     print(
-        f"Status:             {status}"
+        f"Status:             "
+        f"{status}"
     )
 
     print("=" * 60)
 
+
+# ==========================================
+# PORTFOLIO RESULT
+# ==========================================
 
 def print_portfolio_result(
     starting_capital,
     results,
 ):
     """
-    Print combined portfolio result.
-
-    Each market is treated as a separate
-    strategy test. The portfolio figure is
-    calculated from the average result so
-    that BTC and ETH are compared on equal
-    starting capital.
+    Combined comparison of all symbols.
     """
 
     if not results:
         return
-
-    # --------------------------------------
-    # Calculate average final capital
-    # --------------------------------------
 
     final_capitals = [
         result["final_capital"]
@@ -249,17 +430,18 @@ def print_portfolio_result(
     )
 
     print(
-        f"Status:             {status}"
+        f"Status:             "
+        f"{status}"
     )
 
     print("=" * 60)
 
 
-def main():
+# ==========================================
+# MAIN
+# ==========================================
 
-    # ======================================
-    # Create directories
-    # ======================================
+def main():
 
     Path("logs").mkdir(
         exist_ok=True
@@ -272,13 +454,13 @@ def main():
     print()
     print("=" * 60)
     print("20→100 TRADING BOT")
-    print("Strategy v1.1")
+    print("Strategy v2.0")
     print("=" * 60)
 
     results = []
 
     # ======================================
-    # Process every market
+    # Markets
     # ======================================
 
     for symbol in SYMBOLS:
@@ -289,10 +471,6 @@ def main():
             f"BACKTEST: {symbol}"
         )
         print("-" * 60)
-
-        # ----------------------------------
-        # Data filename
-        # ----------------------------------
 
         filename = (
             symbol.replace("/", "_")
@@ -306,9 +484,9 @@ def main():
             filename
         )
 
-        # ----------------------------------
-        # Load cached data
-        # ----------------------------------
+        # ==================================
+        # DATA
+        # ==================================
 
         if data_file.exists():
 
@@ -322,10 +500,6 @@ def main():
                 index_col="timestamp",
                 parse_dates=True,
             )
-
-        # ----------------------------------
-        # Download data
-        # ----------------------------------
 
         else:
 
@@ -349,10 +523,6 @@ def main():
                 timeframe=TIMEFRAME,
             )
 
-        # ----------------------------------
-        # Data information
-        # ----------------------------------
-
         print()
         print(
             f"Candles: {len(df)}"
@@ -367,7 +537,7 @@ def main():
         )
 
         # ==================================
-        # CALCULATE INDICATORS
+        # INDICATORS
         # ==================================
 
         print()
@@ -419,12 +589,16 @@ def main():
             symbol=symbol,
         )
 
+        trades = result[
+            "trades"
+        ]
+
         # ==================================
         # METRICS
         # ==================================
 
         metrics = calculate_metrics(
-            trades=result["trades"],
+            trades=trades,
             equity_curve=result[
                 "equity_curve"
             ],
@@ -438,7 +612,16 @@ def main():
         )
 
         # ==================================
-        # Determine final capital
+        # EXIT ANALYSIS
+        # ==================================
+
+        print_exit_analysis(
+            trades,
+            symbol,
+        )
+
+        # ==================================
+        # FINAL CAPITAL
         # ==================================
 
         equity_curve = (
@@ -448,7 +631,8 @@ def main():
         if (
             not equity_curve.empty
             and
-            "equity" in equity_curve.columns
+            "equity"
+            in equity_curve.columns
         ):
 
             final_capital = float(
@@ -464,10 +648,8 @@ def main():
             )
 
         # ==================================
-        # Trade statistics
+        # TRADE STATISTICS
         # ==================================
-
-        trades = result["trades"]
 
         winners = sum(
             1
@@ -482,7 +664,7 @@ def main():
         )
 
         # ==================================
-        # Result line
+        # RESULT
         # ==================================
 
         print_result_line(
@@ -497,13 +679,10 @@ def main():
             trades=trades,
         )
 
-        # ==================================
-        # Store portfolio result
-        # ==================================
-
         results.append(
             {
-                "symbol": symbol,
+                "symbol":
+                    symbol,
 
                 "final_capital":
                     final_capital,
@@ -520,7 +699,7 @@ def main():
         )
 
         # ==================================
-        # SAVE TRADE LOG
+        # TRADE LOG
         # ==================================
 
         if trades:
@@ -595,7 +774,7 @@ def main():
             )
 
         # ==================================
-        # SAVE EQUITY CURVE
+        # EQUITY LOG
         # ==================================
 
         equity_file = (
@@ -620,19 +799,16 @@ def main():
         )
 
     # ======================================
-    # PORTFOLIO RESULT
+    # PORTFOLIO
     # ======================================
 
     print_portfolio_result(
         starting_capital=(
             STARTING_CAPITAL
         ),
+
         results=results,
     )
-
-    # ======================================
-    # COMPLETE
-    # ======================================
 
     print()
     print("=" * 60)
