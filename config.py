@@ -3,6 +3,10 @@
 # Configuration - Strategy v1.1
 # ==========================================
 
+# ------------------------------------------
+# Markets
+# ------------------------------------------
+
 SYMBOLS = [
     "BTC/USDT",
     "ETH/USDT",
@@ -10,58 +14,113 @@ SYMBOLS = [
 
 TIMEFRAME = "5m"
 
+
+# ------------------------------------------
+# Capital
+# ------------------------------------------
+
 STARTING_CAPITAL = 20.00
 
-# Risk
+
+# ------------------------------------------
+# Risk Management
+# ------------------------------------------
+
 RISK_PER_TRADE = 0.015
 MAX_DAILY_LOSS = 0.05
 
+MAX_CONSECUTIVE_LOSSES = 3
+LOSS_COOLDOWN_MINUTES = 120
+
+TRADE_COOLDOWN_MINUTES = 5
+
+
+# ------------------------------------------
 # EMA
+# ------------------------------------------
+
 EMA_FAST = 9
 EMA_MEDIUM = 21
 EMA_SLOW = 50
 
+
+# ------------------------------------------
 # RSI
+# ------------------------------------------
+
 RSI_PERIOD = 14
+
 RSI_MIN = 55
 RSI_MAX = 70
+
 RSI_EXIT = 45
 
+
+# ------------------------------------------
 # ATR
+# ------------------------------------------
+
 ATR_PERIOD = 14
+
 ATR_STOP_MULTIPLIER = 1.5
 
+
+# ------------------------------------------
 # Volume
+# ------------------------------------------
+
 VOLUME_PERIOD = 20
+
 VOLUME_MULTIPLIER = 1.5
 
+
+# ------------------------------------------
 # Breakout
+# ------------------------------------------
+
 BREAKOUT_CANDLES = 6
 
-# Costs
+
+# ------------------------------------------
+# Trading Costs
+# ------------------------------------------
+
 FEE_RATE = 0.001
+
 SLIPPAGE_RATE = 0.0005
 
-# Spread
 MAX_SPREAD = 0.001
 
-# Profit management
+
+# ------------------------------------------
+# Profit Management
+# ------------------------------------------
+
+TAKE_PROFIT_R = 2.0
+
 PARTIAL_EXIT_1_R = 1.0
 PARTIAL_EXIT_1_SIZE = 0.50
 
 PARTIAL_EXIT_2_R = 2.0
 PARTIAL_EXIT_2_SIZE = 0.25
 
-# Trailing stop
+
+# ------------------------------------------
+# Trailing Stop
+# ------------------------------------------
+
 TRAILING_ATR_MULTIPLIER = 1.0
 
-# Time stop
+
+# ------------------------------------------
+# Time Stop
+# ------------------------------------------
+
 MAX_TRADE_MINUTES = 60
 
-# Safety
-MAX_CONSECUTIVE_LOSSES = 3
-LOSS_COOLDOWN_MINUTES = 120
-TRADE_COOLDOWN_MINUTES = 5
 
+# ------------------------------------------
 # Backtest
+# ------------------------------------------
+
 HISTORICAL_DAYS = 30
