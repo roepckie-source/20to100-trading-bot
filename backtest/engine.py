@@ -107,12 +107,12 @@ class BacktestEngine:
         starting_balance: float = 20.0,
     ):
 
-        self.starting_balance = (
-            float(starting_balance)
+        self.starting_balance = float(
+            starting_balance
         )
 
-        self.balance = (
-            float(starting_balance)
+        self.balance = float(
+            starting_balance
         )
 
         self.position: Optional[
@@ -285,16 +285,17 @@ class BacktestEngine:
         # ----------------------------------
 
         quantity = (
-        self.risk_manager
-        .calculate_position_size(
-        balance=self.balance,
-        entry_price=entry_price,
-        stop_price=stop_price,
-        fee_rate=FEE_RATE,
+            self.risk_manager
+            .calculate_position_size(
+                balance=self.balance,
+                entry_price=entry_price,
+                stop_price=stop_price,
+                fee_rate=FEE_RATE,
+            )
         )
-    )
 
-if quantity <= 0:
+        if quantity <= 0:
+
             self.reject_entry(
                 "ZERO_POSITION_SIZE"
             )
@@ -418,6 +419,7 @@ if quantity <= 0:
 
         self.position = Position(
             symbol=symbol,
+
             entry_time=timestamp,
 
             entry_price=entry_price,
@@ -569,7 +571,9 @@ if quantity <= 0:
 
             self.execute_sell(
                 position=position,
+
                 market_price=market_price,
+
                 quantity=(
                     position.remaining_quantity
                 ),
@@ -679,11 +683,17 @@ if quantity <= 0:
 
         position = self.position
 
-        high = float(row["high"])
+        high = float(
+            row["high"]
+        )
 
-        low = float(row["low"])
+        low = float(
+            row["low"]
+        )
 
-        close = float(row["close"])
+        close = float(
+            row["close"]
+        )
 
         # ----------------------------------
         # Highest price
@@ -736,13 +746,15 @@ if quantity <= 0:
 
             self.execute_sell(
                 position=position,
+
                 market_price=one_r,
+
                 quantity=quantity,
             )
 
             position.partial_1_done = True
 
-            # Move stop towards break-even.
+            # Move stop to break-even
             break_even = (
                 position.entry_price *
                 (1 + FEE_RATE)
@@ -777,7 +789,9 @@ if quantity <= 0:
 
             self.execute_sell(
                 position=position,
+
                 market_price=two_r,
+
                 quantity=quantity,
             )
 
@@ -817,7 +831,9 @@ if quantity <= 0:
 
             self.close_position(
                 market_price=close,
+
                 timestamp=row.name,
+
                 reason="EMA_EXIT",
             )
 
@@ -831,7 +847,9 @@ if quantity <= 0:
 
             self.close_position(
                 market_price=close,
+
                 timestamp=row.name,
+
                 reason="RSI_EXIT",
             )
 
@@ -850,7 +868,9 @@ if quantity <= 0:
 
             self.close_position(
                 market_price=close,
+
                 timestamp=row.name,
+
                 reason="TIME_STOP",
             )
 
@@ -975,8 +995,12 @@ if quantity <= 0:
                 and not trading_blocked
             ):
 
+                history = df.iloc[
+                    : i + 1
+                ]
+
                 signal = check_buy_signal(
-                    df.iloc[: i + 1]
+                    history
                 )
 
                 if signal:
