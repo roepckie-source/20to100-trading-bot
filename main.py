@@ -84,9 +84,8 @@ ENTRY_TESTS = {
         "confirmation",
     ],
 
-    "TREND + RSI + PULLBACK + CONFIRMATION": [
+    "TREND + PULLBACK + CONFIRMATION": [
         "trend",
-        "rsi",
         "pullback",
         "confirmation",
     ],
@@ -119,56 +118,58 @@ ENTRY_TESTS = {
 
 
 # ==========================================
-# CONDITION MASK
+# CONDITION MASKS
 # ==========================================
 
 def build_condition_masks(df):
-    """
-    Berechnet jede Entry-Bedingung exakt mit
-    der bereits vorhandenen Strategy-Logik.
-
-    Wir verwenden NICHT selbst erfundene
-    Bedingungen.
-    """
 
     masks = {
-        name: []
-        for name in [
-            "trend",
-            "price_above_ema50",
-            "rsi",
-            "rsi_rising",
-            "pullback",
-            "confirmation",
-            "volume",
-        ]
+        "trend": [],
+        "price_above_ema50": [],
+        "rsi": [],
+        "rsi_rising": [],
+        "pullback": [],
+        "confirmation": [],
+        "volume": [],
     }
 
     valid_rows = []
 
-    for i in range(
-        60,
-        len(df),
-    ):
+    for i in range(60, len(df)):
 
-        history = df.iloc[
-            : i + 1
-        ]
+        history = df.iloc[:i + 1]
 
         row = history.iloc[-1]
 
-        try:
+        required_columns = [
+            "open",
+            "close",
+            "low",
+            "ema_9",
+            "ema_21",
+            "ema_50",
+            "rsi_14",
+            "volume",
+            "volume_sma_20",
+        ]
 
-            conditions = evaluate_conditions(
-                history,
-                spread=None,
-            )
+        valid = True
 
-        except (
-            KeyError,
-            TypeError,
-            ValueError,
-        ):
+        for column in required_columns:
+
+            if column not in row.index:
+
+                valid = False
+                break
+
+            value = row[column]
+
+            if value is None or pd.isna(value):
+
+                valid = False
+                break
+
+        if not valid:
 
             valid_rows.append(False)
 
@@ -177,24 +178,23 @@ def build_condition_masks(df):
 
             continue
 
-        valid = all(
-            pd.notna(
-                row[column]
-            )
-            for column in [
-                "open",
-                "close",
-                "low",
-                "ema_9",
-                "ema_21",
-                "ema_50",
-                "rsi_14",
-                "volume",
-                "volume_sma_20",
-            ]
-        )
+        try:
 
-        valid_rows.append(valid)
+            conditions = evaluate_conditions(
+                history,
+                spread=None,
+            )
+
+        except Exception:
+
+            valid_rows.append(False)
+
+            for name in masks:
+                masks[name].append(False)
+
+            continue
+
+        valid_rows.append(True)
 
         for name in masks:
 
@@ -205,13 +205,15 @@ def build_condition_masks(df):
                         False,
                     )
                 )
-                if valid
-                else False
             )
 
-    index = df.index[
-        60:
-    ]
+    # --------------------------------------
+    # IMPORTANT:
+    # All masks use exactly the same index
+    # as df.iloc[60:]
+    # --------------------------------------
+
+    index = df.index[60:]
 
     for name in masks:
 
@@ -227,10 +229,7 @@ def build_condition_masks(df):
         dtype=bool,
     )
 
-    return (
-        masks,
-        valid_series,
-    )
+    return masks, valid_series
 
 
 # ==========================================
@@ -241,15 +240,6 @@ def combined_mask(
     masks,
     conditions,
 ):
-
-    if not conditions:
-
-        return pd.Series(
-            False,
-            index=next(
-                iter(masks.values())
-            ).index,
-        )
 
     result = masks[
         conditions[0]
@@ -267,26 +257,32 @@ def combined_mask(
 
 
 # ==========================================
-# FORWARD RETURN
+# FORWARD RETURN ANALYSIS
 # ==========================================
 
 def forward_return_analysis(
     df,
     signal_mask,
 ):
-    """
-    Berechnet die durchschnittliche
-    Kursentwicklung nach dem Signal.
-
-    3 Kerzen  = 15 Minuten
-    6 Kerzen  = 30 Minuten
-    12 Kerzen = 60 Minuten
-    24 Kerzen = 120 Minuten
-    """
 
     close = df["close"]
 
     results = {}
+
+    # --------------------------------------
+    # FIX:
+    # Align signal mask explicitly to the
+    # complete dataframe index.
+    # --------------------------------------
+
+    signal_mask = (
+        signal_mask
+        .reindex(
+            df.index,
+            fill_value=False,
+        )
+        .astype(bool)
+    )
 
     for candles in [
         3,
@@ -296,22 +292,32 @@ def forward_return_analysis(
     ]:
 
         future_price = (
-            close.shift(
-                -candles
-            )
+            close.shift(-candles)
         )
 
         forward_return = (
-            future_price /
-            close -
-            1
+            (
+                future_price /
+                close
+            )
+            - 1
         ) * 100
 
+        # ----------------------------------
+        # Remove final candles where no
+        # future price exists.
+        # ----------------------------------
+
+        valid = (
+            signal_mask
+            &
+            forward_return.notna()
+            &
+            close.notna()
+        )
+
         values = (
-            forward_return[
-                signal_mask
-            ]
-            .dropna()
+            forward_return.loc[valid]
         )
 
         if values.empty:
@@ -328,7 +334,7 @@ def forward_return_analysis(
             results[candles] = {
 
                 "count":
-                    len(values),
+                    int(len(values)),
 
                 "average":
                     float(
@@ -363,9 +369,11 @@ def run_entry_quality_test(
 
     print()
     print("=" * 110)
+
     print(
         f"ENTRY QUALITY TEST: {symbol}"
     )
+
     print("=" * 110)
 
     print()
@@ -391,11 +399,10 @@ def run_entry_quality_test(
 
     print()
 
-    (
-        masks,
-        valid_series,
-    ) = build_condition_masks(
-        df
+    masks, valid_series = (
+        build_condition_masks(
+            df
+        )
     )
 
     print(
@@ -418,7 +425,6 @@ def run_entry_quality_test(
             conditions,
         )
 
-        # Nur gültige Kerzen
         mask = (
             mask
             &
@@ -436,21 +442,10 @@ def run_entry_quality_test(
             mask.sum()
         )
 
-        avg_3 = (
-            analysis[3]["average"]
-        )
-
-        avg_6 = (
-            analysis[6]["average"]
-        )
-
-        avg_12 = (
-            analysis[12]["average"]
-        )
-
-        avg_24 = (
-            analysis[24]["average"]
-        )
+        avg_3 = analysis[3]["average"]
+        avg_6 = analysis[6]["average"]
+        avg_12 = analysis[12]["average"]
+        avg_24 = analysis[24]["average"]
 
         print(
             f"{name:<55}"
@@ -463,26 +458,14 @@ def run_entry_quality_test(
 
         results.append(
             {
-                "name":
-                    name,
+                "name": name,
+                "conditions": conditions,
+                "signals": signals,
 
-                "conditions":
-                    conditions,
-
-                "signals":
-                    signals,
-
-                "avg_3":
-                    avg_3,
-
-                "avg_6":
-                    avg_6,
-
-                "avg_12":
-                    avg_12,
-
-                "avg_24":
-                    avg_24,
+                "avg_3": avg_3,
+                "avg_6": avg_6,
+                "avg_12": avg_12,
+                "avg_24": avg_24,
 
                 "positive_3":
                     analysis[3][
@@ -508,23 +491,21 @@ def run_entry_quality_test(
 
     print("-" * 110)
 
-    # ======================================
-    # BEST SETUPS
-    # ======================================
-
     if not results:
 
         print(
             "No valid results."
         )
 
-        print("=" * 110)
+        print(
+            "=" * 110
+        )
 
         return []
 
-    # --------------------------------------
-    # Best 15 min
-    # --------------------------------------
+    # ======================================
+    # BEST SETUPS
+    # ======================================
 
     best_3 = max(
         results,
@@ -532,29 +513,17 @@ def run_entry_quality_test(
             x["avg_3"],
     )
 
-    # --------------------------------------
-    # Best 30 min
-    # --------------------------------------
-
     best_6 = max(
         results,
         key=lambda x:
             x["avg_6"],
     )
 
-    # --------------------------------------
-    # Best 60 min
-    # --------------------------------------
-
     best_12 = max(
         results,
         key=lambda x:
             x["avg_12"],
     )
-
-    # --------------------------------------
-    # Best 120 min
-    # --------------------------------------
 
     best_24 = max(
         results,
@@ -623,7 +592,7 @@ def run_entry_quality_test(
 
 
 # ==========================================
-# SAVE ENTRY RESULTS
+# SAVE RESULTS
 # ==========================================
 
 def save_entry_results(
@@ -718,30 +687,32 @@ def main():
 
     print()
     print("=" * 70)
+
     print(
         "20→100 TRADING BOT"
     )
+
     print(
         "Strategy v3.0"
     )
+
     print(
         "ENTRY QUALITY ANALYZER"
     )
+
     print("=" * 70)
 
     all_results = []
-
-    # ======================================
-    # SYMBOLS
-    # ======================================
 
     for symbol in SYMBOLS:
 
         print()
         print("-" * 70)
+
         print(
             f"ANALYSIS: {symbol}"
         )
+
         print("-" * 70)
 
         filename = (
@@ -764,7 +735,7 @@ def main():
         )
 
         # ==================================
-        # DATA
+        # LOAD DATA
         # ==================================
 
         if data_file.exists():
@@ -822,12 +793,12 @@ def main():
         )
 
         # ==================================
-        # EXISTING DIAGNOSTICS
+        # SIGNAL DIAGNOSTICS
         # ==================================
 
         print()
         print(
-            "Running existing signal diagnostics..."
+            "Running signal diagnostics..."
         )
 
         try:
@@ -885,9 +856,11 @@ def main():
 
     print()
     print("=" * 110)
+
     print(
         "20→100 ENTRY QUALITY SUMMARY"
     )
+
     print("=" * 110)
 
     for market in all_results:
@@ -911,7 +884,7 @@ def main():
 
         print()
         print(
-            f"{symbol}"
+            symbol
         )
 
         print(
@@ -951,9 +924,11 @@ def main():
 
     print()
     print("=" * 110)
+
     print(
         "ENTRY QUALITY TEST COMPLETE"
     )
+
     print("=" * 110)
 
 
