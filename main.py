@@ -1,8 +1,8 @@
 # ==========================================
 # 20to100 Trading Bot
 # Main Backtest Runner
-# Strategy v2.0
-# ATR Stop Parameter Test
+# Strategy v3.0
+# Entry Quality Analyzer
 # ==========================================
 
 from pathlib import Path
@@ -27,498 +27,542 @@ from strategy.indicators import (
 
 from strategy.signals import (
     diagnose_signals,
-    print_signal_diagnostics,
 )
 
 from backtest.engine import (
     BacktestEngine,
 )
 
-from backtest.metrics import (
-    calculate_metrics,
-    print_metrics,
-)
+
+# ==========================================
+# ENTRY COMBINATIONS
+# ==========================================
+
+ENTRY_TESTS = {
+    "TREND": [
+        "trend",
+    ],
+
+    "TREND_MOMENTUM": [
+        "trend",
+        "rsi",
+        "rsi_rising",
+    ],
+
+    "TREND_PULLBACK": [
+        "trend",
+        "pullback",
+    ],
+
+    "TREND_CONFIRMATION": [
+        "trend",
+        "confirmation",
+    ],
+
+    "TREND_VOLUME": [
+        "trend",
+        "volume",
+    ],
+
+    "TREND_MOMENTUM_PULLBACK": [
+        "trend",
+        "rsi",
+        "rsi_rising",
+        "pullback",
+    ],
+
+    "TREND_MOMENTUM_CONFIRMATION": [
+        "trend",
+        "rsi",
+        "rsi_rising",
+        "confirmation",
+    ],
+
+    "TREND_PULLBACK_CONFIRMATION": [
+        "trend",
+        "pullback",
+        "confirmation",
+    ],
+
+    "TREND_MOMENTUM_PULLBACK_CONFIRMATION": [
+        "trend",
+        "rsi",
+        "rsi_rising",
+        "pullback",
+        "confirmation",
+    ],
+
+    "ALL_CONDITIONS": [
+        "trend",
+        "price_above_ema50",
+        "rsi",
+        "rsi_rising",
+        "pullback",
+        "confirmation",
+        "volume",
+    ],
+}
 
 
 # ==========================================
-# ATR VALUES TO TEST
+# CONDITION BUILDER
 # ==========================================
 
-ATR_TEST_VALUES = [
-    1.2,
-    1.4,
-    1.6,
-    1.8,
-    2.0,
-    2.2,
-]
+def build_condition_mask(
+    df,
+    conditions,
+):
+    """
+    Erstellt eine boolesche Maske für eine
+    bestimmte Entry-Kombination.
+
+    Die vorhandenen Spalten werden flexibel
+    erkannt, damit der Analyzer nicht an
+    kleinen Namensunterschieden scheitert.
+    """
+
+    masks = []
+
+    # --------------------------------------
+    # TREND
+    # --------------------------------------
+
+    if "trend" in conditions:
+
+        if "trend" in df.columns:
+
+            masks.append(
+                df["trend"].fillna(False)
+                .astype(bool)
+            )
+
+        elif (
+            "ema_20" in df.columns
+            and
+            "ema_50" in df.columns
+        ):
+
+            masks.append(
+                df["ema_20"]
+                >
+                df["ema_50"]
+            )
+
+        else:
+
+            return None
+
+    # --------------------------------------
+    # PRICE > EMA50
+    # --------------------------------------
+
+    if "price_above_ema50" in conditions:
+
+        if (
+            "close" not in df.columns
+            or
+            "ema_50" not in df.columns
+        ):
+
+            return None
+
+        masks.append(
+            df["close"]
+            >
+            df["ema_50"]
+        )
+
+    # --------------------------------------
+    # RSI
+    # --------------------------------------
+
+    if "rsi" in conditions:
+
+        if "rsi" not in df.columns:
+
+            return None
+
+        masks.append(
+            df["rsi"] >= 50
+        )
+
+    # --------------------------------------
+    # RSI RISING
+    # --------------------------------------
+
+    if "rsi_rising" in conditions:
+
+        if "rsi" not in df.columns:
+
+            return None
+
+        masks.append(
+            df["rsi"]
+            >
+            df["rsi"].shift(1)
+        )
+
+    # --------------------------------------
+    # PULLBACK
+    # --------------------------------------
+
+    if "pullback" in conditions:
+
+        if "pullback" in df.columns:
+
+            masks.append(
+                df["pullback"]
+                .fillna(False)
+                .astype(bool)
+            )
+
+        elif (
+            "close" in df.columns
+            and
+            "ema_20" in df.columns
+        ):
+
+            distance = (
+                (
+                    df["close"] -
+                    df["ema_20"]
+                ).abs()
+                /
+                df["ema_20"]
+            )
+
+            masks.append(
+                distance <= 0.01
+            )
+
+        else:
+
+            return None
+
+    # --------------------------------------
+    # CONFIRMATION
+    # --------------------------------------
+
+    if "confirmation" in conditions:
+
+        if "confirmation" in df.columns:
+
+            masks.append(
+                df["confirmation"]
+                .fillna(False)
+                .astype(bool)
+            )
+
+        else:
+
+            masks.append(
+                df["close"]
+                >
+                df["close"].shift(1)
+            )
+
+    # --------------------------------------
+    # VOLUME
+    # --------------------------------------
+
+    if "volume" in conditions:
+
+        if "volume" not in df.columns:
+
+            return None
+
+        volume_ma = (
+            df["volume"]
+            .rolling(20)
+            .mean()
+        )
+
+        masks.append(
+            df["volume"]
+            >
+            volume_ma
+        )
+
+    # --------------------------------------
+    # Combine
+    # --------------------------------------
+
+    if not masks:
+
+        return pd.Series(
+            True,
+            index=df.index,
+        )
+
+    result = masks[0].fillna(False)
+
+    for mask in masks[1:]:
+
+        result = (
+            result
+            &
+            mask.fillna(False)
+        )
+
+    return result
 
 
 # ==========================================
-# EXIT ANALYSIS
+# FORWARD RETURN ANALYSIS
 # ==========================================
 
-def print_exit_analysis(
-    trades,
+def calculate_forward_returns(
+    df,
+    signal_mask,
+):
+    """
+    Misst nicht nur, ob ein Signal entsteht,
+    sondern was danach mit dem Markt passiert.
+
+    Dadurch bekommen wir einen ersten Hinweis,
+    ob die Entry-Bedingung tatsächlich einen
+    positiven Edge besitzt.
+    """
+
+    close = df["close"]
+
+    results = {}
+
+    for candles in [
+        3,
+        6,
+        12,
+        24,
+    ]:
+
+        future_price = (
+            close.shift(-candles)
+        )
+
+        forward_return = (
+            future_price /
+            close -
+            1
+        ) * 100
+
+        values = (
+            forward_return[
+                signal_mask
+            ]
+            .dropna()
+        )
+
+        if len(values) == 0:
+
+            results[candles] = {
+                "count": 0,
+                "average": 0.0,
+                "median": 0.0,
+                "positive_pct": 0.0,
+            }
+
+            continue
+
+        results[candles] = {
+            "count":
+                len(values),
+
+            "average":
+                float(values.mean()),
+
+            "median":
+                float(values.median()),
+
+            "positive_pct":
+                float(
+                    (
+                        values > 0
+                    ).mean()
+                    * 100
+                ),
+        }
+
+    return results
+
+
+# ==========================================
+# ENTRY QUALITY TEST
+# ==========================================
+
+def run_entry_quality_test(
+    df,
     symbol,
 ):
+    """
+    Vergleicht die Qualität verschiedener
+    Entry-Bedingungskombinationen.
+    """
 
     print()
-    print("=" * 60)
+    print("=" * 100)
     print(
-        f"EXIT ANALYSIS: {symbol}"
+        f"ENTRY QUALITY TEST: {symbol}"
     )
-    print("=" * 60)
+    print("=" * 100)
 
-    if not trades:
+    print()
+    print(
+        "Forward returns are measured after:"
+    )
 
-        print(
-            "No trades available."
+    print(
+        "3, 6, 12 and 24 candles"
+    )
+
+    print()
+
+    print(
+        f"{'Setup':<42}"
+        f"{'Signals':>10}"
+        f"{'3c avg':>11}"
+        f"{'6c avg':>11}"
+        f"{'12c avg':>11}"
+        f"{'24c avg':>11}"
+    )
+
+    print("-" * 100)
+
+    results = []
+
+    for name, conditions in ENTRY_TESTS.items():
+
+        mask = build_condition_mask(
+            df,
+            conditions,
         )
 
-        print("=" * 60)
-
-        return
-
-    exit_reasons = [
-        "STOP_LOSS",
-        "EMA_EXIT",
-        "RSI_EXIT",
-        "TIME_STOP",
-        "END_OF_TEST",
-    ]
-
-    total_net_profit = sum(
-        trade.net_profit
-        for trade in trades
-    )
-
-    print(
-        f"Total trades:      "
-        f"{len(trades)}"
-    )
-
-    print(
-        f"Total net P/L:     "
-        f"${total_net_profit:+.4f}"
-    )
-
-    print("-" * 60)
-
-    print(
-        f"{'Exit':<18}"
-        f"{'Trades':>8}"
-        f"{'Wins':>8}"
-        f"{'Losses':>8}"
-        f"{'Win %':>9}"
-        f"{'Net P/L':>12}"
-        f"{'Avg R':>10}"
-    )
-
-    print("-" * 60)
-
-    for reason in exit_reasons:
-
-        reason_trades = [
-            trade
-            for trade in trades
-            if trade.exit_reason == reason
-        ]
-
-        count = len(
-            reason_trades
-        )
-
-        if count == 0:
+        if mask is None:
 
             print(
-                f"{reason:<18}"
-                f"{0:>8}"
-                f"{0:>8}"
-                f"{0:>8}"
-                f"{0.0:>8.2f}%"
-                f"{0.0:>12.4f}"
-                f"{0.0:>10.3f}"
+                f"{name:<42}"
+                f"{'N/A':>10}"
             )
 
             continue
 
-        wins = sum(
-            1
-            for trade in reason_trades
-            if trade.net_profit > 0
+        valid = (
+            mask
+            &
+            df["close"].notna()
         )
 
-        losses = sum(
-            1
-            for trade in reason_trades
-            if trade.net_profit < 0
+        forward = (
+            calculate_forward_returns(
+                df,
+                valid,
+            )
         )
 
-        win_rate = (
-            wins /
-            count *
-            100
+        signal_count = int(
+            valid.sum()
         )
 
-        net_profit = sum(
-            trade.net_profit
-            for trade in reason_trades
+        avg_3 = (
+            forward[3]["average"]
         )
 
-        avg_r = sum(
-            trade.r_multiple
-            for trade in reason_trades
-        ) / count
+        avg_6 = (
+            forward[6]["average"]
+        )
+
+        avg_12 = (
+            forward[12]["average"]
+        )
+
+        avg_24 = (
+            forward[24]["average"]
+        )
 
         print(
-            f"{reason:<18}"
-            f"{count:>8}"
-            f"{wins:>8}"
-            f"{losses:>8}"
-            f"{win_rate:>8.2f}%"
-            f"{net_profit:>12.4f}"
-            f"{avg_r:>10.3f}"
-        )
-
-    print("=" * 60)
-
-
-# ==========================================
-# ATR STOP TEST
-# ==========================================
-
-def run_atr_test(
-    df,
-    symbol,
-):
-
-    results = []
-
-    print()
-    print("=" * 100)
-    print(
-        f"ATR STOP TEST: {symbol}"
-    )
-    print("=" * 100)
-
-    print(
-        f"{'ATR':>7}"
-        f"{'Final':>12}"
-        f"{'Return':>12}"
-        f"{'Trades':>10}"
-        f"{'Win %':>10}"
-        f"{'PF':>10}"
-        f"{'Expectancy':>14}"
-        f"{'Max DD':>10}"
-    )
-
-    print("-" * 100)
-
-    for atr_multiplier in ATR_TEST_VALUES:
-
-        print()
-        print(
-            f"Testing ATR "
-            f"{atr_multiplier:.1f}x..."
-        )
-
-        engine = BacktestEngine(
-            starting_balance=(
-                STARTING_CAPITAL
-            ),
-
-            atr_stop_multiplier=(
-                atr_multiplier
-            ),
-        )
-
-        result = engine.run(
-            df=df,
-            symbol=symbol,
-        )
-
-        trades = result[
-            "trades"
-        ]
-
-        equity_curve = result[
-            "equity_curve"
-        ]
-
-        # ----------------------------------
-        # Final capital
-        # ----------------------------------
-
-        if (
-            not equity_curve.empty
-            and
-            "equity"
-            in equity_curve.columns
-        ):
-
-            final_capital = float(
-                equity_curve[
-                    "equity"
-                ].iloc[-1]
-            )
-
-        else:
-
-            final_capital = float(
-                result["balance"]
-            )
-
-        # ----------------------------------
-        # Return
-        # ----------------------------------
-
-        return_pct = (
-            (
-                final_capital -
-                STARTING_CAPITAL
-            )
-            /
-            STARTING_CAPITAL
-            *
-            100
-        )
-
-        # ----------------------------------
-        # Winners
-        # ----------------------------------
-
-        winners = sum(
-            1
-            for trade in trades
-            if trade.net_profit > 0
-        )
-
-        win_rate = (
-            winners /
-            len(trades) *
-            100
-            if trades
-            else 0.0
-        )
-
-        # ----------------------------------
-        # Profit factor
-        # ----------------------------------
-
-        gross_wins = sum(
-            trade.net_profit
-            for trade in trades
-            if trade.net_profit > 0
-        )
-
-        gross_losses = abs(
-            sum(
-                trade.net_profit
-                for trade in trades
-                if trade.net_profit < 0
-            )
-        )
-
-        if gross_losses > 0:
-
-            profit_factor = (
-                gross_wins /
-                gross_losses
-            )
-
-        else:
-
-            profit_factor = 0.0
-
-        # ----------------------------------
-        # Expectancy
-        # ----------------------------------
-
-        if trades:
-
-            expectancy = (
-                sum(
-                    trade.net_profit
-                    for trade in trades
-                )
-                /
-                len(trades)
-            )
-
-        else:
-
-            expectancy = 0.0
-
-        # ----------------------------------
-        # Max drawdown
-        # ----------------------------------
-
-        if (
-            not equity_curve.empty
-            and
-            "equity"
-            in equity_curve.columns
-        ):
-
-            equity = (
-                equity_curve[
-                    "equity"
-                ]
-                .astype(float)
-            )
-
-            peak = equity.cummax()
-
-            drawdown = (
-                (
-                    equity -
-                    peak
-                )
-                /
-                peak
-                *
-                100
-            )
-
-            max_drawdown = abs(
-                float(
-                    drawdown.min()
-                )
-            )
-
-        else:
-
-            max_drawdown = 0.0
-
-        # ----------------------------------
-        # Print result
-        # ----------------------------------
-
-        print(
-            f"{atr_multiplier:>7.1f}"
-            f"{final_capital:>12.2f}"
-            f"{return_pct:>11.2f}%"
-            f"{len(trades):>10}"
-            f"{win_rate:>9.2f}%"
-            f"{profit_factor:>10.3f}"
-            f"{expectancy:>14.4f}"
-            f"{max_drawdown:>9.2f}%"
+            f"{name:<42}"
+            f"{signal_count:>10}"
+            f"{avg_3:>10.3f}%"
+            f"{avg_6:>10.3f}%"
+            f"{avg_12:>10.3f}%"
+            f"{avg_24:>10.3f}%"
         )
 
         results.append(
             {
-                "atr":
-                    atr_multiplier,
+                "name":
+                    name,
 
-                "final_capital":
-                    final_capital,
+                "signals":
+                    signal_count,
 
-                "return_pct":
-                    return_pct,
+                "avg_3":
+                    avg_3,
 
-                "trades":
-                    len(trades),
+                "avg_6":
+                    avg_6,
 
-                "win_rate":
-                    win_rate,
+                "avg_12":
+                    avg_12,
 
-                "profit_factor":
-                    profit_factor,
+                "avg_24":
+                    avg_24,
 
-                "expectancy":
-                    expectancy,
+                "positive_3":
+                    forward[3][
+                        "positive_pct"
+                    ],
 
-                "max_drawdown":
-                    max_drawdown,
+                "positive_6":
+                    forward[6][
+                        "positive_pct"
+                    ],
+
+                "positive_12":
+                    forward[12][
+                        "positive_pct"
+                    ],
+
+                "positive_24":
+                    forward[24][
+                        "positive_pct"
+                    ],
             }
         )
 
-    # ======================================
-    # Best variant
-    # ======================================
-
     print("-" * 100)
 
-    profitable = [
-        result
-        for result in results
-        if (
-            result["profit_factor"] > 1
-            and
-            result["expectancy"] > 0
-        )
-    ]
-
-    if profitable:
-
-        best = max(
-            profitable,
-            key=lambda x:
-                x["final_capital"],
-        )
-
-        print()
-        print(
-            "🟢 PROFITABLE ATR VARIANT FOUND"
-        )
-
-        print(
-            f"Best ATR:          "
-            f"{best['atr']:.1f}x"
-        )
-
-        print(
-            f"Final capital:     "
-            f"${best['final_capital']:.2f}"
-        )
-
-        print(
-            f"Return:            "
-            f"{best['return_pct']:+.2f}%"
-        )
-
-        print(
-            f"Profit factor:     "
-            f"{best['profit_factor']:.3f}"
-        )
-
-        print(
-            f"Expectancy:        "
-            f"${best['expectancy']:+.4f}"
-        )
-
-        print(
-            f"Max drawdown:      "
-            f"{best['max_drawdown']:.2f}%"
-        )
-
-    else:
-
-        print()
-        print(
-            "🔴 NO PROFITABLE ATR VARIANT FOUND"
-        )
+    if results:
 
         best = max(
             results,
             key=lambda x:
-                x["final_capital"],
+                x["avg_12"],
+        )
+
+        print()
+        print(
+            "BEST ENTRY BY 12-CANDLE "
+            "FORWARD RETURN"
         )
 
         print(
-            f"Best available ATR: "
-            f"{best['atr']:.1f}x"
+            f"Setup:             "
+            f"{best['name']}"
         )
 
         print(
-            f"Final capital:      "
-            f"${best['final_capital']:.2f}"
+            f"Signals:           "
+            f"{best['signals']}"
         )
 
         print(
-            f"Return:             "
-            f"{best['return_pct']:+.2f}%"
+            f"12-candle average: "
+            f"{best['avg_12']:+.3f}%"
+        )
+
+        print(
+            f"12-candle positive: "
+            f"{best['positive_12']:.2f}%"
         )
 
     print("=" * 100)
@@ -543,22 +587,18 @@ def main():
     print()
     print("=" * 60)
     print("20→100 TRADING BOT")
-    print("Strategy v2.0")
-    print("ATR STOP PARAMETER TEST")
+    print("Strategy v3.0")
+    print("ENTRY QUALITY ANALYZER")
     print("=" * 60)
 
     all_results = []
-
-    # ======================================
-    # Markets
-    # ======================================
 
     for symbol in SYMBOLS:
 
         print()
         print("-" * 60)
         print(
-            f"BACKTEST: {symbol}"
+            f"ANALYSIS: {symbol}"
         )
         print("-" * 60)
 
@@ -616,17 +656,8 @@ def main():
                 timeframe=TIMEFRAME,
             )
 
-        print()
         print(
             f"Candles: {len(df)}"
-        )
-
-        print(
-            f"From:    {df.index.min()}"
-        )
-
-        print(
-            f"To:      {df.index.max()}"
         )
 
         # ==================================
@@ -639,7 +670,9 @@ def main():
         )
 
         indicator_df = (
-            calculate_indicators(df)
+            calculate_indicators(
+                df
+            )
         )
 
         # ==================================
@@ -648,27 +681,44 @@ def main():
 
         print()
         print(
-            "Analyzing entry conditions..."
+            "Running signal diagnostics..."
         )
 
-        diagnostic_data = (
-            diagnose_signals(
-                indicator_df
+        try:
+
+            diagnostic_data = (
+                diagnose_signals(
+                    indicator_df
+                )
             )
-        )
 
-        print_signal_diagnostics(
-            diagnostic_data,
-            symbol,
-        )
+            print(
+                f"Valid candles: "
+                f"{diagnostic_data.get(
+                    'valid_candles',
+                    'N/A'
+                )}"
+            )
+
+        except Exception as exc:
+
+            print(
+                "Signal diagnostics skipped:"
+            )
+
+            print(
+                str(exc)
+            )
 
         # ==================================
-        # ATR TEST
+        # ENTRY QUALITY
         # ==================================
 
-        atr_results = run_atr_test(
-            df=indicator_df,
-            symbol=symbol,
+        result = (
+            run_entry_quality_test(
+                indicator_df,
+                symbol,
+            )
         )
 
         all_results.append(
@@ -677,7 +727,7 @@ def main():
                     symbol,
 
                 "results":
-                    atr_results,
+                    result,
             }
         )
 
@@ -687,7 +737,9 @@ def main():
 
     print()
     print("=" * 100)
-    print("20→100 ATR TEST SUMMARY")
+    print(
+        "20→100 ENTRY QUALITY SUMMARY"
+    )
     print("=" * 100)
 
     for market in all_results:
@@ -706,7 +758,7 @@ def main():
         best = max(
             results,
             key=lambda x:
-                x["final_capital"],
+                x["avg_12"],
         )
 
         print()
@@ -715,39 +767,44 @@ def main():
         )
 
         print(
-            f"Best ATR:          "
-            f"{best['atr']:.1f}x"
+            f"Best setup:        "
+            f"{best['name']}"
         )
 
         print(
-            f"Final capital:     "
-            f"${best['final_capital']:.2f}"
+            f"Signals:           "
+            f"{best['signals']}"
         )
 
         print(
-            f"Return:            "
-            f"{best['return_pct']:+.2f}%"
+            f"3 candles:         "
+            f"{best['avg_3']:+.3f}%"
         )
 
         print(
-            f"Profit factor:     "
-            f"{best['profit_factor']:.3f}"
+            f"6 candles:         "
+            f"{best['avg_6']:+.3f}%"
         )
 
         print(
-            f"Expectancy:        "
-            f"${best['expectancy']:+.4f}"
+            f"12 candles:        "
+            f"{best['avg_12']:+.3f}%"
         )
 
         print(
-            f"Max drawdown:      "
-            f"{best['max_drawdown']:.2f}%"
+            f"24 candles:        "
+            f"{best['avg_24']:+.3f}%"
+        )
+
+        print(
+            f"Positive 12c:      "
+            f"{best['positive_12']:.2f}%"
         )
 
     print()
     print("=" * 100)
     print(
-        "ATR STOP TEST COMPLETE"
+        "ENTRY QUALITY TEST COMPLETE"
     )
     print("=" * 100)
 
