@@ -13,7 +13,6 @@ from config import (
     SLIPPAGE_RATE,
     RISK_PER_TRADE,
     ATR_STOP_MULTIPLIER,
-    TAKE_PROFIT_R,
     PARTIAL_EXIT_1_R,
     PARTIAL_EXIT_1_SIZE,
     PARTIAL_EXIT_2_R,
@@ -42,6 +41,10 @@ from risk.risk_manager import (
 )
 
 
+# ==========================================
+# Position
+# ==========================================
+
 @dataclass
 class Position:
 
@@ -67,6 +70,10 @@ class Position:
     partial_2_done: bool = False
 
 
+# ==========================================
+# Trade
+# ==========================================
+
 @dataclass
 class Trade:
 
@@ -89,6 +96,10 @@ class Trade:
     r_multiple: float
 
 
+# ==========================================
+# Backtest Engine
+# ==========================================
+
 class BacktestEngine:
 
     def __init__(
@@ -97,11 +108,11 @@ class BacktestEngine:
     ):
 
         self.starting_balance = (
-            starting_balance
+            float(starting_balance)
         )
 
         self.balance = (
-            starting_balance
+            float(starting_balance)
         )
 
         self.position: Optional[
@@ -124,11 +135,48 @@ class BacktestEngine:
         )
 
         self.cooldown_until = None
+
         self.loss_cooldown_until = None
+
         self.current_day = None
 
+        # ----------------------------------
+        # Diagnostics
+        # ----------------------------------
+
+        self.signal_count = 0
+
+        self.entry_accepted = 0
+
+        self.entry_rejected = 0
+
+        self.rejection_reasons = {}
+
+        self.debug_signal_limit = 10
+
     # ======================================
-    # DAILY RESET
+    # Rejection logger
+    # ======================================
+
+    def reject_entry(
+        self,
+        reason: str,
+    ):
+
+        self.entry_rejected += 1
+
+        self.rejection_reasons[
+            reason
+        ] = (
+            self.rejection_reasons.get(
+                reason,
+                0,
+            )
+            + 1
+        )
+
+    # ======================================
+    # Daily reset
     # ======================================
 
     def update_day(
@@ -159,28 +207,82 @@ class BacktestEngine:
         timestamp,
         close,
         atr,
+        debug=False,
     ):
 
         if self.position is not None:
-            return
 
-        if atr <= 0:
-            return
+            self.reject_entry(
+                "POSITION_ALREADY_OPEN"
+            )
+
+            return False
+
+        # ----------------------------------
+        # Validate ATR
+        # ----------------------------------
+
+        if pd.isna(atr) or atr <= 0:
+
+            self.reject_entry(
+                "INVALID_ATR"
+            )
+
+            return False
+
+        # ----------------------------------
+        # Entry price including slippage
+        # ----------------------------------
 
         entry_price = (
-            close *
+            float(close)
+            *
             (1 + SLIPPAGE_RATE)
         )
 
+        # ----------------------------------
+        # Stop distance
+        # ----------------------------------
+
         stop_distance = (
-            atr *
+            float(atr)
+            *
             ATR_STOP_MULTIPLIER
         )
+
+        if stop_distance <= 0:
+
+            self.reject_entry(
+                "INVALID_STOP_DISTANCE"
+            )
+
+            return False
 
         stop_price = (
             entry_price -
             stop_distance
         )
+
+        if stop_price <= 0:
+
+            self.reject_entry(
+                "INVALID_STOP_PRICE"
+            )
+
+            return False
+
+        # ----------------------------------
+        # Risk amount
+        # ----------------------------------
+
+        risk_amount = (
+            self.balance *
+            RISK_PER_TRADE
+        )
+
+        # ----------------------------------
+        # Position size
+        # ----------------------------------
 
         quantity = (
             self.risk_manager
@@ -192,40 +294,165 @@ class BacktestEngine:
         )
 
         if quantity <= 0:
-            return
+
+            self.reject_entry(
+                "ZERO_POSITION_SIZE"
+            )
+
+            return False
+
+        # ----------------------------------
+        # Position value
+        # ----------------------------------
 
         position_value = (
             quantity *
             entry_price
         )
 
+        # ----------------------------------
+        # Entry fee
+        # ----------------------------------
+
         entry_fee = (
             position_value *
             FEE_RATE
         )
+
+        # ----------------------------------
+        # Total capital required
+        # ----------------------------------
 
         total_cost = (
             position_value +
             entry_fee
         )
 
+        # ==================================
+        # DEBUG INFORMATION
+        # ==================================
+
+        if debug:
+
+            print()
+            print(
+                "SIGNAL FOUND"
+            )
+
+            print(
+                f"Symbol:          {symbol}"
+            )
+
+            print(
+                f"Time:            {timestamp}"
+            )
+
+            print(
+                f"Market price:    ${close:.6f}"
+            )
+
+            print(
+                f"Entry price:     ${entry_price:.6f}"
+            )
+
+            print(
+                f"ATR:             ${atr:.6f}"
+            )
+
+            print(
+                f"Stop price:      ${stop_price:.6f}"
+            )
+
+            print(
+                f"Stop distance:   ${stop_distance:.6f}"
+            )
+
+            print(
+                f"Risk allowed:    ${risk_amount:.6f}"
+            )
+
+            print(
+                f"Quantity:         {quantity:.10f}"
+            )
+
+            print(
+                f"Position value:  ${position_value:.6f}"
+            )
+
+            print(
+                f"Entry fee:       ${entry_fee:.6f}"
+            )
+
+            print(
+                f"Total required:  ${total_cost:.6f}"
+            )
+
+            print(
+                f"Available cash:  ${self.balance:.6f}"
+            )
+
+        # ----------------------------------
+        # Capital check
+        # ----------------------------------
+
         if total_cost > self.balance:
-            return
+
+            self.reject_entry(
+                "INSUFFICIENT_CAPITAL"
+            )
+
+            if debug:
+
+                print(
+                    "❌ ENTRY REJECTED:"
+                    " INSUFFICIENT_CAPITAL"
+                )
+
+            return False
+
+        # ----------------------------------
+        # Create position
+        # ----------------------------------
 
         self.balance -= total_cost
 
         self.position = Position(
             symbol=symbol,
             entry_time=timestamp,
+
             entry_price=entry_price,
+
             quantity=quantity,
+
             initial_stop=stop_price,
+
             current_stop=stop_price,
+
             risk_per_unit=stop_distance,
+
             remaining_quantity=quantity,
+
             highest_price=entry_price,
+
             total_fees=entry_fee,
         )
+
+        self.entry_accepted += 1
+
+        if debug:
+
+            print(
+                "✅ ENTRY ACCEPTED"
+            )
+
+            print(
+                f"Remaining cash: "
+                f"${self.balance:.6f}"
+            )
+
+            print()
+
+        return True
 
     # ======================================
     # SELL
@@ -247,7 +474,8 @@ class BacktestEngine:
         )
 
         exit_price = (
-            market_price *
+            float(market_price)
+            *
             (1 - SLIPPAGE_RATE)
         )
 
@@ -281,7 +509,8 @@ class BacktestEngine:
                 exit_price -
                 position.entry_price
             )
-            * quantity
+            *
+            quantity
         )
 
         net_profit = (
@@ -290,7 +519,6 @@ class BacktestEngine:
             exit_fee
         )
 
-        # Approximate total slippage.
         entry_slippage = (
             quantity *
             position.entry_price *
@@ -299,7 +527,7 @@ class BacktestEngine:
 
         exit_slippage = (
             quantity *
-            market_price *
+            float(market_price) *
             SLIPPAGE_RATE
         )
 
@@ -322,7 +550,7 @@ class BacktestEngine:
         )
 
     # ======================================
-    # CLOSE TRADE
+    # CLOSE POSITION
     # ======================================
 
     def close_position(
@@ -340,9 +568,11 @@ class BacktestEngine:
         if position.remaining_quantity > 0:
 
             self.execute_sell(
-                position,
-                market_price,
-                position.remaining_quantity,
+                position=position,
+                market_price=market_price,
+                quantity=(
+                    position.remaining_quantity
+                ),
             )
 
         initial_risk = (
@@ -358,6 +588,7 @@ class BacktestEngine:
             )
 
         else:
+
             r_multiple = 0.0
 
         gross_profit = (
@@ -367,28 +598,45 @@ class BacktestEngine:
 
         trade = Trade(
             symbol=position.symbol,
+
             entry_time=position.entry_time,
+
             exit_time=timestamp,
+
             entry_price=position.entry_price,
+
             final_exit_price=market_price,
+
             initial_quantity=position.quantity,
+
             gross_profit=gross_profit,
+
             fees=position.total_fees,
+
             slippage_cost=(
                 position.total_slippage_cost
             ),
+
             net_profit=(
                 position.realized_profit
             ),
+
             exit_reason=reason,
+
             r_multiple=r_multiple,
         )
 
-        self.trades.append(trade)
+        self.trades.append(
+            trade
+        )
 
         self.risk_manager.record_trade(
             trade.net_profit
         )
+
+        # ----------------------------------
+        # Loss cooldown
+        # ----------------------------------
 
         if (
             self.risk_manager
@@ -398,7 +646,9 @@ class BacktestEngine:
             self.loss_cooldown_until = (
                 timestamp +
                 pd.Timedelta(
-                    minutes=LOSS_COOLDOWN_MINUTES
+                    minutes=(
+                        LOSS_COOLDOWN_MINUTES
+                    )
                 )
             )
 
@@ -407,7 +657,9 @@ class BacktestEngine:
             self.cooldown_until = (
                 timestamp +
                 pd.Timedelta(
-                    minutes=TRADE_COOLDOWN_MINUTES
+                    minutes=(
+                        TRADE_COOLDOWN_MINUTES
+                    )
                 )
             )
 
@@ -428,7 +680,9 @@ class BacktestEngine:
         position = self.position
 
         high = float(row["high"])
+
         low = float(row["low"])
+
         close = float(row["close"])
 
         # ----------------------------------
@@ -441,27 +695,33 @@ class BacktestEngine:
         )
 
         # ----------------------------------
-        # STOP FIRST
+        # STOP LOSS
         # ----------------------------------
 
         if low <= position.current_stop:
 
             self.close_position(
-                market_price=position.current_stop,
+                market_price=(
+                    position.current_stop
+                ),
+
                 timestamp=row.name,
+
                 reason="STOP_LOSS",
             )
 
             return
 
         # ----------------------------------
-        # 1R
+        # 1R PARTIAL
         # ----------------------------------
 
         one_r = (
             position.entry_price +
-            position.risk_per_unit *
-            PARTIAL_EXIT_1_R
+            (
+                position.risk_per_unit *
+                PARTIAL_EXIT_1_R
+            )
         )
 
         if (
@@ -475,14 +735,14 @@ class BacktestEngine:
             )
 
             self.execute_sell(
-                position,
-                one_r,
-                quantity,
+                position=position,
+                market_price=one_r,
+                quantity=quantity,
             )
 
             position.partial_1_done = True
 
-            # Break-even including approximate fee.
+            # Move stop towards break-even.
             break_even = (
                 position.entry_price *
                 (1 + FEE_RATE)
@@ -494,13 +754,15 @@ class BacktestEngine:
             )
 
         # ----------------------------------
-        # 2R
+        # 2R PARTIAL
         # ----------------------------------
 
         two_r = (
             position.entry_price +
-            position.risk_per_unit *
-            PARTIAL_EXIT_2_R
+            (
+                position.risk_per_unit *
+                PARTIAL_EXIT_2_R
+            )
         )
 
         if (
@@ -514,9 +776,9 @@ class BacktestEngine:
             )
 
             self.execute_sell(
-                position,
-                two_r,
-                quantity,
+                position=position,
+                market_price=two_r,
+                quantity=quantity,
             )
 
             position.partial_2_done = True
@@ -576,7 +838,7 @@ class BacktestEngine:
             return
 
         # ----------------------------------
-        # TIME STOP
+        # Time stop
         # ----------------------------------
 
         duration = (
@@ -602,31 +864,62 @@ class BacktestEngine:
         symbol: str,
     ):
 
-        df = calculate_indicators(df)
+        # ----------------------------------
+        # Calculate indicators
+        # ----------------------------------
+
+        df = calculate_indicators(
+            df
+        )
+
+        # ----------------------------------
+        # Reset state
+        # ----------------------------------
 
         self.balance = (
             self.starting_balance
         )
 
         self.position = None
+
         self.trades = []
+
         self.equity_curve = []
 
         self.current_day = None
+
         self.cooldown_until = None
+
         self.loss_cooldown_until = None
 
-        for i in range(60, len(df)):
+        self.signal_count = 0
+
+        self.entry_accepted = 0
+
+        self.entry_rejected = 0
+
+        self.rejection_reasons = {}
+
+        # ----------------------------------
+        # Main loop
+        # ----------------------------------
+
+        for i in range(
+            60,
+            len(df),
+        ):
 
             current = df.iloc[i]
 
             timestamp = current.name
 
-            self.update_day(timestamp)
+            self.update_day(
+                timestamp
+            )
 
-            # ------------------------------
+            # ==============================
             # Existing position
-            # ------------------------------
+            # ==============================
 
             if self.position is not None:
 
@@ -634,9 +927,9 @@ class BacktestEngine:
                     current
                 )
 
-            # ------------------------------
-            # Daily loss protection
-            # ------------------------------
+            # ==============================
+            # Risk checks
+            # ==============================
 
             trading_blocked = (
                 self.risk_manager
@@ -645,9 +938,9 @@ class BacktestEngine:
                 )
             )
 
-            # ------------------------------
+            # ----------------------------------
             # Loss cooldown
-            # ------------------------------
+            # ----------------------------------
 
             if (
                 self.loss_cooldown_until
@@ -659,9 +952,9 @@ class BacktestEngine:
 
                 trading_blocked = True
 
-            # ------------------------------
+            # ----------------------------------
             # Normal cooldown
-            # ------------------------------
+            # ----------------------------------
 
             if (
                 self.cooldown_until
@@ -673,33 +966,47 @@ class BacktestEngine:
 
                 trading_blocked = True
 
-            # ------------------------------
-            # New entry
-            # ------------------------------
+            # ==============================
+            # Entry
+            # ==============================
 
             if (
                 self.position is None
                 and not trading_blocked
             ):
 
-                if check_buy_signal(
+                signal = check_buy_signal(
                     df.iloc[: i + 1]
-                ):
+                )
+
+                if signal:
+
+                    self.signal_count += 1
+
+                    debug = (
+                        self.signal_count
+                        <= self.debug_signal_limit
+                    )
 
                     self.execute_buy(
                         symbol=symbol,
+
                         timestamp=timestamp,
+
                         close=float(
                             current["close"]
                         ),
+
                         atr=float(
                             current["atr_14"]
                         ),
+
+                        debug=debug,
                     )
 
-            # ------------------------------
+            # ==============================
             # Equity
-            # ------------------------------
+            # ==============================
 
             equity = self.balance
 
@@ -709,19 +1016,24 @@ class BacktestEngine:
                     self.position
                     .remaining_quantity
                     *
-                    float(current["close"])
+                    float(
+                        current["close"]
+                    )
                 )
 
             self.equity_curve.append(
                 {
-                    "timestamp": timestamp,
-                    "equity": equity,
+                    "timestamp":
+                        timestamp,
+
+                    "equity":
+                        equity,
                 }
             )
 
-        # ----------------------------------
-        # Final position
-        # ----------------------------------
+        # ==================================
+        # Close final position
+        # ==================================
 
         if self.position is not None:
 
@@ -731,14 +1043,82 @@ class BacktestEngine:
                 market_price=float(
                     final["close"]
                 ),
+
                 timestamp=final.name,
+
                 reason="END_OF_TEST",
             )
 
+        # ==================================
+        # Diagnostics summary
+        # ==================================
+
+        print()
+        print("-" * 60)
+        print(
+            f"ENGINE DIAGNOSTICS: {symbol}"
+        )
+        print("-" * 60)
+
+        print(
+            f"Signals found:      "
+            f"{self.signal_count}"
+        )
+
+        print(
+            f"Entries accepted:   "
+            f"{self.entry_accepted}"
+        )
+
+        print(
+            f"Entries rejected:   "
+            f"{self.entry_rejected}"
+        )
+
+        if self.rejection_reasons:
+
+            print()
+            print(
+                "Rejection reasons:"
+            )
+
+            for (
+                reason,
+                count
+            ) in sorted(
+                self.rejection_reasons.items(),
+                key=lambda x: x[1],
+                reverse=True,
+            ):
+
+                print(
+                    f"  {reason:<30}"
+                    f"{count}"
+                )
+
+        print("-" * 60)
+
         return {
-            "balance": self.balance,
-            "trades": self.trades,
-            "equity_curve": pd.DataFrame(
-                self.equity_curve
-            ),
+            "balance":
+                self.balance,
+
+            "trades":
+                self.trades,
+
+            "equity_curve":
+                pd.DataFrame(
+                    self.equity_curve
+                ),
+
+            "signal_count":
+                self.signal_count,
+
+            "entry_accepted":
+                self.entry_accepted,
+
+            "entry_rejected":
+                self.entry_rejected,
+
+            "rejection_reasons":
+                self.rejection_reasons,
         }
