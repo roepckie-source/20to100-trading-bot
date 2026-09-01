@@ -1,1 +1,10 @@
+__pycache__/
+*.pyc
 
+data/*.csv
+
+logs/*.csv
+
+.env
+.venv/
+venv/
