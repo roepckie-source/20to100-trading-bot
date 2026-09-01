@@ -2,6 +2,7 @@
 # 20to100 Trading Bot
 # Main Backtest Runner
 # Strategy v2.0
+# ATR Stop Parameter Test
 # ==========================================
 
 from pathlib import Path
@@ -40,6 +41,20 @@ from backtest.metrics import (
 
 
 # ==========================================
+# ATR VALUES TO TEST
+# ==========================================
+
+ATR_TEST_VALUES = [
+    1.2,
+    1.4,
+    1.6,
+    1.8,
+    2.0,
+    2.2,
+]
+
+
+# ==========================================
 # EXIT ANALYSIS
 # ==========================================
 
@@ -47,9 +62,6 @@ def print_exit_analysis(
     trades,
     symbol,
 ):
-    """
-    Analyse der Performance je Exit-Grund.
-    """
 
     print()
     print("=" * 60)
@@ -82,7 +94,8 @@ def print_exit_analysis(
     )
 
     print(
-        f"Total trades:      {len(trades)}"
+        f"Total trades:      "
+        f"{len(trades)}"
     )
 
     print(
@@ -168,273 +181,349 @@ def print_exit_analysis(
             f"{avg_r:>10.3f}"
         )
 
-    print("-" * 60)
+    print("=" * 60)
 
-    # ======================================
-    # Best / Worst exit
-    # ======================================
 
-    grouped = {}
+# ==========================================
+# ATR STOP TEST
+# ==========================================
 
-    for reason in exit_reasons:
+def run_atr_test(
+    df,
+    symbol,
+):
 
-        reason_trades = [
-            trade
-            for trade in trades
-            if trade.exit_reason == reason
+    results = []
+
+    print()
+    print("=" * 100)
+    print(
+        f"ATR STOP TEST: {symbol}"
+    )
+    print("=" * 100)
+
+    print(
+        f"{'ATR':>7}"
+        f"{'Final':>12}"
+        f"{'Return':>12}"
+        f"{'Trades':>10}"
+        f"{'Win %':>10}"
+        f"{'PF':>10}"
+        f"{'Expectancy':>14}"
+        f"{'Max DD':>10}"
+    )
+
+    print("-" * 100)
+
+    for atr_multiplier in ATR_TEST_VALUES:
+
+        print()
+        print(
+            f"Testing ATR "
+            f"{atr_multiplier:.1f}x..."
+        )
+
+        engine = BacktestEngine(
+            starting_balance=(
+                STARTING_CAPITAL
+            ),
+
+            atr_stop_multiplier=(
+                atr_multiplier
+            ),
+        )
+
+        result = engine.run(
+            df=df,
+            symbol=symbol,
+        )
+
+        trades = result[
+            "trades"
         ]
 
-        if reason_trades:
+        equity_curve = result[
+            "equity_curve"
+        ]
 
-            grouped[reason] = sum(
-                trade.net_profit
-                for trade in reason_trades
+        # ----------------------------------
+        # Final capital
+        # ----------------------------------
+
+        if (
+            not equity_curve.empty
+            and
+            "equity"
+            in equity_curve.columns
+        ):
+
+            final_capital = float(
+                equity_curve[
+                    "equity"
+                ].iloc[-1]
             )
 
-    if grouped:
+        else:
 
-        best_reason = max(
-            grouped,
-            key=grouped.get,
+            final_capital = float(
+                result["balance"]
+            )
+
+        # ----------------------------------
+        # Return
+        # ----------------------------------
+
+        return_pct = (
+            (
+                final_capital -
+                STARTING_CAPITAL
+            )
+            /
+            STARTING_CAPITAL
+            *
+            100
         )
 
-        worst_reason = min(
-            grouped,
-            key=grouped.get,
+        # ----------------------------------
+        # Winners
+        # ----------------------------------
+
+        winners = sum(
+            1
+            for trade in trades
+            if trade.net_profit > 0
         )
+
+        win_rate = (
+            winners /
+            len(trades) *
+            100
+            if trades
+            else 0.0
+        )
+
+        # ----------------------------------
+        # Profit factor
+        # ----------------------------------
+
+        gross_wins = sum(
+            trade.net_profit
+            for trade in trades
+            if trade.net_profit > 0
+        )
+
+        gross_losses = abs(
+            sum(
+                trade.net_profit
+                for trade in trades
+                if trade.net_profit < 0
+            )
+        )
+
+        if gross_losses > 0:
+
+            profit_factor = (
+                gross_wins /
+                gross_losses
+            )
+
+        else:
+
+            profit_factor = 0.0
+
+        # ----------------------------------
+        # Expectancy
+        # ----------------------------------
+
+        if trades:
+
+            expectancy = (
+                sum(
+                    trade.net_profit
+                    for trade in trades
+                )
+                /
+                len(trades)
+            )
+
+        else:
+
+            expectancy = 0.0
+
+        # ----------------------------------
+        # Max drawdown
+        # ----------------------------------
+
+        if (
+            not equity_curve.empty
+            and
+            "equity"
+            in equity_curve.columns
+        ):
+
+            equity = (
+                equity_curve[
+                    "equity"
+                ]
+                .astype(float)
+            )
+
+            peak = equity.cummax()
+
+            drawdown = (
+                (
+                    equity -
+                    peak
+                )
+                /
+                peak
+                *
+                100
+            )
+
+            max_drawdown = abs(
+                float(
+                    drawdown.min()
+                )
+            )
+
+        else:
+
+            max_drawdown = 0.0
+
+        # ----------------------------------
+        # Print result
+        # ----------------------------------
 
         print(
-            f"Best exit:         "
-            f"{best_reason} "
-            f"(${grouped[best_reason]:+.4f})"
+            f"{atr_multiplier:>7.1f}"
+            f"{final_capital:>12.2f}"
+            f"{return_pct:>11.2f}%"
+            f"{len(trades):>10}"
+            f"{win_rate:>9.2f}%"
+            f"{profit_factor:>10.3f}"
+            f"{expectancy:>14.4f}"
+            f"{max_drawdown:>9.2f}%"
         )
 
-        print(
-            f"Worst exit:        "
-            f"{worst_reason} "
-            f"(${grouped[worst_reason]:+.4f})"
+        results.append(
+            {
+                "atr":
+                    atr_multiplier,
+
+                "final_capital":
+                    final_capital,
+
+                "return_pct":
+                    return_pct,
+
+                "trades":
+                    len(trades),
+
+                "win_rate":
+                    win_rate,
+
+                "profit_factor":
+                    profit_factor,
+
+                "expectancy":
+                    expectancy,
+
+                "max_drawdown":
+                    max_drawdown,
+            }
         )
 
-    print("=" * 60)
+    # ======================================
+    # Best variant
+    # ======================================
 
+    print("-" * 100)
 
-# ==========================================
-# RESULT LINE
-# ==========================================
-
-def print_result_line(
-    symbol,
-    starting_capital,
-    final_capital,
-    trades,
-):
-    """
-    Compact 20→100 result.
-    """
-
-    profit_loss = (
-        final_capital -
-        starting_capital
-    )
-
-    return_pct = (
-        profit_loss /
-        starting_capital *
-        100
-    )
-
-    progress_to_100 = (
-        final_capital /
-        100 *
-        100
-    )
-
-    if final_capital >= 100:
-
-        status = "🎯 TARGET REACHED"
-
-    elif profit_loss > 0:
-
-        status = "🟢 PROFITABLE"
-
-    elif profit_loss < 0:
-
-        status = "🔴 LOSS"
-
-    else:
-
-        status = "⚪ BREAK-EVEN"
-
-    print()
-    print("=" * 60)
-    print(
-        f"20→100 RESULT: {symbol}"
-    )
-    print("=" * 60)
-
-    print(
-        f"Starting capital:  "
-        f"${starting_capital:.2f}"
-    )
-
-    print(
-        f"Final capital:     "
-        f"${final_capital:.2f}"
-    )
-
-    print(
-        f"Profit/Loss:       "
-        f"${profit_loss:+.2f}"
-    )
-
-    print(
-        f"Return:            "
-        f"{return_pct:+.2f}%"
-    )
-
-    print(
-        f"Progress to $100:  "
-        f"{progress_to_100:.2f}%"
-    )
-
-    print(
-        f"Trades:            "
-        f"{len(trades)}"
-    )
-
-    print(
-        f"Status:             "
-        f"{status}"
-    )
-
-    print("=" * 60)
-
-
-# ==========================================
-# PORTFOLIO RESULT
-# ==========================================
-
-def print_portfolio_result(
-    starting_capital,
-    results,
-):
-    """
-    Combined comparison of all symbols.
-    """
-
-    if not results:
-        return
-
-    final_capitals = [
-        result["final_capital"]
+    profitable = [
+        result
         for result in results
+        if (
+            result["profit_factor"] > 1
+            and
+            result["expectancy"] > 0
+        )
     ]
 
-    average_final_capital = (
-        sum(final_capitals)
-        /
-        len(final_capitals)
-    )
+    if profitable:
 
-    profit_loss = (
-        average_final_capital -
-        starting_capital
-    )
+        best = max(
+            profitable,
+            key=lambda x:
+                x["final_capital"],
+        )
 
-    return_pct = (
-        profit_loss /
-        starting_capital *
-        100
-    )
+        print()
+        print(
+            "🟢 PROFITABLE ATR VARIANT FOUND"
+        )
 
-    progress_to_100 = (
-        average_final_capital /
-        100 *
-        100
-    )
+        print(
+            f"Best ATR:          "
+            f"{best['atr']:.1f}x"
+        )
 
-    total_trades = sum(
-        result["trades"]
-        for result in results
-    )
+        print(
+            f"Final capital:     "
+            f"${best['final_capital']:.2f}"
+        )
 
-    total_winners = sum(
-        result["winners"]
-        for result in results
-    )
+        print(
+            f"Return:            "
+            f"{best['return_pct']:+.2f}%"
+        )
 
-    total_losers = sum(
-        result["losers"]
-        for result in results
-    )
+        print(
+            f"Profit factor:     "
+            f"{best['profit_factor']:.3f}"
+        )
 
-    if average_final_capital >= 100:
+        print(
+            f"Expectancy:        "
+            f"${best['expectancy']:+.4f}"
+        )
 
-        status = "🎯 TARGET REACHED"
-
-    elif profit_loss > 0:
-
-        status = "🟢 PROFITABLE"
-
-    elif profit_loss < 0:
-
-        status = "🔴 LOSS"
+        print(
+            f"Max drawdown:      "
+            f"{best['max_drawdown']:.2f}%"
+        )
 
     else:
 
-        status = "⚪ BREAK-EVEN"
+        print()
+        print(
+            "🔴 NO PROFITABLE ATR VARIANT FOUND"
+        )
 
-    print()
-    print("=" * 60)
-    print("20→100 PORTFOLIO RESULT")
-    print("=" * 60)
+        best = max(
+            results,
+            key=lambda x:
+                x["final_capital"],
+        )
 
-    print(
-        f"Starting capital:  "
-        f"${starting_capital:.2f}"
-    )
+        print(
+            f"Best available ATR: "
+            f"{best['atr']:.1f}x"
+        )
 
-    print(
-        f"Average final:     "
-        f"${average_final_capital:.2f}"
-    )
+        print(
+            f"Final capital:      "
+            f"${best['final_capital']:.2f}"
+        )
 
-    print(
-        f"Total P/L:         "
-        f"${profit_loss:+.2f}"
-    )
+        print(
+            f"Return:             "
+            f"{best['return_pct']:+.2f}%"
+        )
 
-    print(
-        f"Total return:      "
-        f"{return_pct:+.2f}%"
-    )
+    print("=" * 100)
 
-    print(
-        f"Progress to $100:  "
-        f"{progress_to_100:.2f}%"
-    )
-
-    print(
-        f"Total trades:      "
-        f"{total_trades}"
-    )
-
-    print(
-        f"Winners:           "
-        f"{total_winners}"
-    )
-
-    print(
-        f"Losers:            "
-        f"{total_losers}"
-    )
-
-    print(
-        f"Status:             "
-        f"{status}"
-    )
-
-    print("=" * 60)
+    return results
 
 
 # ==========================================
@@ -455,9 +544,10 @@ def main():
     print("=" * 60)
     print("20→100 TRADING BOT")
     print("Strategy v2.0")
+    print("ATR STOP PARAMETER TEST")
     print("=" * 60)
 
-    results = []
+    all_results = []
 
     # ======================================
     # Markets
@@ -473,7 +563,10 @@ def main():
         print("-" * 60)
 
         filename = (
-            symbol.replace("/", "_")
+            symbol.replace(
+                "/",
+                "_",
+            )
             + "_"
             + TIMEFRAME
             + ".csv"
@@ -570,250 +663,93 @@ def main():
         )
 
         # ==================================
-        # BACKTEST
+        # ATR TEST
         # ==================================
 
-        print()
-        print(
-            "Running strategy backtest..."
-        )
-
-        engine = BacktestEngine(
-            starting_balance=(
-                STARTING_CAPITAL
-            )
-        )
-
-        result = engine.run(
-            df=df,
+        atr_results = run_atr_test(
+            df=indicator_df,
             symbol=symbol,
         )
 
-        trades = result[
-            "trades"
-        ]
-
-        # ==================================
-        # METRICS
-        # ==================================
-
-        metrics = calculate_metrics(
-            trades=trades,
-            equity_curve=result[
-                "equity_curve"
-            ],
-            starting_balance=(
-                STARTING_CAPITAL
-            ),
-        )
-
-        print_metrics(
-            metrics
-        )
-
-        # ==================================
-        # EXIT ANALYSIS
-        # ==================================
-
-        print_exit_analysis(
-            trades,
-            symbol,
-        )
-
-        # ==================================
-        # FINAL CAPITAL
-        # ==================================
-
-        equity_curve = (
-            result["equity_curve"]
-        )
-
-        if (
-            not equity_curve.empty
-            and
-            "equity"
-            in equity_curve.columns
-        ):
-
-            final_capital = float(
-                equity_curve[
-                    "equity"
-                ].iloc[-1]
-            )
-
-        else:
-
-            final_capital = float(
-                result["balance"]
-            )
-
-        # ==================================
-        # TRADE STATISTICS
-        # ==================================
-
-        winners = sum(
-            1
-            for trade in trades
-            if trade.net_profit > 0
-        )
-
-        losers = sum(
-            1
-            for trade in trades
-            if trade.net_profit < 0
-        )
-
-        # ==================================
-        # RESULT
-        # ==================================
-
-        print_result_line(
-            symbol=symbol,
-
-            starting_capital=(
-                STARTING_CAPITAL
-            ),
-
-            final_capital=final_capital,
-
-            trades=trades,
-        )
-
-        results.append(
+        all_results.append(
             {
                 "symbol":
                     symbol,
 
-                "final_capital":
-                    final_capital,
-
-                "trades":
-                    len(trades),
-
-                "winners":
-                    winners,
-
-                "losers":
-                    losers,
+                "results":
+                    atr_results,
             }
         )
 
-        # ==================================
-        # TRADE LOG
-        # ==================================
+    # ======================================
+    # FINAL SUMMARY
+    # ======================================
 
-        if trades:
+    print()
+    print("=" * 100)
+    print("20→100 ATR TEST SUMMARY")
+    print("=" * 100)
 
-            trades_df = pd.DataFrame(
-                [
-                    {
-                        "symbol":
-                            trade.symbol,
+    for market in all_results:
 
-                        "entry_time":
-                            trade.entry_time,
+        symbol = market[
+            "symbol"
+        ]
 
-                        "exit_time":
-                            trade.exit_time,
+        results = market[
+            "results"
+        ]
 
-                        "entry_price":
-                            trade.entry_price,
+        if not results:
+            continue
 
-                        "exit_price":
-                            trade.final_exit_price,
-
-                        "quantity":
-                            trade.initial_quantity,
-
-                        "gross_profit":
-                            trade.gross_profit,
-
-                        "fees":
-                            trade.fees,
-
-                        "slippage_cost":
-                            trade.slippage_cost,
-
-                        "net_profit":
-                            trade.net_profit,
-
-                        "exit_reason":
-                            trade.exit_reason,
-
-                        "r_multiple":
-                            trade.r_multiple,
-                    }
-
-                    for trade in trades
-                ]
-            )
-
-            trade_file = (
-                Path("logs") /
-                (
-                    symbol.replace(
-                        "/", "_"
-                    )
-                    + "_trades.csv"
-                )
-            )
-
-            trades_df.to_csv(
-                trade_file,
-                index=False,
-            )
-
-            print(
-                f"Trade log: {trade_file}"
-            )
-
-        else:
-
-            print(
-                "No trades generated."
-            )
-
-        # ==================================
-        # EQUITY LOG
-        # ==================================
-
-        equity_file = (
-            Path("logs") /
-            (
-                symbol.replace(
-                    "/", "_"
-                )
-                + "_equity.csv"
-            )
+        best = max(
+            results,
+            key=lambda x:
+                x["final_capital"],
         )
 
-        result[
-            "equity_curve"
-        ].to_csv(
-            equity_file,
-            index=False,
+        print()
+        print(
+            f"{symbol}"
         )
 
         print(
-            f"Equity log: {equity_file}"
+            f"Best ATR:          "
+            f"{best['atr']:.1f}x"
         )
 
-    # ======================================
-    # PORTFOLIO
-    # ======================================
+        print(
+            f"Final capital:     "
+            f"${best['final_capital']:.2f}"
+        )
 
-    print_portfolio_result(
-        starting_capital=(
-            STARTING_CAPITAL
-        ),
+        print(
+            f"Return:            "
+            f"{best['return_pct']:+.2f}%"
+        )
 
-        results=results,
-    )
+        print(
+            f"Profit factor:     "
+            f"{best['profit_factor']:.3f}"
+        )
+
+        print(
+            f"Expectancy:        "
+            f"${best['expectancy']:+.4f}"
+        )
+
+        print(
+            f"Max drawdown:      "
+            f"{best['max_drawdown']:.2f}%"
+        )
 
     print()
-    print("=" * 60)
-    print("ALL BACKTESTS COMPLETE")
-    print("=" * 60)
+    print("=" * 100)
+    print(
+        "ATR STOP TEST COMPLETE"
+    )
+    print("=" * 100)
 
 
 if __name__ == "__main__":
