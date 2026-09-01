@@ -287,15 +287,14 @@ class BacktestEngine:
         quantity = (
         self.risk_manager
         .calculate_position_size(
-            balance=self.balance,
-            entry_price=entry_price,
-            stop_price=stop_price,
-            fee_rate=FEE_RATE,
+        balance=self.balance,
+        entry_price=entry_price,
+        stop_price=stop_price,
+        fee_rate=FEE_RATE,
         )
+    )
 
-
-        if quantity <= 0:
-
+if quantity <= 0:
             self.reject_entry(
                 "ZERO_POSITION_SIZE"
             )
