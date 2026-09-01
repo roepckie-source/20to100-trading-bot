@@ -28,8 +28,17 @@ from backtest.metrics import (
     print_metrics,
 )
 
+from strategy.signals import (
+    diagnose_signals,
+    print_signal_diagnostics,
+)
+
 
 def main():
+
+    # ======================================
+    # Create directories
+    # ======================================
 
     Path("logs").mkdir(
         exist_ok=True
@@ -45,12 +54,20 @@ def main():
     print("Strategy v1.1")
     print("=" * 60)
 
+    # ======================================
+    # Test every configured market
+    # ======================================
+
     for symbol in SYMBOLS:
 
         print()
         print("-" * 60)
         print(f"BACKTEST: {symbol}")
         print("-" * 60)
+
+        # ----------------------------------
+        # Data filename
+        # ----------------------------------
 
         filename = (
             symbol.replace("/", "_")
@@ -63,6 +80,10 @@ def main():
             Path("data") /
             filename
         )
+
+        # ----------------------------------
+        # Load or download data
+        # ----------------------------------
 
         if data_file.exists():
 
@@ -79,6 +100,14 @@ def main():
 
         else:
 
+            print(
+                "No local data found."
+            )
+
+            print(
+                "Downloading historical data..."
+            )
+
             df = fetch_ohlcv(
                 symbol=symbol,
                 timeframe=TIMEFRAME,
@@ -91,12 +120,52 @@ def main():
                 timeframe=TIMEFRAME,
             )
 
+        # ----------------------------------
+        # Data information
+        # ----------------------------------
+
+        print()
         print(
             f"Candles: {len(df)}"
         )
 
+        print(
+            f"From:    {df.index.min()}"
+        )
+
+        print(
+            f"To:      {df.index.max()}"
+        )
+
+        # ==================================
+        # SIGNAL DIAGNOSTICS
+        # ==================================
+
+        print()
+        print(
+            "Analyzing entry conditions..."
+        )
+
+        diagnostic_data = diagnose_signals(
+            df
+        )
+
+        print_signal_diagnostics(
+            diagnostic_data,
+            symbol,
+        )
+
+        # ==================================
+        # BACKTEST
+        # ==================================
+
         engine = BacktestEngine(
             starting_balance=STARTING_CAPITAL
+        )
+
+        print()
+        print(
+            "Running strategy backtest..."
         )
 
         result = engine.run(
@@ -104,17 +173,27 @@ def main():
             symbol=symbol,
         )
 
+        # ==================================
+        # METRICS
+        # ==================================
+
         metrics = calculate_metrics(
             trades=result["trades"],
-            equity_curve=result["equity_curve"],
-            starting_balance=STARTING_CAPITAL,
+            equity_curve=result[
+                "equity_curve"
+            ],
+            starting_balance=(
+                STARTING_CAPITAL
+            ),
         )
 
-        print_metrics(metrics)
+        print_metrics(
+            metrics
+        )
 
-        # ----------------------------------
-        # Trade log
-        # ----------------------------------
+        # ==================================
+        # SAVE TRADE LOG
+        # ==================================
 
         if result["trades"]:
 
@@ -157,12 +236,13 @@ def main():
                         "r_multiple":
                             trade.r_multiple,
                     }
+
                     for trade
                     in result["trades"]
                 ]
             )
 
-            log_file = (
+            trade_file = (
                 Path("logs") /
                 (
                     symbol.replace(
@@ -173,17 +253,23 @@ def main():
             )
 
             trades_df.to_csv(
-                log_file,
+                trade_file,
                 index=False,
             )
 
             print(
-                f"Trade log: {log_file}"
+                f"Trade log: {trade_file}"
             )
 
-        # ----------------------------------
-        # Equity
-        # ----------------------------------
+        else:
+
+            print(
+                "No trades generated."
+            )
+
+        # ==================================
+        # SAVE EQUITY CURVE
+        # ==================================
 
         equity_file = (
             Path("logs") /
@@ -205,6 +291,10 @@ def main():
         print(
             f"Equity log: {equity_file}"
         )
+
+    # ======================================
+    # COMPLETE
+    # ======================================
 
     print()
     print("=" * 60)
