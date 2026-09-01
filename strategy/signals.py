@@ -1,7 +1,9 @@
 # ==========================================
 # 20to100 Trading Bot
-# Trading Signals + Signal Diagnostics
-# Strategy v1.1
+# Trading Signals
+# Strategy v2.0
+#
+# Trend + Momentum + Pullback + Confirmation
 # ==========================================
 
 import pandas as pd
@@ -11,46 +13,206 @@ from config import (
     RSI_MAX,
     RSI_EXIT,
     VOLUME_MULTIPLIER,
-    BREAKOUT_CANDLES,
     MAX_SPREAD,
 )
 
 
 # ==========================================
-# Individual Conditions
+# Helper
 # ==========================================
 
-def trend_condition(row: pd.Series) -> bool:
-    """
-    Bullish EMA alignment.
-    """
+def _valid_number(value) -> bool:
+    return (
+        value is not None
+        and not pd.isna(value)
+    )
+
+
+# ==========================================
+# 1. TREND
+# ==========================================
+
+def trend_condition(
+    row: pd.Series,
+) -> bool:
 
     return (
+        _valid_number(row["ema_9"])
+        and
+        _valid_number(row["ema_21"])
+        and
+        _valid_number(row["ema_50"])
+        and
         row["ema_9"] > row["ema_21"]
         and
         row["ema_21"] > row["ema_50"]
     )
 
 
-def rsi_condition(row: pd.Series) -> bool:
-    """
-    RSI must be inside the permitted entry range.
-    """
+# ==========================================
+# 2. PRICE ABOVE EMA50
+# ==========================================
+
+def price_above_ema50(
+    row: pd.Series,
+) -> bool:
 
     return (
-        RSI_MIN <=
-        row["rsi_14"] <=
-        RSI_MAX
+        _valid_number(row["close"])
+        and
+        _valid_number(row["ema_50"])
+        and
+        row["close"] > row["ema_50"]
     )
 
 
-def volume_condition(row: pd.Series) -> bool:
-    """
-    Current volume must exceed the
-    configured volume multiplier.
-    """
+# ==========================================
+# 3. RSI
+# ==========================================
 
-    if pd.isna(row["volume_sma_20"]):
+def rsi_condition(
+    row: pd.Series,
+) -> bool:
+
+    return (
+        _valid_number(row["rsi_14"])
+        and
+        RSI_MIN <= row["rsi_14"] <= RSI_MAX
+    )
+
+
+# ==========================================
+# 4. RSI MOMENTUM
+# ==========================================
+
+def rsi_rising(
+    df: pd.DataFrame,
+) -> bool:
+
+    if len(df) < 2:
+        return False
+
+    current = df.iloc[-1]
+    previous = df.iloc[-2]
+
+    if not _valid_number(
+        current["rsi_14"]
+    ):
+        return False
+
+    if not _valid_number(
+        previous["rsi_14"]
+    ):
+        return False
+
+    return (
+        current["rsi_14"] >
+        previous["rsi_14"]
+    )
+
+
+# ==========================================
+# 5. PULLBACK
+# ==========================================
+
+def pullback_condition(
+    df: pd.DataFrame,
+) -> bool:
+
+    if len(df) < 3:
+        return False
+
+    current = df.iloc[-1]
+    previous = df.iloc[-2]
+
+    required = [
+        "low",
+        "close",
+        "ema_9",
+        "ema_21",
+    ]
+
+    for column in required:
+
+        if not _valid_number(
+            current[column]
+        ):
+            return False
+
+        if not _valid_number(
+            previous[column]
+        ):
+            return False
+
+    # Previous candle must have pulled
+    # back towards EMA9 / EMA21.
+    previous_pullback = (
+        previous["low"] <=
+        previous["ema_9"]
+        or
+        previous["low"] <=
+        previous["ema_21"]
+    )
+
+    # Current candle must recover above EMA9.
+    current_recovery = (
+        current["close"] >
+        current["ema_9"]
+    )
+
+    return (
+        previous_pullback
+        and
+        current_recovery
+    )
+
+
+# ==========================================
+# 6. CONFIRMATION CANDLE
+# ==========================================
+
+def confirmation_condition(
+    df: pd.DataFrame,
+) -> bool:
+
+    if len(df) < 2:
+        return False
+
+    current = df.iloc[-1]
+
+    if not _valid_number(
+        current["open"]
+    ):
+        return False
+
+    if not _valid_number(
+        current["close"]
+    ):
+        return False
+
+    # Bullish confirmation candle.
+    return (
+        current["close"] >
+        current["open"]
+    )
+
+
+# ==========================================
+# 7. VOLUME
+# ==========================================
+
+def volume_condition(
+    row: pd.Series,
+) -> bool:
+
+    if not _valid_number(
+        row["volume"]
+    ):
+        return False
+
+    if not _valid_number(
+        row["volume_sma_20"]
+    ):
         return False
 
     return (
@@ -60,82 +222,36 @@ def volume_condition(row: pd.Series) -> bool:
     )
 
 
-def price_condition(row: pd.Series) -> bool:
-    """
-    Price must be above the fast EMA.
-    """
-
-    return (
-        row["close"] >
-        row["ema_9"]
-    )
-
-
-def breakout_condition(
-    df: pd.DataFrame,
-) -> bool:
-    """
-    Current close must break above
-    the highest close of the previous
-    BREAKOUT_CANDLES candles.
-    """
-
-    if len(df) < BREAKOUT_CANDLES + 1:
-        return False
-
-    previous_closes = (
-        df["close"]
-        .iloc[
-            -(BREAKOUT_CANDLES + 1):-1
-        ]
-    )
-
-    if len(previous_closes) != BREAKOUT_CANDLES:
-        return False
-
-    breakout_level = (
-        previous_closes.max()
-    )
-
-    current_close = float(
-        df["close"].iloc[-1]
-    )
-
-    return (
-        current_close >
-        breakout_level
-    )
-
+# ==========================================
+# 8. SPREAD
+# ==========================================
 
 def spread_condition(
     spread: float | None,
 ) -> bool:
-    """
-    Spread filter.
 
-    In historical OHLCV backtests the spread
-    is normally unavailable. Therefore None
-    means that no spread rejection is applied.
-    """
+    # Historical OHLCV data normally does
+    # not contain bid/ask spread.
+    #
+    # None therefore means:
+    # no spread filter available.
 
     if spread is None:
         return True
 
-    return spread <= MAX_SPREAD
+    return (
+        spread <= MAX_SPREAD
+    )
 
 
 # ==========================================
-# Complete BUY Signal
+# COMPLETE BUY SIGNAL
 # ==========================================
 
 def check_buy_signal(
     df: pd.DataFrame,
     spread: float | None = None,
 ) -> bool:
-    """
-    Check whether all entry conditions
-    are satisfied.
-    """
 
     if len(df) < 60:
         return False
@@ -143,7 +259,9 @@ def check_buy_signal(
     row = df.iloc[-1]
 
     required_columns = [
+        "open",
         "close",
+        "low",
         "ema_9",
         "ema_21",
         "ema_50",
@@ -154,7 +272,9 @@ def check_buy_signal(
 
     for column in required_columns:
 
-        if pd.isna(row[column]):
+        if not _valid_number(
+            row[column]
+        ):
             return False
 
     conditions = evaluate_conditions(
@@ -168,34 +288,38 @@ def check_buy_signal(
 
 
 # ==========================================
-# Evaluate Individual Conditions
+# CONDITION EVALUATION
 # ==========================================
 
 def evaluate_conditions(
     df: pd.DataFrame,
     spread: float | None = None,
 ) -> dict[str, bool]:
-    """
-    Return every entry condition separately.
-
-    This is used by both the strategy and
-    the diagnostic system.
-    """
 
     row = df.iloc[-1]
 
     return {
-        "trend": trend_condition(row),
 
-        "rsi": rsi_condition(row),
+        "trend":
+            trend_condition(row),
 
-        "volume": volume_condition(row),
+        "price_above_ema50":
+            price_above_ema50(row),
 
-        "price_above_ema9":
-            price_condition(row),
+        "rsi":
+            rsi_condition(row),
 
-        "breakout":
-            breakout_condition(df),
+        "rsi_rising":
+            rsi_rising(df),
+
+        "pullback":
+            pullback_condition(df),
+
+        "confirmation":
+            confirmation_condition(df),
+
+        "volume":
+            volume_condition(row),
 
         "spread":
             spread_condition(spread),
@@ -203,51 +327,48 @@ def evaluate_conditions(
 
 
 # ==========================================
-# Signal Diagnostics
+# SIGNAL DIAGNOSTICS
 # ==========================================
 
 def diagnose_signals(
     df: pd.DataFrame,
 ) -> dict:
-    """
-    Count how often each entry condition
-    is satisfied.
-
-    The function also counts how many candles
-    pass progressively more conditions.
-    """
 
     if len(df) < 60:
 
         return {
             "candles": len(df),
-            "trend": 0,
-            "rsi": 0,
-            "volume": 0,
-            "price_above_ema9": 0,
-            "breakout": 0,
-            "all_conditions": 0,
+            "valid_candles": 0,
         }
 
     counts = {
         "trend": 0,
+        "price_above_ema50": 0,
         "rsi": 0,
+        "rsi_rising": 0,
+        "pullback": 0,
+        "confirmation": 0,
         "volume": 0,
-        "price_above_ema9": 0,
-        "breakout": 0,
         "all_conditions": 0,
     }
 
     valid_candles = 0
 
-    for i in range(60, len(df)):
+    for i in range(
+        60,
+        len(df),
+    ):
 
-        history = df.iloc[: i + 1]
+        history = df.iloc[
+            : i + 1
+        ]
 
         row = history.iloc[-1]
 
         required_columns = [
+            "open",
             "close",
+            "low",
             "ema_9",
             "ema_21",
             "ema_50",
@@ -260,7 +381,10 @@ def diagnose_signals(
 
         for column in required_columns:
 
-            if pd.isna(row[column]):
+            if not _valid_number(
+                row[column]
+            ):
+
                 valid = False
                 break
 
@@ -278,7 +402,10 @@ def diagnose_signals(
             if name == "all_conditions":
                 continue
 
-            if conditions[name]:
+            if conditions.get(
+                name,
+                False,
+            ):
 
                 counts[name] += 1
 
@@ -286,11 +413,9 @@ def diagnose_signals(
             conditions.values()
         ):
 
-            counts["all_conditions"] += 1
-
-    # --------------------------------------
-    # Percentages
-    # --------------------------------------
+            counts[
+                "all_conditions"
+            ] += 1
 
     percentages = {}
 
@@ -302,28 +427,31 @@ def diagnose_signals(
                 f"{name}_pct"
             ] = (
                 count /
-                valid_candles
-            ) * 100
+                valid_candles *
+                100
+            )
 
     return {
-        "candles": len(df),
-        "valid_candles": valid_candles,
+        "candles":
+            len(df),
+
+        "valid_candles":
+            valid_candles,
+
         **counts,
+
         **percentages,
     }
 
 
 # ==========================================
-# Diagnostic Report
+# DIAGNOSTIC REPORT
 # ==========================================
 
 def print_signal_diagnostics(
     diagnostics: dict,
     symbol: str,
 ) -> None:
-    """
-    Print a readable diagnostic report.
-    """
 
     print()
     print("=" * 60)
@@ -334,28 +462,51 @@ def print_signal_diagnostics(
 
     print(
         f"Candles: "
-        f"{diagnostics['candles']}"
+        f"{diagnostics.get('candles', 0)}"
     )
 
     print(
         f"Valid candles: "
-        f"{diagnostics['valid_candles']}"
+        f"{diagnostics.get('valid_candles', 0)}"
     )
 
     print("-" * 60)
 
     conditions = [
         ("Trend", "trend"),
+        (
+            "Price > EMA50",
+            "price_above_ema50",
+        ),
         ("RSI", "rsi"),
-        ("Volume", "volume"),
-        ("Price > EMA9", "price_above_ema9"),
-        ("Breakout", "breakout"),
-        ("ALL CONDITIONS", "all_conditions"),
+        (
+            "RSI rising",
+            "rsi_rising",
+        ),
+        (
+            "Pullback",
+            "pullback",
+        ),
+        (
+            "Confirmation",
+            "confirmation",
+        ),
+        (
+            "Volume",
+            "volume",
+        ),
+        (
+            "ALL CONDITIONS",
+            "all_conditions",
+        ),
     ]
 
     for label, key in conditions:
 
-        count = diagnostics[key]
+        count = diagnostics.get(
+            key,
+            0,
+        )
 
         percentage = diagnostics.get(
             f"{key}_pct",
@@ -381,6 +532,14 @@ def check_ema_exit(
 ) -> bool:
 
     return (
+        _valid_number(
+            row["ema_9"]
+        )
+        and
+        _valid_number(
+            row["ema_21"]
+        )
+        and
         row["ema_9"] <
         row["ema_21"]
     )
@@ -391,6 +550,10 @@ def check_rsi_exit(
 ) -> bool:
 
     return (
+        _valid_number(
+            row["rsi_14"]
+        )
+        and
         row["rsi_14"] <
         RSI_EXIT
     )
