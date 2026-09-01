@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
+
   backtest:
 
     runs-on: ubuntu-latest
@@ -14,7 +15,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -27,11 +28,10 @@ jobs:
         run: |
           python main.py
 
-      - name: Upload results
+      - name: Upload backtest results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: backtest-results
           path: |
             logs/
-            data/
