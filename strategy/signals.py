@@ -1,28 +1,31 @@
 # ==========================================
 # 20to100 Trading Bot
-# Trading Signals - Strategy v1.0
+# Trading Signals - Strategy v1.1
 # ==========================================
 
 import pandas as pd
 
+from config import (
+    RSI_MIN,
+    RSI_MAX,
+    RSI_EXIT,
+    VOLUME_MULTIPLIER,
+    BREAKOUT_CANDLES,
+    MAX_SPREAD,
+)
 
-def check_buy_signal(df: pd.DataFrame) -> bool:
-    """
-    Check whether all Strategy v1.0 BUY conditions are fulfilled.
 
-    The last row must represent a COMPLETED candle.
-    """
+def check_buy_signal(
+    df: pd.DataFrame,
+    spread: float | None = None,
+) -> bool:
 
     if len(df) < 60:
         return False
 
     row = df.iloc[-1]
 
-    # --------------------------------------
-    # Required data
-    # --------------------------------------
-
-    required_columns = [
+    required = [
         "close",
         "ema_9",
         "ema_21",
@@ -30,152 +33,97 @@ def check_buy_signal(df: pd.DataFrame) -> bool:
         "rsi_14",
         "volume",
         "volume_sma_20",
-        "volume_ratio",
     ]
 
-    for column in required_columns:
+    for column in required:
         if pd.isna(row[column]):
             return False
 
     # --------------------------------------
     # 1. Trend
-    # EMA9 > EMA21 > EMA50
     # --------------------------------------
 
-    trend_ok = (
+    if not (
         row["ema_9"] > row["ema_21"]
-        and row["ema_21"] > row["ema_50"]
-    )
-
-    if not trend_ok:
+        and
+        row["ema_21"] > row["ema_50"]
+    ):
         return False
 
     # --------------------------------------
     # 2. RSI
-    # 55 <= RSI <= 70
     # --------------------------------------
 
-    rsi_ok = (
-        55 <= row["rsi_14"] <= 70
-    )
-
-    if not rsi_ok:
+    if not (
+        RSI_MIN <=
+        row["rsi_14"] <=
+        RSI_MAX
+    ):
         return False
 
     # --------------------------------------
     # 3. Volume
-    # Current volume >= 1.5 × SMA20
     # --------------------------------------
 
-    volume_ok = (
+    if not (
         row["volume"] >=
-        1.5 * row["volume_sma_20"]
-    )
-
-    if not volume_ok:
+        VOLUME_MULTIPLIER *
+        row["volume_sma_20"]
+    ):
         return False
 
     # --------------------------------------
     # 4. Price above EMA9
     # --------------------------------------
 
-    price_above_ema = (
-        row["close"] > row["ema_9"]
-    )
-
-    if not price_above_ema:
+    if row["close"] <= row["ema_9"]:
         return False
 
     # --------------------------------------
-    # 5. Six-candle breakout
-    #
-    # Current close must be greater than
-    # the highest close of the previous
-    # six completed candles.
+    # 5. Breakout
     # --------------------------------------
 
-    previous_6_closes = df["close"].iloc[-7:-1]
+    previous_closes = df[
+        "close"
+    ].iloc[
+        -(BREAKOUT_CANDLES + 1):-1
+    ]
 
-    if len(previous_6_closes) != 6:
+    if len(previous_closes) != BREAKOUT_CANDLES:
         return False
 
-    breakout_level = previous_6_closes.max()
+    breakout_level = previous_closes.max()
 
-    breakout_ok = (
-        row["close"] > breakout_level
-    )
-
-    if not breakout_ok:
+    if row["close"] <= breakout_level:
         return False
 
     # --------------------------------------
     # 6. Spread
-    #
-    # Spread is supplied by the live/paper
-    # execution layer.
-    #
-    # Historical OHLCV data does not contain
-    # bid/ask, so backtesting will handle this
-    # separately.
     # --------------------------------------
 
-    if "spread" in df.columns:
-        spread = row["spread"]
+    if spread is not None:
 
-        if pd.isna(spread):
+        if spread > MAX_SPREAD:
             return False
-
-        if spread > 0.001:
-            return False
-
-    # --------------------------------------
-    # ALL conditions fulfilled
-    # --------------------------------------
 
     return True
 
 
-def check_ema_exit(df: pd.DataFrame) -> bool:
-    """
-    Exit when EMA9 falls below EMA21.
-    """
-
-    if len(df) < 2:
-        return False
-
-    current = df.iloc[-1]
+def check_ema_exit(
+    row: pd.Series,
+) -> bool:
 
     return (
-        current["ema_9"] <
-        current["ema_21"]
+        row["ema_9"] <
+        row["ema_21"]
     )
 
 
-def check_rsi_exit(df: pd.DataFrame) -> bool:
-    """
-    Exit when RSI falls below 45.
-    """
-
-    if len(df) < 1:
-        return False
-
-    current = df.iloc[-1]
-
-    return current["rsi_14"] < 45
-
-
-def check_time_exit(
-    entry_timestamp,
-    current_timestamp,
-    max_minutes=60
+def check_rsi_exit(
+    row: pd.Series,
 ) -> bool:
-    """
-    Exit after the maximum allowed trade duration.
-    """
 
-    duration = (
-        current_timestamp -
-        entry_timestamp
-    ).total_seconds() / 60
-
-    return duration >= max_minutes
+    return (
+        row["rsi_14"] <
+        RSI_EXIT
+    )
