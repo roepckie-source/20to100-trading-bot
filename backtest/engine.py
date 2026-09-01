@@ -1,6 +1,6 @@
 # ==========================================
 # 20to100 Trading Bot
-# Backtest Engine - Strategy v1.0
+# Backtest Engine - Strategy v1.1
 # ==========================================
 
 from dataclasses import dataclass
@@ -9,11 +9,7 @@ from typing import Optional
 import pandas as pd
 
 from strategy.indicators import calculate_indicators
-from strategy.signals import (
-    check_buy_signal,
-    check_ema_exit,
-    check_rsi_exit,
-)
+from strategy.signals import check_buy_signal
 
 
 @dataclass
@@ -25,15 +21,17 @@ class Position:
 
     initial_stop: float
     current_stop: float
-
     risk_per_unit: float
 
     remaining_quantity: float
+    highest_price: float
+
+    realized_profit: float = 0.0
+    total_fees: float = 0.0
+    total_slippage_cost: float = 0.0
 
     partial_1_done: bool = False
     partial_2_done: bool = False
-
-    highest_price: float = 0.0
 
 
 @dataclass
@@ -43,9 +41,10 @@ class Trade:
     exit_time: object
 
     entry_price: float
-    exit_price: float
+    final_exit_price: float
 
-    quantity: float
+    initial_quantity: float
+    remaining_quantity: float
 
     gross_profit: float
     fees: float
@@ -81,21 +80,18 @@ class BacktestEngine:
         self.position: Optional[Position] = None
 
         self.trades = []
-
         self.equity_curve = []
 
-        self.consecutive_losses = 0
-
-    # --------------------------------------
-    # BUY execution
-    # --------------------------------------
+    # ======================================
+    # BUY
+    # ======================================
 
     def execute_buy(
         self,
         symbol,
         timestamp,
         close,
-        atr
+        atr,
     ):
 
         if self.position is not None:
@@ -104,7 +100,7 @@ class BacktestEngine:
         if pd.isna(atr) or atr <= 0:
             return
 
-        # Simulated market BUY including slippage.
+        # Market BUY with slippage.
         entry_price = (
             close *
             (1 + self.slippage_rate)
@@ -126,21 +122,24 @@ class BacktestEngine:
             self.risk_per_trade
         )
 
-        # Quantity calculated from risk.
+        # Quantity based on risk.
         quantity = (
             risk_amount /
             stop_distance
         )
 
-        # Never use more than available balance.
+        # No leverage.
         max_quantity = (
             self.balance /
-            entry_price
+            (
+                entry_price *
+                (1 + self.fee_rate)
+            )
         )
 
         quantity = min(
             quantity,
-            max_quantity
+            max_quantity,
         )
 
         if quantity <= 0:
@@ -162,26 +161,9 @@ class BacktestEngine:
         )
 
         if total_cost > self.balance:
+            return
 
-            quantity = (
-                self.balance /
-                (entry_price * (1 + self.fee_rate))
-            )
-
-            position_value = (
-                quantity *
-                entry_price
-            )
-
-            entry_fee = (
-                position_value *
-                self.fee_rate
-            )
-
-        self.balance -= (
-            position_value +
-            entry_fee
-        )
+        self.balance -= total_cost
 
         self.position = Position(
             symbol=symbol,
@@ -193,32 +175,32 @@ class BacktestEngine:
             risk_per_unit=stop_distance,
             remaining_quantity=quantity,
             highest_price=entry_price,
+            total_fees=entry_fee,
         )
 
-    # --------------------------------------
-    # SELL helper
-    # --------------------------------------
+    # ======================================
+    # PARTIAL SELL
+    # ======================================
 
     def execute_partial_sell(
         self,
         position: Position,
-        price: float,
+        market_price: float,
         quantity: float,
         timestamp,
-        reason: str,
-    ):
+    ) -> float:
 
         if quantity <= 0:
             return 0.0
 
         quantity = min(
             quantity,
-            position.remaining_quantity
+            position.remaining_quantity,
         )
 
-        # Simulated market SELL including slippage.
+        # Market SELL with slippage.
         exit_price = (
-            price *
+            market_price *
             (1 - self.slippage_rate)
         )
 
@@ -227,19 +209,19 @@ class BacktestEngine:
             exit_price
         )
 
-        fee = (
+        exit_fee = (
             gross_value *
             self.fee_rate
         )
 
         net_value = (
             gross_value -
-            fee
+            exit_fee
         )
 
         self.balance += net_value
 
-        # Approximate proportional entry cost.
+        # Proportional entry cost.
         entry_value = (
             quantity *
             position.entry_price
@@ -251,21 +233,38 @@ class BacktestEngine:
         )
 
         gross_profit = (
-            (exit_price - position.entry_price)
-            * quantity
-        )
+            exit_price -
+            position.entry_price
+        ) * quantity
 
         total_fees = (
-            fee +
-            entry_fee
+            entry_fee +
+            exit_fee
         )
 
-        slippage_cost = (
-            (
-                price -
-                exit_price
-            )
-            * quantity
+        # Approximate round-trip slippage cost.
+        theoretical_value = (
+            quantity *
+            position.entry_price
+        )
+
+        actual_entry_value = (
+            quantity *
+            position.entry_price *
+            (1 + self.slippage_rate)
+        )
+
+        actual_exit_value = (
+            quantity *
+            exit_price
+        )
+
+        slippage_cost = abs(
+            actual_entry_value -
+            theoretical_value
+        ) + abs(
+            theoretical_value -
+            actual_exit_value
         )
 
         net_profit = (
@@ -273,44 +272,26 @@ class BacktestEngine:
             total_fees
         )
 
-        r_multiple = (
-            net_profit /
-            (
-                position.risk_per_unit *
-                quantity
-            )
-            if quantity > 0
-            else 0.0
+        position.realized_profit += net_profit
+        position.total_fees += (
+            exit_fee +
+            entry_fee
         )
-
-        trade = Trade(
-            symbol=position.symbol,
-            entry_time=position.entry_time,
-            exit_time=timestamp,
-            entry_price=position.entry_price,
-            exit_price=exit_price,
-            quantity=quantity,
-            gross_profit=gross_profit,
-            fees=total_fees,
-            slippage_cost=slippage_cost,
-            net_profit=net_profit,
-            exit_reason=reason,
-            r_multiple=r_multiple,
+        position.total_slippage_cost += (
+            slippage_cost
         )
-
-        self.trades.append(trade)
 
         position.remaining_quantity -= quantity
 
         return net_profit
 
-    # --------------------------------------
-    # Complete exit
-    # --------------------------------------
+    # ======================================
+    # CLOSE COMPLETE POSITION
+    # ======================================
 
     def close_position(
         self,
-        price,
+        market_price,
         timestamp,
         reason,
     ):
@@ -320,28 +301,62 @@ class BacktestEngine:
 
         position = self.position
 
-        quantity = position.remaining_quantity
+        remaining = position.remaining_quantity
 
-        if quantity > 0:
+        if remaining > 0:
 
             self.execute_partial_sell(
                 position=position,
-                price=price,
-                quantity=quantity,
+                market_price=market_price,
+                quantity=remaining,
                 timestamp=timestamp,
-                reason=reason,
             )
+
+        # Total risk of original position.
+        initial_risk = (
+            position.risk_per_unit *
+            position.quantity
+        )
+
+        if initial_risk > 0:
+            r_multiple = (
+                position.realized_profit /
+                initial_risk
+            )
+        else:
+            r_multiple = 0.0
+
+        trade = Trade(
+            symbol=position.symbol,
+            entry_time=position.entry_time,
+            exit_time=timestamp,
+            entry_price=position.entry_price,
+            final_exit_price=market_price,
+            initial_quantity=position.quantity,
+            remaining_quantity=0.0,
+            gross_profit=(
+                position.realized_profit +
+                position.total_fees
+            ),
+            fees=position.total_fees,
+            slippage_cost=position.total_slippage_cost,
+            net_profit=position.realized_profit,
+            exit_reason=reason,
+            r_multiple=r_multiple,
+        )
+
+        self.trades.append(trade)
 
         self.position = None
 
-    # --------------------------------------
-    # Manage open position
-    # --------------------------------------
+    # ======================================
+    # MANAGE POSITION
+    # ======================================
 
     def manage_position(
         self,
         row,
-        previous_rows,
+        history,
     ):
 
         if self.position is None:
@@ -349,9 +364,9 @@ class BacktestEngine:
 
         position = self.position
 
-        high = row["high"]
-        low = row["low"]
-        close = row["close"]
+        high = float(row["high"])
+        low = float(row["low"])
+        close = float(row["close"])
 
         # ----------------------------------
         # Update highest price
@@ -361,13 +376,17 @@ class BacktestEngine:
             position.highest_price = high
 
         # ----------------------------------
-        # STOP LOSS
+        # STOP FIRST
+        #
+        # Conservative assumption:
+        # if both stop and target are touched
+        # within the same candle, stop wins.
         # ----------------------------------
 
         if low <= position.current_stop:
 
             self.close_position(
-                price=position.current_stop,
+                market_price=position.current_stop,
                 timestamp=row.name,
                 reason="STOP_LOSS",
             )
@@ -375,7 +394,7 @@ class BacktestEngine:
             return
 
         # ----------------------------------
-        # 1R partial exit
+        # 1R
         # ----------------------------------
 
         one_r_price = (
@@ -395,31 +414,27 @@ class BacktestEngine:
 
             self.execute_partial_sell(
                 position=position,
-                price=one_r_price,
+                market_price=one_r_price,
                 quantity=quantity,
                 timestamp=row.name,
-                reason="PARTIAL_1R",
             )
 
             position.partial_1_done = True
 
-            # Move stop to break-even
-            # plus approximate fees.
+            # Break-even including entry fee.
             position.current_stop = (
                 position.entry_price *
                 (1 + self.fee_rate)
             )
 
         # ----------------------------------
-        # 2R partial exit
+        # 2R
         # ----------------------------------
 
         two_r_price = (
             position.entry_price +
-            (
-                position.risk_per_unit *
-                self.take_profit_r
-            )
+            position.risk_per_unit *
+            self.take_profit_r
         )
 
         if (
@@ -434,10 +449,9 @@ class BacktestEngine:
 
             self.execute_partial_sell(
                 position=position,
-                price=two_r_price,
+                market_price=two_r_price,
                 quantity=quantity,
                 timestamp=row.name,
-                reason="PARTIAL_2R",
             )
 
             position.partial_2_done = True
@@ -450,29 +464,38 @@ class BacktestEngine:
 
             atr = row["atr_14"]
 
-            if not pd.isna(atr) and atr > 0:
+            if (
+                not pd.isna(atr)
+                and atr > 0
+            ):
 
                 trailing_stop = (
                     position.highest_price -
                     atr
                 )
 
-                if trailing_stop > position.current_stop:
+                if (
+                    trailing_stop >
+                    position.current_stop
+                ):
 
                     position.current_stop = (
                         trailing_stop
                     )
 
         # ----------------------------------
-        # EMA exit
+        # EMA EXIT
         # ----------------------------------
 
-        if check_ema_exit(
-            previous_rows
-        ):
+        ema_exit = (
+            row["ema_9"] <
+            row["ema_21"]
+        )
+
+        if ema_exit:
 
             self.close_position(
-                price=close,
+                market_price=close,
                 timestamp=row.name,
                 reason="EMA_EXIT",
             )
@@ -480,15 +503,13 @@ class BacktestEngine:
             return
 
         # ----------------------------------
-        # RSI exit
+        # RSI EXIT
         # ----------------------------------
 
-        if check_rsi_exit(
-            previous_rows
-        ):
+        if row["rsi_14"] < 45:
 
             self.close_position(
-                price=close,
+                market_price=close,
                 timestamp=row.name,
                 reason="RSI_EXIT",
             )
@@ -496,7 +517,7 @@ class BacktestEngine:
             return
 
         # ----------------------------------
-        # Time stop
+        # TIME STOP
         # ----------------------------------
 
         duration_minutes = (
@@ -507,14 +528,14 @@ class BacktestEngine:
         if duration_minutes >= 60:
 
             self.close_position(
-                price=close,
+                market_price=close,
                 timestamp=row.name,
                 reason="TIME_STOP",
             )
 
-    # --------------------------------------
-    # Main backtest
-    # --------------------------------------
+    # ======================================
+    # RUN BACKTEST
+    # ======================================
 
     def run(
         self,
@@ -535,39 +556,39 @@ class BacktestEngine:
 
             history = df.iloc[: i + 1]
 
-            # ------------------------------
+            # --------------------------------
             # Manage existing position
-            # ------------------------------
+            # --------------------------------
 
             if self.position is not None:
 
                 self.manage_position(
                     row=current,
-                    previous_rows=history,
+                    history=history,
                 )
 
-            # ------------------------------
-            # Look for new entry
-            # ------------------------------
+            # --------------------------------
+            # New entry
+            # --------------------------------
 
             if self.position is None:
 
-                signal = check_buy_signal(
-                    history
-                )
-
-                if signal:
+                if check_buy_signal(history):
 
                     self.execute_buy(
                         symbol=symbol,
                         timestamp=current.name,
-                        close=current["close"],
-                        atr=current["atr_14"],
+                        close=float(
+                            current["close"]
+                        ),
+                        atr=float(
+                            current["atr_14"]
+                        ),
                     )
 
-            # ------------------------------
+            # --------------------------------
             # Equity
-            # ------------------------------
+            # --------------------------------
 
             equity = self.balance
 
@@ -575,7 +596,7 @@ class BacktestEngine:
 
                 equity += (
                     self.position.remaining_quantity *
-                    current["close"]
+                    float(current["close"])
                 )
 
             self.equity_curve.append(
@@ -585,13 +606,18 @@ class BacktestEngine:
                 }
             )
 
-        # Close remaining position at final price.
+        # ------------------------------------
+        # Close open position at end
+        # ------------------------------------
+
         if self.position is not None:
 
             final_row = df.iloc[-1]
 
             self.close_position(
-                price=final_row["close"],
+                market_price=float(
+                    final_row["close"]
+                ),
                 timestamp=final_row.name,
                 reason="END_OF_TEST",
             )
