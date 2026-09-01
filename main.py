@@ -1,8 +1,8 @@
 # ==========================================
 # 20to100 Trading Bot
 # Main Backtest Runner
-# Strategy v3.0
-# Entry Quality Analyzer
+# Strategy v3.1
+# Targeted Entry Combination Analyzer
 # ==========================================
 
 from pathlib import Path
@@ -33,28 +33,22 @@ from strategy.signals import (
 
 
 # ==========================================
-# ENTRY TESTS
+# TEST SETUPS
 # ==========================================
 
 ENTRY_TESTS = {
+
+    # --------------------------------------
+    # Baseline
+    # --------------------------------------
 
     "TREND": [
         "trend",
     ],
 
-    "TREND + PRICE EMA50": [
+    "TREND + VOLUME": [
         "trend",
-        "price_above_ema50",
-    ],
-
-    "TREND + RSI": [
-        "trend",
-        "rsi",
-    ],
-
-    "TREND + RSI RISING": [
-        "trend",
-        "rsi_rising",
+        "volume",
     ],
 
     "TREND + PULLBACK": [
@@ -67,10 +61,38 @@ ENTRY_TESTS = {
         "confirmation",
     ],
 
-    "TREND + VOLUME": [
+    # --------------------------------------
+    # Core combinations
+    # --------------------------------------
+
+    "TREND + PULLBACK + CONFIRMATION": [
         "trend",
+        "pullback",
+        "confirmation",
+    ],
+
+    "TREND + PULLBACK + VOLUME": [
+        "trend",
+        "pullback",
         "volume",
     ],
+
+    "TREND + CONFIRMATION + VOLUME": [
+        "trend",
+        "confirmation",
+        "volume",
+    ],
+
+    "TREND + PULLBACK + CONFIRMATION + VOLUME": [
+        "trend",
+        "pullback",
+        "confirmation",
+        "volume",
+    ],
+
+    # --------------------------------------
+    # RSI variants
+    # --------------------------------------
 
     "TREND + RSI + PULLBACK": [
         "trend",
@@ -84,8 +106,15 @@ ENTRY_TESTS = {
         "confirmation",
     ],
 
-    "TREND + PULLBACK + CONFIRMATION": [
+    "TREND + RSI + VOLUME": [
         "trend",
+        "rsi",
+        "volume",
+    ],
+
+    "TREND + RSI + PULLBACK + CONFIRMATION": [
+        "trend",
+        "rsi",
         "pullback",
         "confirmation",
     ],
@@ -97,6 +126,13 @@ ENTRY_TESTS = {
         "volume",
     ],
 
+    "TREND + RSI + CONFIRMATION + VOLUME": [
+        "trend",
+        "rsi",
+        "confirmation",
+        "volume",
+    ],
+
     "TREND + RSI + PULLBACK + CONFIRMATION + VOLUME": [
         "trend",
         "rsi",
@@ -104,6 +140,77 @@ ENTRY_TESTS = {
         "confirmation",
         "volume",
     ],
+
+    # --------------------------------------
+    # RSI rising variants
+    # --------------------------------------
+
+    "TREND + RSI RISING + VOLUME": [
+        "trend",
+        "rsi_rising",
+        "volume",
+    ],
+
+    "TREND + RSI + RSI RISING + VOLUME": [
+        "trend",
+        "rsi",
+        "rsi_rising",
+        "volume",
+    ],
+
+    "TREND + RSI + RSI RISING + PULLBACK + VOLUME": [
+        "trend",
+        "rsi",
+        "rsi_rising",
+        "pullback",
+        "volume",
+    ],
+
+    "TREND + RSI + RSI RISING + PULLBACK + CONFIRMATION": [
+        "trend",
+        "rsi",
+        "rsi_rising",
+        "pullback",
+        "confirmation",
+    ],
+
+    "TREND + RSI + RSI RISING + PULLBACK + CONFIRMATION + VOLUME": [
+        "trend",
+        "rsi",
+        "rsi_rising",
+        "pullback",
+        "confirmation",
+        "volume",
+    ],
+
+    # --------------------------------------
+    # EMA50 variants
+    # --------------------------------------
+
+    "TREND + EMA50 + VOLUME": [
+        "trend",
+        "price_above_ema50",
+        "volume",
+    ],
+
+    "TREND + EMA50 + PULLBACK + CONFIRMATION": [
+        "trend",
+        "price_above_ema50",
+        "pullback",
+        "confirmation",
+    ],
+
+    "TREND + EMA50 + PULLBACK + CONFIRMATION + VOLUME": [
+        "trend",
+        "price_above_ema50",
+        "pullback",
+        "confirmation",
+        "volume",
+    ],
+
+    # --------------------------------------
+    # Original strategy
+    # --------------------------------------
 
     "ALL CONDITIONS": [
         "trend",
@@ -118,22 +225,39 @@ ENTRY_TESTS = {
 
 
 # ==========================================
-# CONDITION MASKS
+# BUILD CONDITION MASKS
 # ==========================================
 
 def build_condition_masks(df):
 
+    condition_names = [
+        "trend",
+        "price_above_ema50",
+        "rsi",
+        "rsi_rising",
+        "pullback",
+        "confirmation",
+        "volume",
+    ]
+
     masks = {
-        "trend": [],
-        "price_above_ema50": [],
-        "rsi": [],
-        "rsi_rising": [],
-        "pullback": [],
-        "confirmation": [],
-        "volume": [],
+        name: []
+        for name in condition_names
     }
 
     valid_rows = []
+
+    required_columns = [
+        "open",
+        "close",
+        "low",
+        "ema_9",
+        "ema_21",
+        "ema_50",
+        "rsi_14",
+        "volume",
+        "volume_sma_20",
+    ]
 
     for i in range(60, len(df)):
 
@@ -141,31 +265,15 @@ def build_condition_masks(df):
 
         row = history.iloc[-1]
 
-        required_columns = [
-            "open",
-            "close",
-            "low",
-            "ema_9",
-            "ema_21",
-            "ema_50",
-            "rsi_14",
-            "volume",
-            "volume_sma_20",
-        ]
-
         valid = True
 
         for column in required_columns:
 
             if column not in row.index:
-
                 valid = False
                 break
 
-            value = row[column]
-
-            if value is None or pd.isna(value):
-
+            if pd.isna(row[column]):
                 valid = False
                 break
 
@@ -173,7 +281,7 @@ def build_condition_masks(df):
 
             valid_rows.append(False)
 
-            for name in masks:
+            for name in condition_names:
                 masks[name].append(False)
 
             continue
@@ -189,14 +297,14 @@ def build_condition_masks(df):
 
             valid_rows.append(False)
 
-            for name in masks:
+            for name in condition_names:
                 masks[name].append(False)
 
             continue
 
         valid_rows.append(True)
 
-        for name in masks:
+        for name in condition_names:
 
             masks[name].append(
                 bool(
@@ -207,15 +315,9 @@ def build_condition_masks(df):
                 )
             )
 
-    # --------------------------------------
-    # IMPORTANT:
-    # All masks use exactly the same index
-    # as df.iloc[60:]
-    # --------------------------------------
-
     index = df.index[60:]
 
-    for name in masks:
+    for name in condition_names:
 
         masks[name] = pd.Series(
             masks[name],
@@ -267,14 +369,6 @@ def forward_return_analysis(
 
     close = df["close"]
 
-    results = {}
-
-    # --------------------------------------
-    # FIX:
-    # Align signal mask explicitly to the
-    # complete dataframe index.
-    # --------------------------------------
-
     signal_mask = (
         signal_mask
         .reindex(
@@ -283,6 +377,8 @@ def forward_return_analysis(
         )
         .astype(bool)
     )
+
+    results = {}
 
     for candles in [
         3,
@@ -302,11 +398,6 @@ def forward_return_analysis(
             )
             - 1
         ) * 100
-
-        # ----------------------------------
-        # Remove final candles where no
-        # future price exists.
-        # ----------------------------------
 
         valid = (
             signal_mask
@@ -369,32 +460,26 @@ def run_entry_quality_test(
 
     print()
     print("=" * 110)
-
     print(
         f"ENTRY QUALITY TEST: {symbol}"
     )
-
     print("=" * 110)
 
     print()
     print(
-        "Forward return:"
+        "3 candles  = 15 minutes"
     )
 
     print(
-        "3 candles  = 15 min"
+        "6 candles  = 30 minutes"
     )
 
     print(
-        "6 candles  = 30 min"
+        "12 candles = 60 minutes"
     )
 
     print(
-        "12 candles = 60 min"
-    )
-
-    print(
-        "24 candles = 120 min"
+        "24 candles = 120 minutes"
     )
 
     print()
@@ -406,12 +491,12 @@ def run_entry_quality_test(
     )
 
     print(
-        f"{'Setup':<55}"
+        f"{'Setup':<62}"
         f"{'Signals':>9}"
-        f"{'15m':>11}"
-        f"{'30m':>11}"
-        f"{'60m':>11}"
-        f"{'120m':>11}"
+        f"{'15m':>10}"
+        f"{'30m':>10}"
+        f"{'60m':>10}"
+        f"{'120m':>10}"
     )
 
     print("-" * 110)
@@ -447,13 +532,17 @@ def run_entry_quality_test(
         avg_12 = analysis[12]["average"]
         avg_24 = analysis[24]["average"]
 
+        positive_12 = (
+            analysis[12]["positive_pct"]
+        )
+
         print(
-            f"{name:<55}"
+            f"{name:<62}"
             f"{signals:>9}"
-            f"{avg_3:>10.3f}%"
-            f"{avg_6:>10.3f}%"
-            f"{avg_12:>10.3f}%"
-            f"{avg_24:>10.3f}%"
+            f"{avg_3:>9.3f}%"
+            f"{avg_6:>9.3f}%"
+            f"{avg_12:>9.3f}%"
+            f"{avg_24:>9.3f}%"
         )
 
         results.append(
@@ -478,9 +567,7 @@ def run_entry_quality_test(
                     ],
 
                 "positive_12":
-                    analysis[12][
-                        "positive_pct"
-                    ],
+                    positive_12,
 
                 "positive_24":
                     analysis[24][
@@ -491,41 +578,32 @@ def run_entry_quality_test(
 
     print("-" * 110)
 
-    if not results:
-
-        print(
-            "No valid results."
-        )
-
-        print(
-            "=" * 110
-        )
-
-        return []
-
     # ======================================
     # BEST SETUPS
     # ======================================
 
-    best_3 = max(
+    if not results:
+        return []
+
+    best_15m = max(
         results,
         key=lambda x:
             x["avg_3"],
     )
 
-    best_6 = max(
+    best_30m = max(
         results,
         key=lambda x:
             x["avg_6"],
     )
 
-    best_12 = max(
+    best_60m = max(
         results,
         key=lambda x:
             x["avg_12"],
     )
 
-    best_24 = max(
+    best_120m = max(
         results,
         key=lambda x:
             x["avg_24"],
@@ -540,51 +618,109 @@ def run_entry_quality_test(
 
     print(
         f"15 min : "
-        f"{best_3['name']} "
-        f"({best_3['avg_3']:+.3f}%)"
+        f"{best_15m['name']} "
+        f"({best_15m['avg_3']:+.3f}%)"
     )
 
     print(
         f"30 min : "
-        f"{best_6['name']} "
-        f"({best_6['avg_6']:+.3f}%)"
+        f"{best_30m['name']} "
+        f"({best_30m['avg_6']:+.3f}%)"
     )
 
     print(
         f"60 min : "
-        f"{best_12['name']} "
-        f"({best_12['avg_12']:+.3f}%)"
+        f"{best_60m['name']} "
+        f"({best_60m['avg_12']:+.3f}%)"
     )
 
     print(
         f"120 min: "
-        f"{best_24['name']} "
-        f"({best_24['avg_24']:+.3f}%)"
+        f"{best_120m['name']} "
+        f"({best_120m['avg_24']:+.3f}%)"
     )
+
+    # ======================================
+    # RANKING
+    # ======================================
 
     print()
     print(
-        "BEST SETUP BY 60-MINUTE RETURN:"
+        "TOP 5 BY 60-MINUTE FORWARD RETURN"
     )
 
-    print(
-        f"  {best_12['name']}"
+    print("-" * 110)
+
+    ranked = sorted(
+        results,
+        key=lambda x:
+            x["avg_12"],
+        reverse=True,
     )
 
+    for rank, result in enumerate(
+        ranked[:5],
+        start=1,
+    ):
+
+        print(
+            f"{rank}. "
+            f"{result['name']}"
+        )
+
+        print(
+            f"   Signals: "
+            f"{result['signals']}"
+        )
+
+        print(
+            f"   60m: "
+            f"{result['avg_12']:+.3f}%"
+        )
+
+        print(
+            f"   Positive: "
+            f"{result['positive_12']:.2f}%"
+        )
+
+    print()
     print(
-        f"  Signals: "
-        f"{best_12['signals']}"
+        "TOP 5 BY 120-MINUTE FORWARD RETURN"
     )
 
-    print(
-        f"  Average: "
-        f"{best_12['avg_12']:+.3f}%"
+    print("-" * 110)
+
+    ranked_120 = sorted(
+        results,
+        key=lambda x:
+            x["avg_24"],
+        reverse=True,
     )
 
-    print(
-        f"  Positive: "
-        f"{best_12['positive_12']:.2f}%"
-    )
+    for rank, result in enumerate(
+        ranked_120[:5],
+        start=1,
+    ):
+
+        print(
+            f"{rank}. "
+            f"{result['name']}"
+        )
+
+        print(
+            f"   Signals: "
+            f"{result['signals']}"
+        )
+
+        print(
+            f"   120m: "
+            f"{result['avg_24']:+.3f}%"
+        )
+
+        print(
+            f"   Positive: "
+            f"{result['positive_24']:.2f}%"
+        )
 
     print("=" * 110)
 
@@ -603,11 +739,11 @@ def save_entry_results(
     if not results:
         return
 
-    output = []
+    rows = []
 
     for result in results:
 
-        output.append(
+        rows.append(
             {
                 "symbol":
                     symbol,
@@ -645,10 +781,10 @@ def save_entry_results(
         )
 
     output_df = pd.DataFrame(
-        output
+        rows
     )
 
-    file = (
+    output_file = (
         Path("logs")
         /
         (
@@ -657,17 +793,18 @@ def save_entry_results(
                 "_",
             )
             +
-            "_entry_quality.csv"
+            "_entry_quality_v3_1.csv"
         )
     )
 
     output_df.to_csv(
-        file,
+        output_file,
         index=False,
     )
 
     print(
-        f"Entry quality log: {file}"
+        f"Entry quality log: "
+        f"{output_file}"
     )
 
 
@@ -687,19 +824,15 @@ def main():
 
     print()
     print("=" * 70)
-
     print(
         "20→100 TRADING BOT"
     )
-
     print(
-        "Strategy v3.0"
+        "Strategy v3.1"
     )
-
     print(
-        "ENTRY QUALITY ANALYZER"
+        "TARGETED ENTRY ANALYZER"
     )
-
     print("=" * 70)
 
     all_results = []
@@ -708,11 +841,9 @@ def main():
 
         print()
         print("-" * 70)
-
         print(
             f"ANALYSIS: {symbol}"
         )
-
         print("-" * 70)
 
         filename = (
@@ -735,7 +866,7 @@ def main():
         )
 
         # ==================================
-        # LOAD DATA
+        # DATA
         # ==================================
 
         if data_file.exists():
@@ -793,7 +924,7 @@ def main():
         )
 
         # ==================================
-        # SIGNAL DIAGNOSTICS
+        # ORIGINAL DIAGNOSTICS
         # ==================================
 
         print()
@@ -825,7 +956,7 @@ def main():
             )
 
         # ==================================
-        # ENTRY QUALITY
+        # QUALITY ANALYSIS
         # ==================================
 
         results = (
@@ -856,11 +987,9 @@ def main():
 
     print()
     print("=" * 110)
-
     print(
-        "20→100 ENTRY QUALITY SUMMARY"
+        "20→100 TARGETED ENTRY SUMMARY"
     )
-
     print("=" * 110)
 
     for market in all_results:
@@ -876,10 +1005,16 @@ def main():
         if not results:
             continue
 
-        best = max(
+        best_60 = max(
             results,
             key=lambda x:
                 x["avg_12"],
+        )
+
+        best_120 = max(
+            results,
+            key=lambda x:
+                x["avg_24"],
         )
 
         print()
@@ -888,47 +1023,52 @@ def main():
         )
 
         print(
-            f"Best setup:        "
-            f"{best['name']}"
+            f"Best 60m setup:   "
+            f"{best_60['name']}"
         )
 
         print(
-            f"Signals:           "
-            f"{best['signals']}"
+            f"Signals:          "
+            f"{best_60['signals']}"
         )
 
         print(
-            f"15 min:            "
-            f"{best['avg_3']:+.3f}%"
+            f"60m return:       "
+            f"{best_60['avg_12']:+.3f}%"
         )
 
         print(
-            f"30 min:            "
-            f"{best['avg_6']:+.3f}%"
+            f"Positive 60m:     "
+            f"{best_60['positive_12']:.2f}%"
+        )
+
+        print()
+
+        print(
+            f"Best 120m setup:  "
+            f"{best_120['name']}"
         )
 
         print(
-            f"60 min:            "
-            f"{best['avg_12']:+.3f}%"
+            f"Signals:          "
+            f"{best_120['signals']}"
         )
 
         print(
-            f"120 min:           "
-            f"{best['avg_24']:+.3f}%"
+            f"120m return:      "
+            f"{best_120['avg_24']:+.3f}%"
         )
 
         print(
-            f"Positive 60 min:   "
-            f"{best['positive_12']:.2f}%"
+            f"Positive 120m:    "
+            f"{best_120['positive_24']:.2f}%"
         )
 
     print()
     print("=" * 110)
-
     print(
-        "ENTRY QUALITY TEST COMPLETE"
+        "TARGETED ENTRY TEST COMPLETE"
     )
-
     print("=" * 110)
 
 
