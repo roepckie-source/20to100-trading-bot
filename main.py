@@ -38,6 +38,223 @@ from backtest.metrics import (
 )
 
 
+def print_result_line(
+    symbol,
+    starting_capital,
+    final_capital,
+    trades,
+):
+    """
+    Print compact result for one market.
+    """
+
+    profit_loss = (
+        final_capital -
+        starting_capital
+    )
+
+    return_pct = (
+        profit_loss /
+        starting_capital *
+        100
+    )
+
+    progress_to_100 = (
+        final_capital /
+        100 *
+        100
+    )
+
+    if final_capital >= 100:
+
+        status = "🎯 TARGET REACHED"
+
+    elif profit_loss > 0:
+
+        status = "🟢 PROFITABLE"
+
+    elif profit_loss < 0:
+
+        status = "🔴 LOSS"
+
+    else:
+
+        status = "⚪ BREAK-EVEN"
+
+    print()
+    print("=" * 60)
+    print(
+        f"20→100 RESULT: {symbol}"
+    )
+    print("=" * 60)
+
+    print(
+        f"Starting capital:  ${starting_capital:.2f}"
+    )
+
+    print(
+        f"Final capital:     ${final_capital:.2f}"
+    )
+
+    print(
+        f"Profit/Loss:       "
+        f"${profit_loss:+.2f}"
+    )
+
+    print(
+        f"Return:            "
+        f"{return_pct:+.2f}%"
+    )
+
+    print(
+        f"Progress to $100:  "
+        f"{progress_to_100:.2f}%"
+    )
+
+    print(
+        f"Trades:            "
+        f"{len(trades)}"
+    )
+
+    print(
+        f"Status:             {status}"
+    )
+
+    print("=" * 60)
+
+
+def print_portfolio_result(
+    starting_capital,
+    results,
+):
+    """
+    Print combined portfolio result.
+
+    Each market is treated as a separate
+    strategy test. The portfolio figure is
+    calculated from the average result so
+    that BTC and ETH are compared on equal
+    starting capital.
+    """
+
+    if not results:
+        return
+
+    # --------------------------------------
+    # Calculate average final capital
+    # --------------------------------------
+
+    final_capitals = [
+        result["final_capital"]
+        for result in results
+    ]
+
+    average_final_capital = (
+        sum(final_capitals)
+        /
+        len(final_capitals)
+    )
+
+    profit_loss = (
+        average_final_capital -
+        starting_capital
+    )
+
+    return_pct = (
+        profit_loss /
+        starting_capital *
+        100
+    )
+
+    progress_to_100 = (
+        average_final_capital /
+        100 *
+        100
+    )
+
+    total_trades = sum(
+        result["trades"]
+        for result in results
+    )
+
+    total_winners = sum(
+        result["winners"]
+        for result in results
+    )
+
+    total_losers = sum(
+        result["losers"]
+        for result in results
+    )
+
+    if average_final_capital >= 100:
+
+        status = "🎯 TARGET REACHED"
+
+    elif profit_loss > 0:
+
+        status = "🟢 PROFITABLE"
+
+    elif profit_loss < 0:
+
+        status = "🔴 LOSS"
+
+    else:
+
+        status = "⚪ BREAK-EVEN"
+
+    print()
+    print("=" * 60)
+    print("20→100 PORTFOLIO RESULT")
+    print("=" * 60)
+
+    print(
+        f"Starting capital:  "
+        f"${starting_capital:.2f}"
+    )
+
+    print(
+        f"Average final:     "
+        f"${average_final_capital:.2f}"
+    )
+
+    print(
+        f"Total P/L:         "
+        f"${profit_loss:+.2f}"
+    )
+
+    print(
+        f"Total return:      "
+        f"{return_pct:+.2f}%"
+    )
+
+    print(
+        f"Progress to $100:  "
+        f"{progress_to_100:.2f}%"
+    )
+
+    print(
+        f"Total trades:      "
+        f"{total_trades}"
+    )
+
+    print(
+        f"Winners:           "
+        f"{total_winners}"
+    )
+
+    print(
+        f"Losers:            "
+        f"{total_losers}"
+    )
+
+    print(
+        f"Status:             {status}"
+    )
+
+    print("=" * 60)
+
+
 def main():
 
     # ======================================
@@ -58,6 +275,8 @@ def main():
     print("Strategy v1.1")
     print("=" * 60)
 
+    results = []
+
     # ======================================
     # Process every market
     # ======================================
@@ -66,7 +285,9 @@ def main():
 
         print()
         print("-" * 60)
-        print(f"BACKTEST: {symbol}")
+        print(
+            f"BACKTEST: {symbol}"
+        )
         print("-" * 60)
 
         # ----------------------------------
@@ -217,10 +438,92 @@ def main():
         )
 
         # ==================================
+        # Determine final capital
+        # ==================================
+
+        equity_curve = (
+            result["equity_curve"]
+        )
+
+        if (
+            not equity_curve.empty
+            and
+            "equity" in equity_curve.columns
+        ):
+
+            final_capital = float(
+                equity_curve[
+                    "equity"
+                ].iloc[-1]
+            )
+
+        else:
+
+            final_capital = float(
+                result["balance"]
+            )
+
+        # ==================================
+        # Trade statistics
+        # ==================================
+
+        trades = result["trades"]
+
+        winners = sum(
+            1
+            for trade in trades
+            if trade.net_profit > 0
+        )
+
+        losers = sum(
+            1
+            for trade in trades
+            if trade.net_profit < 0
+        )
+
+        # ==================================
+        # Result line
+        # ==================================
+
+        print_result_line(
+            symbol=symbol,
+
+            starting_capital=(
+                STARTING_CAPITAL
+            ),
+
+            final_capital=final_capital,
+
+            trades=trades,
+        )
+
+        # ==================================
+        # Store portfolio result
+        # ==================================
+
+        results.append(
+            {
+                "symbol": symbol,
+
+                "final_capital":
+                    final_capital,
+
+                "trades":
+                    len(trades),
+
+                "winners":
+                    winners,
+
+                "losers":
+                    losers,
+            }
+        )
+
+        # ==================================
         # SAVE TRADE LOG
         # ==================================
 
-        if result["trades"]:
+        if trades:
 
             trades_df = pd.DataFrame(
                 [
@@ -262,8 +565,7 @@ def main():
                             trade.r_multiple,
                     }
 
-                    for trade
-                    in result["trades"]
+                    for trade in trades
                 ]
             )
 
@@ -316,6 +618,17 @@ def main():
         print(
             f"Equity log: {equity_file}"
         )
+
+    # ======================================
+    # PORTFOLIO RESULT
+    # ======================================
+
+    print_portfolio_result(
+        starting_capital=(
+            STARTING_CAPITAL
+        ),
+        results=results,
+    )
 
     # ======================================
     # COMPLETE
