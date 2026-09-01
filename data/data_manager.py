@@ -11,15 +11,12 @@ import pandas as pd
 
 
 DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(
+    exist_ok=True
+)
 
 
 def create_exchange():
-    """
-    Create a public OKX exchange connection.
-
-    No API key is required for historical OHLCV data.
-    """
 
     return ccxt.okx({
         "enableRateLimit": True,
@@ -27,85 +24,62 @@ def create_exchange():
 
 
 def fetch_ohlcv(
-    symbol: str = "BTC/USDT",
-    timeframe: str = "5m",
-    days: int = 30,
-) -> pd.DataFrame:
-    """
-    Download historical OHLCV data from OKX.
-
-    Parameters
-    ----------
-    symbol:
-        Trading pair, e.g. BTC/USDT
-
-    timeframe:
-        Candle timeframe, e.g. 5m
-
-    days:
-        Number of historical days to request.
-    """
+    symbol="BTC/USDT",
+    timeframe="5m",
+    days=30,
+):
 
     exchange = create_exchange()
 
-    timeframe_ms = exchange.parse_timeframe(
-        timeframe
-    ) * 1000
+    timeframe_ms = (
+        exchange.parse_timeframe(
+            timeframe
+        ) * 1000
+    )
 
     now = exchange.milliseconds()
 
     since = (
         now -
-        days * 24 * 60 * 60 * 1000
+        days *
+        24 *
+        60 *
+        60 *
+        1000
     )
 
-    all_candles = []
+    candles = []
 
     limit = 100
 
-    print()
     print("=" * 60)
     print("20→100 HISTORICAL DATA")
-    print("=" * 60)
-    print(f"Exchange:  OKX")
-    print(f"Symbol:    {symbol}")
-    print(f"Timeframe: {timeframe}")
-    print(f"Days:      {days}")
     print("=" * 60)
 
     while since < now:
 
         print(
-            f"Downloading from "
-            f"{pd.to_datetime(since, unit='ms')} ..."
+            "Downloading:",
+            pd.to_datetime(
+                since,
+                unit="ms",
+            ),
         )
 
-        try:
+        batch = exchange.fetch_ohlcv(
+            symbol,
+            timeframe=timeframe,
+            since=since,
+            limit=limit,
+        )
 
-            candles = exchange.fetch_ohlcv(
-                symbol,
-                timeframe=timeframe,
-                since=since,
-                limit=limit,
-            )
-
-        except Exception as exc:
-
-            print(
-                f"ERROR while downloading data: {exc}"
-            )
-
-            time.sleep(5)
-            continue
-
-        if not candles:
+        if not batch:
             break
 
-        all_candles.extend(candles)
+        candles.extend(batch)
 
-        last_timestamp = candles[-1][0]
+        last_timestamp = batch[-1][0]
 
-        # Make sure the loop always moves forward.
         next_since = (
             last_timestamp +
             timeframe_ms
@@ -117,20 +91,18 @@ def fetch_ohlcv(
         since = next_since
 
         time.sleep(
-            exchange.rateLimit / 1000
+            exchange.rateLimit /
+            1000
         )
 
-    if not all_candles:
+    if not candles:
+
         raise RuntimeError(
             "No historical data received."
         )
 
-    # --------------------------------------
-    # Create DataFrame
-    # --------------------------------------
-
     df = pd.DataFrame(
-        all_candles,
+        candles,
         columns=[
             "timestamp",
             "open",
@@ -141,45 +113,26 @@ def fetch_ohlcv(
         ],
     )
 
-    # --------------------------------------
-    # Convert timestamp
-    # --------------------------------------
-
     df["timestamp"] = pd.to_datetime(
         df["timestamp"],
         unit="ms",
         utc=True,
     )
 
-    # --------------------------------------
-    # Remove duplicates
-    # --------------------------------------
-
-    df = df.drop_duplicates(
-        subset=["timestamp"]
+    df = (
+        df
+        .drop_duplicates(
+            subset=["timestamp"]
+        )
+        .sort_values("timestamp")
+        .reset_index(drop=True)
     )
-
-    # --------------------------------------
-    # Sort chronologically
-    # --------------------------------------
-
-    df = df.sort_values(
-        "timestamp"
-    ).reset_index(drop=True)
-
-    # --------------------------------------
-    # Set timestamp as index
-    # --------------------------------------
 
     df = df.set_index(
         "timestamp"
     )
 
-    # --------------------------------------
-    # Numeric columns
-    # --------------------------------------
-
-    numeric_columns = [
+    numeric = [
         "open",
         "high",
         "low",
@@ -187,21 +140,17 @@ def fetch_ohlcv(
         "volume",
     ]
 
-    for column in numeric_columns:
+    for column in numeric:
+
         df[column] = pd.to_numeric(
             df[column],
             errors="coerce",
         )
 
-    # --------------------------------------
-    # Remove invalid rows
-    # --------------------------------------
-
     df = df.dropna(
-        subset=numeric_columns
+        subset=numeric
     )
 
-    print()
     print(
         f"Downloaded candles: {len(df)}"
     )
@@ -218,13 +167,10 @@ def fetch_ohlcv(
 
 
 def save_data(
-    df: pd.DataFrame,
-    symbol: str = "BTC/USDT",
-    timeframe: str = "5m",
-) -> Path:
-    """
-    Save OHLCV data locally as CSV.
-    """
+    df,
+    symbol,
+    timeframe,
+):
 
     filename = (
         symbol.replace("/", "_")
@@ -233,7 +179,10 @@ def save_data(
         + ".csv"
     )
 
-    filepath = DATA_DIR / filename
+    filepath = (
+        DATA_DIR /
+        filename
+    )
 
     df.to_csv(filepath)
 
@@ -245,12 +194,9 @@ def save_data(
 
 
 def load_data(
-    symbol: str = "BTC/USDT",
-    timeframe: str = "5m",
-) -> pd.DataFrame:
-    """
-    Load previously downloaded data.
-    """
+    symbol,
+    timeframe,
+):
 
     filename = (
         symbol.replace("/", "_")
@@ -259,33 +205,19 @@ def load_data(
         + ".csv"
     )
 
-    filepath = DATA_DIR / filename
+    filepath = (
+        DATA_DIR /
+        filename
+    )
 
     if not filepath.exists():
 
         raise FileNotFoundError(
-            f"Data file not found: {filepath}"
+            str(filepath)
         )
 
-    df = pd.read_csv(
+    return pd.read_csv(
         filepath,
         index_col="timestamp",
         parse_dates=True,
-    )
-
-    return df
-
-
-if __name__ == "__main__":
-
-    data = fetch_ohlcv(
-        symbol="BTC/USDT",
-        timeframe="5m",
-        days=30,
-    )
-
-    save_data(
-        data,
-        symbol="BTC/USDT",
-        timeframe="5m",
     )
