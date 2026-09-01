@@ -396,7 +396,7 @@ class BacktestEngine:
         # Capital check
         # ----------------------------------
 
-        if total_cost > self.balance:
+        if total_cost > self.balance + 1e-9:
 
             self.reject_entry(
                 "INSUFFICIENT_CAPITAL"
