@@ -103,14 +103,19 @@ class Trade:
 class BacktestEngine:
 
     def __init__(
-        self,
-        starting_balance: float = 20.0,
+    self,
+    starting_balance: float = 20.0,
+    atr_stop_multiplier: float = None,
     ):
-
         self.starting_balance = float(
             starting_balance
         )
 
+        self.atr_stop_multiplier = (
+        ATR_STOP_MULTIPLIER
+        if atr_stop_multiplier is None
+        else float(atr_stop_multiplier)
+        )
         self.balance = float(
             starting_balance
         )
