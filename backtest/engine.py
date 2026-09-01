@@ -1,6 +1,7 @@
 # ==========================================
 # 20to100 Trading Bot
-# Backtest Engine - Strategy v1.1
+# Backtest Engine
+# Strategy v2.0
 # ==========================================
 
 from dataclasses import dataclass
@@ -25,9 +26,7 @@ from config import (
     TRADE_COOLDOWN_MINUTES,
 )
 
-from strategy.indicators import (
-    calculate_indicators,
-)
+from strategy.indicators import calculate_indicators
 
 from strategy.signals import (
     check_buy_signal,
@@ -42,7 +41,7 @@ from risk.risk_manager import (
 
 
 # ==========================================
-# Position
+# POSITION
 # ==========================================
 
 @dataclass
@@ -71,7 +70,7 @@ class Position:
 
 
 # ==========================================
-# Trade
+# TRADE
 # ==========================================
 
 @dataclass
@@ -97,25 +96,37 @@ class Trade:
 
 
 # ==========================================
-# Backtest Engine
+# BACKTEST ENGINE
 # ==========================================
 
 class BacktestEngine:
 
     def __init__(
-    self,
-    starting_balance: float = 20.0,
-    atr_stop_multiplier: float = None,
+        self,
+        starting_balance: float = 20.0,
+        atr_stop_multiplier: float = None,
     ):
+
         self.starting_balance = float(
             starting_balance
         )
 
-        self.atr_stop_multiplier = (
-        ATR_STOP_MULTIPLIER
-        if atr_stop_multiplier is None
-        else float(atr_stop_multiplier)
-        )
+        # ----------------------------------
+        # ATR stop override
+        # ----------------------------------
+
+        if atr_stop_multiplier is None:
+
+            self.atr_stop_multiplier = (
+                float(ATR_STOP_MULTIPLIER)
+            )
+
+        else:
+
+            self.atr_stop_multiplier = float(
+                atr_stop_multiplier
+            )
+
         self.balance = float(
             starting_balance
         )
@@ -140,9 +151,7 @@ class BacktestEngine:
         )
 
         self.cooldown_until = None
-
         self.loss_cooldown_until = None
-
         self.current_day = None
 
         # ----------------------------------
@@ -150,17 +159,15 @@ class BacktestEngine:
         # ----------------------------------
 
         self.signal_count = 0
-
         self.entry_accepted = 0
-
         self.entry_rejected = 0
 
         self.rejection_reasons = {}
 
-        self.debug_signal_limit = 10
+        self.debug_signal_limit = 0
 
     # ======================================
-    # Rejection logger
+    # REJECTION LOGGER
     # ======================================
 
     def reject_entry(
@@ -181,7 +188,7 @@ class BacktestEngine:
         )
 
     # ======================================
-    # Daily reset
+    # DAILY RESET
     # ======================================
 
     def update_day(
@@ -236,7 +243,7 @@ class BacktestEngine:
             return False
 
         # ----------------------------------
-        # Entry price including slippage
+        # Entry price
         # ----------------------------------
 
         entry_price = (
@@ -252,7 +259,7 @@ class BacktestEngine:
         stop_distance = (
             float(atr)
             *
-            ATR_STOP_MULTIPLIER
+            self.atr_stop_multiplier
         )
 
         if stop_distance <= 0:
@@ -262,6 +269,10 @@ class BacktestEngine:
             )
 
             return False
+
+        # ----------------------------------
+        # Stop price
+        # ----------------------------------
 
         stop_price = (
             entry_price -
@@ -326,7 +337,7 @@ class BacktestEngine:
         )
 
         # ----------------------------------
-        # Total capital required
+        # Total cost
         # ----------------------------------
 
         total_cost = (
@@ -334,9 +345,58 @@ class BacktestEngine:
             entry_fee
         )
 
-        # ==================================
-        # DEBUG INFORMATION
-        # ==================================
+        # ----------------------------------
+        # Capital check
+        # ----------------------------------
+
+        if (
+            total_cost >
+            self.balance + 1e-9
+        ):
+
+            self.reject_entry(
+                "INSUFFICIENT_CAPITAL"
+            )
+
+            if debug:
+
+                print(
+                    "ENTRY REJECTED:"
+                    " INSUFFICIENT_CAPITAL"
+                )
+
+            return False
+
+        # ----------------------------------
+        # Create position
+        # ----------------------------------
+
+        self.balance -= total_cost
+
+        self.position = Position(
+
+            symbol=symbol,
+
+            entry_time=timestamp,
+
+            entry_price=entry_price,
+
+            quantity=quantity,
+
+            initial_stop=stop_price,
+
+            current_stop=stop_price,
+
+            risk_per_unit=stop_distance,
+
+            remaining_quantity=quantity,
+
+            highest_price=entry_price,
+
+            total_fees=entry_fee,
+        )
+
+        self.entry_accepted += 1
 
         if debug:
 
@@ -363,6 +423,11 @@ class BacktestEngine:
 
             print(
                 f"ATR:             ${atr:.6f}"
+            )
+
+            print(
+                f"ATR multiplier:  "
+                f"{self.atr_stop_multiplier:.2f}"
             )
 
             print(
@@ -394,70 +459,9 @@ class BacktestEngine:
             )
 
             print(
-                f"Available cash:  ${self.balance:.6f}"
-            )
-
-        # ----------------------------------
-        # Capital check
-        # ----------------------------------
-
-        if total_cost > self.balance + 1e-9:
-
-            self.reject_entry(
-                "INSUFFICIENT_CAPITAL"
-            )
-
-            if debug:
-
-                print(
-                    "❌ ENTRY REJECTED:"
-                    " INSUFFICIENT_CAPITAL"
-                )
-
-            return False
-
-        # ----------------------------------
-        # Create position
-        # ----------------------------------
-
-        self.balance -= total_cost
-
-        self.position = Position(
-            symbol=symbol,
-
-            entry_time=timestamp,
-
-            entry_price=entry_price,
-
-            quantity=quantity,
-
-            initial_stop=stop_price,
-
-            current_stop=stop_price,
-
-            risk_per_unit=stop_distance,
-
-            remaining_quantity=quantity,
-
-            highest_price=entry_price,
-
-            total_fees=entry_fee,
-        )
-
-        self.entry_accepted += 1
-
-        if debug:
-
-            print(
-                "✅ ENTRY ACCEPTED"
-            )
-
-            print(
-                f"Remaining cash: "
+                f"Remaining cash:  "
                 f"${self.balance:.6f}"
             )
-
-            print()
 
         return True
 
@@ -576,9 +580,7 @@ class BacktestEngine:
 
             self.execute_sell(
                 position=position,
-
                 market_price=market_price,
-
                 quantity=(
                     position.remaining_quantity
                 ),
@@ -606,6 +608,7 @@ class BacktestEngine:
         )
 
         trade = Trade(
+
             symbol=position.symbol,
 
             entry_time=position.entry_time,
@@ -719,16 +722,14 @@ class BacktestEngine:
                 market_price=(
                     position.current_stop
                 ),
-
                 timestamp=row.name,
-
                 reason="STOP_LOSS",
             )
 
             return
 
         # ----------------------------------
-        # 1R PARTIAL
+        # 1R
         # ----------------------------------
 
         one_r = (
@@ -751,9 +752,7 @@ class BacktestEngine:
 
             self.execute_sell(
                 position=position,
-
                 market_price=one_r,
-
                 quantity=quantity,
             )
 
@@ -771,7 +770,7 @@ class BacktestEngine:
             )
 
         # ----------------------------------
-        # 2R PARTIAL
+        # 2R
         # ----------------------------------
 
         two_r = (
@@ -794,9 +793,7 @@ class BacktestEngine:
 
             self.execute_sell(
                 position=position,
-
                 market_price=two_r,
-
                 quantity=quantity,
             )
 
@@ -836,9 +833,7 @@ class BacktestEngine:
 
             self.close_position(
                 market_price=close,
-
                 timestamp=row.name,
-
                 reason="EMA_EXIT",
             )
 
@@ -852,9 +847,7 @@ class BacktestEngine:
 
             self.close_position(
                 market_price=close,
-
                 timestamp=row.name,
-
                 reason="RSI_EXIT",
             )
 
@@ -873,9 +866,7 @@ class BacktestEngine:
 
             self.close_position(
                 market_price=close,
-
                 timestamp=row.name,
-
                 reason="TIME_STOP",
             )
 
@@ -890,7 +881,7 @@ class BacktestEngine:
     ):
 
         # ----------------------------------
-        # Calculate indicators
+        # Indicators
         # ----------------------------------
 
         df = calculate_indicators(
@@ -943,7 +934,7 @@ class BacktestEngine:
             )
 
             # ==============================
-            # Existing position
+            # Manage existing position
             # ==============================
 
             if self.position is not None:
@@ -1019,17 +1010,13 @@ class BacktestEngine:
 
                     self.execute_buy(
                         symbol=symbol,
-
                         timestamp=timestamp,
-
                         close=float(
                             current["close"]
                         ),
-
                         atr=float(
                             current["atr_14"]
                         ),
-
                         debug=debug,
                     )
 
@@ -1061,7 +1048,7 @@ class BacktestEngine:
             )
 
         # ==================================
-        # Close final position
+        # Final position
         # ==================================
 
         if self.position is not None:
@@ -1072,14 +1059,12 @@ class BacktestEngine:
                 market_price=float(
                     final["close"]
                 ),
-
                 timestamp=final.name,
-
                 reason="END_OF_TEST",
             )
 
         # ==================================
-        # Diagnostics summary
+        # Diagnostics
         # ==================================
 
         print()
@@ -1088,6 +1073,11 @@ class BacktestEngine:
             f"ENGINE DIAGNOSTICS: {symbol}"
         )
         print("-" * 60)
+
+        print(
+            f"ATR stop multiplier: "
+            f"{self.atr_stop_multiplier:.2f}"
+        )
 
         print(
             f"Signals found:      "
