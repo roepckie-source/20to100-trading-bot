@@ -19,6 +19,15 @@ from data.data_manager import (
     save_data,
 )
 
+from strategy.indicators import (
+    calculate_indicators,
+)
+
+from strategy.signals import (
+    diagnose_signals,
+    print_signal_diagnostics,
+)
+
 from backtest.engine import (
     BacktestEngine,
 )
@@ -26,11 +35,6 @@ from backtest.engine import (
 from backtest.metrics import (
     calculate_metrics,
     print_metrics,
-)
-
-from strategy.signals import (
-    diagnose_signals,
-    print_signal_diagnostics,
 )
 
 
@@ -55,7 +59,7 @@ def main():
     print("=" * 60)
 
     # ======================================
-    # Test every configured market
+    # Process every market
     # ======================================
 
     for symbol in SYMBOLS:
@@ -82,7 +86,7 @@ def main():
         )
 
         # ----------------------------------
-        # Load or download data
+        # Load cached data
         # ----------------------------------
 
         if data_file.exists():
@@ -97,6 +101,10 @@ def main():
                 index_col="timestamp",
                 parse_dates=True,
             )
+
+        # ----------------------------------
+        # Download data
+        # ----------------------------------
 
         else:
 
@@ -138,6 +146,19 @@ def main():
         )
 
         # ==================================
+        # CALCULATE INDICATORS
+        # ==================================
+
+        print()
+        print(
+            "Calculating indicators..."
+        )
+
+        indicator_df = (
+            calculate_indicators(df)
+        )
+
+        # ==================================
         # SIGNAL DIAGNOSTICS
         # ==================================
 
@@ -146,8 +167,10 @@ def main():
             "Analyzing entry conditions..."
         )
 
-        diagnostic_data = diagnose_signals(
-            df
+        diagnostic_data = (
+            diagnose_signals(
+                indicator_df
+            )
         )
 
         print_signal_diagnostics(
@@ -159,13 +182,15 @@ def main():
         # BACKTEST
         # ==================================
 
-        engine = BacktestEngine(
-            starting_balance=STARTING_CAPITAL
-        )
-
         print()
         print(
             "Running strategy backtest..."
+        )
+
+        engine = BacktestEngine(
+            starting_balance=(
+                STARTING_CAPITAL
+            )
         )
 
         result = engine.run(
