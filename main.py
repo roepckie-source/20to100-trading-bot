@@ -1,18 +1,27 @@
 # ==========================================
 # 20to100 Trading Bot
-# Main Backtest Runner - Strategy v1.0
+# Main Backtest Runner
 # ==========================================
 
 from pathlib import Path
 
 import pandas as pd
 
+from config import (
+    SYMBOLS,
+    TIMEFRAME,
+    STARTING_CAPITAL,
+    HISTORICAL_DAYS,
+)
+
 from data.data_manager import (
     fetch_ohlcv,
     save_data,
 )
 
-from backtest.engine import BacktestEngine
+from backtest.engine import (
+    BacktestEngine,
+)
 
 from backtest.metrics import (
     calculate_metrics,
@@ -20,194 +29,186 @@ from backtest.metrics import (
 )
 
 
-# ==========================================
-# Configuration
-# ==========================================
-
-SYMBOL = "BTC/USDT"
-TIMEFRAME = "5m"
-
-HISTORICAL_DAYS = 30
-
-STARTING_CAPITAL = 20.00
-
-FEE_RATE = 0.001
-SLIPPAGE_RATE = 0.0005
-
-RISK_PER_TRADE = 0.015
-
-ATR_STOP_MULTIPLIER = 1.5
-TAKE_PROFIT_R = 2.0
-
-
-# ==========================================
-# Main
-# ==========================================
-
 def main():
+
+    Path("logs").mkdir(
+        exist_ok=True
+    )
+
+    Path("data").mkdir(
+        exist_ok=True
+    )
 
     print()
     print("=" * 60)
     print("20→100 TRADING BOT")
-    print("Strategy v1.0")
+    print("Strategy v1.1")
     print("=" * 60)
 
-    print()
-    print(f"Symbol:           {SYMBOL}")
-    print(f"Timeframe:        {TIMEFRAME}")
-    print(f"Starting capital: ${STARTING_CAPITAL:.2f}")
-    print(f"Historical days:  {HISTORICAL_DAYS}")
-    print()
+    for symbol in SYMBOLS:
 
-    # --------------------------------------
-    # Data file
-    # --------------------------------------
+        print()
+        print("-" * 60)
+        print(f"BACKTEST: {symbol}")
+        print("-" * 60)
 
-    data_file = Path(
-        "data",
-        "BTC_USDT_5m.csv"
-    )
+        filename = (
+            symbol.replace("/", "_")
+            + "_"
+            + TIMEFRAME
+            + ".csv"
+        )
 
-    # --------------------------------------
-    # Load existing data or download
-    # --------------------------------------
+        data_file = (
+            Path("data") /
+            filename
+        )
 
-    if data_file.exists():
+        if data_file.exists():
+
+            print(
+                f"Using cached data: "
+                f"{data_file}"
+            )
+
+            df = pd.read_csv(
+                data_file,
+                index_col="timestamp",
+                parse_dates=True,
+            )
+
+        else:
+
+            df = fetch_ohlcv(
+                symbol=symbol,
+                timeframe=TIMEFRAME,
+                days=HISTORICAL_DAYS,
+            )
+
+            save_data(
+                df,
+                symbol=symbol,
+                timeframe=TIMEFRAME,
+            )
 
         print(
-            f"Using existing data: {data_file}"
+            f"Candles: {len(df)}"
         )
 
-        df = pd.read_csv(
-            data_file,
-            index_col="timestamp",
-            parse_dates=True,
+        engine = BacktestEngine(
+            starting_balance=STARTING_CAPITAL
         )
 
-    else:
-
-        print("No local data found.")
-        print("Downloading historical data...")
-
-        df = fetch_ohlcv(
-            symbol=SYMBOL,
-            timeframe=TIMEFRAME,
-            days=HISTORICAL_DAYS,
+        result = engine.run(
+            df=df,
+            symbol=symbol,
         )
 
-        save_data(
-            df,
-            symbol=SYMBOL,
-            timeframe=TIMEFRAME,
+        metrics = calculate_metrics(
+            trades=result["trades"],
+            equity_curve=result["equity_curve"],
+            starting_balance=STARTING_CAPITAL,
         )
 
-    # --------------------------------------
-    # Data overview
-    # --------------------------------------
+        print_metrics(metrics)
 
-    print()
-    print("-" * 60)
-    print("DATA")
-    print("-" * 60)
+        # ----------------------------------
+        # Trade log
+        # ----------------------------------
 
-    print(f"Candles: {len(df)}")
-    print(f"From:    {df.index.min()}")
-    print(f"To:      {df.index.max()}")
+        if result["trades"]:
 
-    # --------------------------------------
-    # Create engine
-    # --------------------------------------
+            trades_df = pd.DataFrame(
+                [
+                    {
+                        "symbol":
+                            trade.symbol,
 
-    engine = BacktestEngine(
-        starting_balance=STARTING_CAPITAL,
-        fee_rate=FEE_RATE,
-        slippage_rate=SLIPPAGE_RATE,
-        risk_per_trade=RISK_PER_TRADE,
-        atr_stop_multiplier=ATR_STOP_MULTIPLIER,
-        take_profit_r=TAKE_PROFIT_R,
-    )
+                        "entry_time":
+                            trade.entry_time,
 
-    # --------------------------------------
-    # Run backtest
-    # --------------------------------------
+                        "exit_time":
+                            trade.exit_time,
 
-    print()
-    print("-" * 60)
-    print("RUNNING BACKTEST")
-    print("-" * 60)
+                        "entry_price":
+                            trade.entry_price,
 
-    result = engine.run(
-        df=df,
-        symbol=SYMBOL,
-    )
+                        "exit_price":
+                            trade.final_exit_price,
 
-    # --------------------------------------
-    # Calculate metrics
-    # --------------------------------------
+                        "quantity":
+                            trade.initial_quantity,
 
-    metrics = calculate_metrics(
-        trades=result["trades"],
-        equity_curve=result["equity_curve"],
-        starting_balance=STARTING_CAPITAL,
-    )
+                        "gross_profit":
+                            trade.gross_profit,
 
-    # --------------------------------------
-    # Print report
-    # --------------------------------------
+                        "fees":
+                            trade.fees,
 
-    print_metrics(metrics)
+                        "slippage_cost":
+                            trade.slippage_cost,
 
-    # --------------------------------------
-    # Save trades
-    # --------------------------------------
+                        "net_profit":
+                            trade.net_profit,
 
-    if result["trades"]:
+                        "exit_reason":
+                            trade.exit_reason,
 
-        trades_df = pd.DataFrame(
-            [
-                {
-                    "symbol": trade.symbol,
-                    "entry_time": trade.entry_time,
-                    "exit_time": trade.exit_time,
-                    "entry_price": trade.entry_price,
-                    "exit_price": trade.final_exit_price,
-                    "quantity": trade.initial_quantity,
-                    "gross_profit": trade.gross_profit,
-                    "fees": trade.fees,
-                    "slippage_cost": trade.slippage_cost,
-                    "net_profit": trade.net_profit,
-                    "exit_reason": trade.exit_reason,
-                    "r_multiple": trade.r_multiple,
-                }
-                for trade in result["trades"]
-            ]
+                        "r_multiple":
+                            trade.r_multiple,
+                    }
+                    for trade
+                    in result["trades"]
+                ]
+            )
+
+            log_file = (
+                Path("logs") /
+                (
+                    symbol.replace(
+                        "/", "_"
+                    )
+                    + "_trades.csv"
+                )
+            )
+
+            trades_df.to_csv(
+                log_file,
+                index=False,
+            )
+
+            print(
+                f"Trade log: {log_file}"
+            )
+
+        # ----------------------------------
+        # Equity
+        # ----------------------------------
+
+        equity_file = (
+            Path("logs") /
+            (
+                symbol.replace(
+                    "/", "_"
+                )
+                + "_equity.csv"
+            )
         )
 
-        trades_df.to_csv(
-            "logs/trades.csv",
+        result[
+            "equity_curve"
+        ].to_csv(
+            equity_file,
             index=False,
         )
 
         print(
-            "Trade log saved to logs/trades.csv"
+            f"Equity log: {equity_file}"
         )
-
-    # --------------------------------------
-    # Save equity curve
-    # --------------------------------------
-
-    result["equity_curve"].to_csv(
-        "logs/equity.csv",
-        index=False,
-    )
-
-    print(
-        "Equity curve saved to logs/equity.csv"
-    )
 
     print()
     print("=" * 60)
-    print("BACKTEST COMPLETE")
+    print("ALL BACKTESTS COMPLETE")
     print("=" * 60)
 
 
