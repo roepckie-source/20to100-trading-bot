@@ -123,4 +123,4 @@ MAX_TRADE_MINUTES = 60
 # Backtest
 # ------------------------------------------
 
-HISTORICAL_DAYS = 30
+HISTORICAL_DAYS = 180
