@@ -1,6 +1,6 @@
 # ==========================================
 # 20to100 Trading Bot
-# Backtest Engine - Exit Grid v3.0
+# Backtest Engine - Exit Grid v3.1
 # ==========================================
 
 from dataclasses import dataclass
@@ -56,6 +56,7 @@ class Position:
     highest_price: float
 
     realized_profit: float = 0.0
+
     total_fees: float = 0.0
     total_slippage_cost: float = 0.0
 
@@ -115,6 +116,10 @@ class BacktestEngine:
         slippage_rate: float = None,
     ):
 
+        # ==================================
+        # BASIC SETTINGS
+        # ==================================
+
         self.starting_balance = float(
             starting_balance
         )
@@ -170,7 +175,7 @@ class BacktestEngine:
         )
 
         # ==================================
-        # COST PARAMETERS
+        # TRADING COSTS
         # ==================================
 
         self.fee_rate = (
@@ -186,7 +191,7 @@ class BacktestEngine:
         )
 
         # ==================================
-        # STATE
+        # POSITION STATE
         # ==================================
 
         self.position: Optional[Position] = None
@@ -194,6 +199,10 @@ class BacktestEngine:
         self.trades = []
 
         self.equity_curve = []
+
+        # ==================================
+        # RISK MANAGER
+        # ==================================
 
         self.risk_manager = RiskManager(
             starting_balance,
@@ -206,8 +215,14 @@ class BacktestEngine:
             ),
         )
 
+        # ==================================
+        # COOLDOWNS
+        # ==================================
+
         self.cooldown_until = None
+
         self.loss_cooldown_until = None
+
         self.current_day = None
 
         # ==================================
@@ -215,16 +230,42 @@ class BacktestEngine:
         # ==================================
 
         self.signal_count = 0
+
         self.entry_accepted = 0
+
         self.entry_rejected = 0
 
         self.rejection_reasons = {}
 
     # ======================================
+    # REJECTION
+    # ======================================
+
+    def reject_entry(
+        self,
+        reason: str,
+    ):
+
+        self.entry_rejected += 1
+
+        self.rejection_reasons[
+            reason
+        ] = (
+            self.rejection_reasons.get(
+                reason,
+                0,
+            )
+            + 1
+        )
+
+    # ======================================
     # DAY RESET
     # ======================================
 
-    def update_day(self, timestamp):
+    def update_day(
+        self,
+        timestamp,
+    ):
 
         day = timestamp.date()
 
@@ -251,29 +292,52 @@ class BacktestEngine:
         atr,
     ):
 
+        # ----------------------------------
+        # Existing position
+        # ----------------------------------
+
         if self.position is not None:
+
+            self.reject_entry(
+                "POSITION_ALREADY_OPEN"
+            )
+
             return False
 
+        # ----------------------------------
+        # ATR validation
+        # ----------------------------------
+
         if pd.isna(atr) or atr <= 0:
-            self.entry_rejected += 1
+
+            self.reject_entry(
+                "INVALID_ATR"
+            )
+
             return False
 
         if self.balance <= 0:
-            self.entry_rejected += 1
+
+            self.reject_entry(
+                "NO_BALANCE"
+            )
+
             return False
 
         # ----------------------------------
-        # Entry with slippage
+        # Entry execution price
         # ----------------------------------
 
+        market_price = float(close)
+
         entry_price = (
-            float(close)
+            market_price
             *
             (1 + self.slippage_rate)
         )
 
         # ----------------------------------
-        # ATR stop
+        # Stop distance
         # ----------------------------------
 
         stop_distance = (
@@ -283,20 +347,29 @@ class BacktestEngine:
         )
 
         if stop_distance <= 0:
-            self.entry_rejected += 1
+
+            self.reject_entry(
+                "INVALID_STOP_DISTANCE"
+            )
+
             return False
 
         stop_price = (
-            entry_price -
+            entry_price
+            -
             stop_distance
         )
 
         if stop_price <= 0:
-            self.entry_rejected += 1
+
+            self.reject_entry(
+                "INVALID_STOP_PRICE"
+            )
+
             return False
 
         # ----------------------------------
-        # Position size
+        # Position sizing
         # ----------------------------------
 
         quantity = (
@@ -310,50 +383,97 @@ class BacktestEngine:
         )
 
         if quantity <= 0:
-            self.entry_rejected += 1
+
+            self.reject_entry(
+                "ZERO_POSITION_SIZE"
+            )
+
             return False
 
+        # ----------------------------------
+        # Entry cost
+        # ----------------------------------
+
         position_value = (
-            quantity *
+            quantity
+            *
             entry_price
         )
 
         entry_fee = (
-            position_value *
+            position_value
+            *
             self.fee_rate
         )
 
         total_cost = (
-            position_value +
+            position_value
+            +
             entry_fee
         )
 
         if total_cost > self.balance:
-            self.entry_rejected += 1
+
+            self.reject_entry(
+                "INSUFFICIENT_CAPITAL"
+            )
+
             return False
 
         # ----------------------------------
-        # Open position
+        # Entry slippage
+        #
+        # Difference between market price
+        # and actual executed price.
+        # ----------------------------------
+
+        entry_slippage = (
+            quantity
+            *
+            (
+                entry_price
+                -
+                market_price
+            )
+        )
+
+        # ----------------------------------
+        # Deduct actual entry cost
         # ----------------------------------
 
         self.balance -= total_cost
 
+        # ----------------------------------
+        # Create position
+        # ----------------------------------
+
         self.position = Position(
+
             symbol=symbol,
+
             entry_time=timestamp,
 
             entry_price=entry_price,
+
             quantity=quantity,
 
             initial_stop=stop_price,
+
             current_stop=stop_price,
 
             risk_per_unit=stop_distance,
 
             remaining_quantity=quantity,
+
             highest_price=entry_price,
 
+            realized_profit=0.0,
+
             total_fees=entry_fee,
+
+            total_slippage_cost=(
+                entry_slippage
+            ),
         )
 
         self.entry_accepted += 1
@@ -375,98 +495,127 @@ class BacktestEngine:
             return
 
         quantity = min(
-            quantity,
+            float(quantity),
             position.remaining_quantity,
         )
 
         if quantity <= 0:
             return
 
+        market_price = float(
+            market_price
+        )
+
         # ----------------------------------
-        # Exit with slippage
+        # Actual exit execution price
         # ----------------------------------
 
         exit_price = (
-            float(market_price)
+            market_price
             *
             (1 - self.slippage_rate)
         )
 
+        # ----------------------------------
+        # Gross proceeds
+        # ----------------------------------
+
         gross_value = (
-            quantity *
+            quantity
+            *
             exit_price
         )
 
+        # ----------------------------------
+        # EXIT FEE ONLY
+        #
+        # Entry fee was already paid.
+        # It must NOT be charged again.
+        # ----------------------------------
+
         exit_fee = (
-            gross_value *
+            gross_value
+            *
             self.fee_rate
         )
 
-        self.balance += (
-            gross_value -
+        net_cash = (
+            gross_value
+            -
             exit_fee
         )
 
-        entry_value = (
-            quantity *
-            position.entry_price
-        )
+        # ----------------------------------
+        # Add proceeds to cash
+        # ----------------------------------
 
-        entry_fee = (
-            entry_value *
-            self.fee_rate
-        )
+        self.balance += net_cash
+
+        # ----------------------------------
+        # Gross P/L
+        #
+        # Entry price already includes
+        # entry slippage.
+        # Exit price already includes
+        # exit slippage.
+        # ----------------------------------
 
         gross_profit = (
-            exit_price -
+            exit_price
+            -
             position.entry_price
         ) * quantity
+
+        # ----------------------------------
+        # Net P/L for this execution
+        #
+        # Only EXIT fee is deducted here.
+        # ----------------------------------
 
         net_profit = (
             gross_profit
             -
-            entry_fee
-            -
             exit_fee
         )
 
         # ----------------------------------
-        # Cost accounting
+        # Exit slippage
         # ----------------------------------
-
-        entry_slippage = (
-            quantity
-            *
-            position.entry_price
-            *
-            self.slippage_rate
-        )
 
         exit_slippage = (
             quantity
             *
-            float(market_price)
-            *
-            self.slippage_rate
+            (
+                market_price
+                -
+                exit_price
+            )
         )
+
+        # ----------------------------------
+        # Accounting
+        # ----------------------------------
 
         position.realized_profit += (
             net_profit
         )
 
         position.total_fees += (
-            entry_fee +
             exit_fee
         )
 
         position.total_slippage_cost += (
-            entry_slippage +
             exit_slippage
         )
 
         position.remaining_quantity -= (
             quantity
         )
+
+        # Prevent floating-point residue
+        if position.remaining_quantity < 1e-12:
+
+            position.remaining_quantity = 0.0
 
     # ======================================
     # CLOSE POSITION
@@ -484,15 +633,26 @@ class BacktestEngine:
 
         position = self.position
 
+        # ----------------------------------
+        # Close remaining quantity
+        # ----------------------------------
+
         if position.remaining_quantity > 0:
 
             self.execute_sell(
+
                 position=position,
+
                 market_price=market_price,
+
                 quantity=(
                     position.remaining_quantity
                 ),
             )
+
+        # ----------------------------------
+        # Initial risk
+        # ----------------------------------
 
         initial_risk = (
             position.risk_per_unit
@@ -512,31 +672,63 @@ class BacktestEngine:
 
             r_multiple = 0.0
 
+        # ----------------------------------
+        # Gross profit
+        #
+        # Net profit already contains
+        # trading fees except entry fee,
+        # which is already represented in
+        # total_fees and cash accounting.
+        # ----------------------------------
+
         gross_profit = (
             position.realized_profit
             +
             position.total_fees
         )
 
+        # ----------------------------------
+        # Trade object
+        # ----------------------------------
+
         trade = Trade(
+
             symbol=position.symbol,
 
             entry_time=position.entry_time,
+
             exit_time=timestamp,
 
             entry_price=position.entry_price,
+
             final_exit_price=market_price,
 
             initial_quantity=position.quantity,
 
             gross_profit=gross_profit,
+
             fees=position.total_fees,
+
             slippage_cost=(
                 position.total_slippage_cost
             ),
 
             net_profit=(
                 position.realized_profit
+                -
+                # IMPORTANT:
+                # Entry fee was paid from cash
+                # and therefore must be included
+                # in trade P/L.
+                (
+                    position.total_fees
+                    -
+                    sum(
+                        [
+                            0.0
+                        ]
+                    )
+                )
             ),
 
             exit_reason=reason,
@@ -544,14 +736,51 @@ class BacktestEngine:
             r_multiple=r_multiple,
         )
 
-        self.trades.append(trade)
+        # ==================================
+        # IMPORTANT P/L CORRECTION
+        #
+        # position.realized_profit contains:
+        #
+        # gross trading result
+        # - exit fees
+        #
+        # The entry fee was paid when opening
+        # the position and therefore needs to
+        # be included in total trade P/L.
+        # ==================================
+
+        entry_fee_estimate = (
+            position.quantity
+            *
+            position.entry_price
+            *
+            self.fee_rate
+        )
+
+        trade.net_profit = (
+            position.realized_profit
+            -
+            entry_fee_estimate
+        )
+
+        # ----------------------------------
+        # Save trade
+        # ----------------------------------
+
+        self.trades.append(
+            trade
+        )
+
+        # ----------------------------------
+        # Risk manager
+        # ----------------------------------
 
         self.risk_manager.record_trade(
             trade.net_profit
         )
 
         # ----------------------------------
-        # Cooldowns
+        # Cooldown
         # ----------------------------------
 
         if (
@@ -581,13 +810,20 @@ class BacktestEngine:
                 )
             )
 
+        # ----------------------------------
+        # Remove position
+        # ----------------------------------
+
         self.position = None
 
     # ======================================
     # MANAGE POSITION
     # ======================================
 
-    def manage_position(self, row):
+    def manage_position(
+        self,
+        row,
+    ):
 
         if self.position is None:
             return
@@ -596,9 +832,17 @@ class BacktestEngine:
 
         timestamp = row.name
 
-        high = float(row["high"])
-        low = float(row["low"])
-        close = float(row["close"])
+        high = float(
+            row["high"]
+        )
+
+        low = float(
+            row["low"]
+        )
+
+        close = float(
+            row["close"]
+        )
 
         atr = row.get(
             "atr_14",
@@ -620,12 +864,23 @@ class BacktestEngine:
         # ==================================
         # STOP LOSS
         # ==================================
+        #
+        # Conservative candle assumption:
+        # If both stop and target are touched
+        # in the same candle, stop is processed
+        # first.
+        # ==================================
 
         if low <= position.current_stop:
 
             self.close_position(
-                market_price=position.current_stop,
+
+                market_price=(
+                    position.current_stop
+                ),
+
                 timestamp=timestamp,
+
                 reason="STOP_LOSS",
             )
 
@@ -639,10 +894,10 @@ class BacktestEngine:
             return
 
         # ==================================
-        # R LEVELS
+        # PARTIAL EXIT 1
         # ==================================
 
-        one_r_price = (
+        partial_1_price = (
             position.entry_price
             +
             risk_distance
@@ -650,21 +905,10 @@ class BacktestEngine:
             self.partial_exit_1_r
         )
 
-        two_r_price = (
-            position.entry_price
-            +
-            risk_distance
-            *
-            self.partial_exit_2_r
-        )
-
-        # ==================================
-        # PARTIAL EXIT 1
-        # ==================================
-
         if (
             not position.partial_1_done
-            and high >= one_r_price
+            and
+            high >= partial_1_price
         ):
 
             quantity = (
@@ -674,18 +918,22 @@ class BacktestEngine:
             )
 
             self.execute_sell(
+
                 position=position,
-                market_price=one_r_price,
+
+                market_price=partial_1_price,
+
                 quantity=quantity,
             )
 
             position.partial_1_done = True
 
-            # Move stop to break-even
+            # ----------------------------------
+            # Break-even after first partial
+            # ----------------------------------
+
             break_even = (
                 position.entry_price
-                *
-                (1 + self.fee_rate)
             )
 
             position.current_stop = max(
@@ -697,9 +945,18 @@ class BacktestEngine:
         # PARTIAL EXIT 2
         # ==================================
 
+        partial_2_price = (
+            position.entry_price
+            +
+            risk_distance
+            *
+            self.partial_exit_2_r
+        )
+
         if (
             not position.partial_2_done
-            and high >= two_r_price
+            and
+            high >= partial_2_price
         ):
 
             quantity = (
@@ -709,8 +966,11 @@ class BacktestEngine:
             )
 
             self.execute_sell(
+
                 position=position,
-                market_price=two_r_price,
+
+                market_price=partial_2_price,
+
                 quantity=quantity,
             )
 
@@ -722,7 +982,8 @@ class BacktestEngine:
 
         if (
             position.partial_1_done
-            and atr > 0
+            and
+            atr > 0
         ):
 
             trailing_stop = (
@@ -741,20 +1002,13 @@ class BacktestEngine:
             )
 
         # ==================================
-        # TAKE PROFIT
-        # ==================================
-        #
-        # TP = 2 x configured partial exit 2 R
-        #
-        # Example:
-        # partial 2 = 2R
-        # final TP  = 4R
-        #
-        # This makes TP configurable.
+        # FINAL TAKE PROFIT
         # ==================================
 
         take_profit_r = (
-            self.partial_exit_2_r * 2.0
+            self.partial_exit_2_r
+            *
+            2.0
         )
 
         take_profit_price = (
@@ -768,8 +1022,11 @@ class BacktestEngine:
         if high >= take_profit_price:
 
             self.close_position(
+
                 market_price=take_profit_price,
+
                 timestamp=timestamp,
+
                 reason="TAKE_PROFIT",
             )
 
@@ -780,7 +1037,8 @@ class BacktestEngine:
         # ==================================
 
         elapsed_minutes = (
-            timestamp -
+            timestamp
+            -
             position.entry_time
         ).total_seconds() / 60.0
 
@@ -791,8 +1049,11 @@ class BacktestEngine:
         ):
 
             self.close_position(
+
                 market_price=close,
+
                 timestamp=timestamp,
+
                 reason="TIME_STOP",
             )
 
@@ -807,12 +1068,16 @@ class BacktestEngine:
         conditions: list[str],
     ):
 
+        # ----------------------------------
+        # Indicators
+        # ----------------------------------
+
         df = calculate_indicators(
             df.copy()
         )
 
         # ----------------------------------
-        # Reset
+        # Reset state
         # ----------------------------------
 
         self.balance = (
@@ -837,9 +1102,11 @@ class BacktestEngine:
 
         self.entry_rejected = 0
 
-        # ----------------------------------
-        # Main loop
-        # ----------------------------------
+        self.rejection_reasons = {}
+
+        # ==================================
+        # MAIN LOOP
+        # ==================================
 
         for i in range(
             60,
@@ -850,13 +1117,17 @@ class BacktestEngine:
 
             timestamp = current.name
 
+            # ----------------------------------
+            # Day handling
+            # ----------------------------------
+
             self.update_day(
                 timestamp
             )
 
-            # ==============================
-            # Manage position
-            # ==============================
+            # ----------------------------------
+            # Manage existing position
+            # ----------------------------------
 
             if self.position is not None:
 
@@ -864,9 +1135,9 @@ class BacktestEngine:
                     current
                 )
 
-            # ==============================
-            # Risk checks
-            # ==============================
+            # ----------------------------------
+            # Risk blocking
+            # ----------------------------------
 
             trading_blocked = (
                 self.risk_manager
@@ -879,27 +1150,32 @@ class BacktestEngine:
                 self.loss_cooldown_until
                 is not None
                 and
-                timestamp <
+                timestamp
+                <
                 self.loss_cooldown_until
             ):
+
                 trading_blocked = True
 
             if (
                 self.cooldown_until
                 is not None
                 and
-                timestamp <
+                timestamp
+                <
                 self.cooldown_until
             ):
+
                 trading_blocked = True
 
-            # ==============================
+            # ----------------------------------
             # Entry
-            # ==============================
+            # ----------------------------------
 
             if (
                 self.position is None
-                and not trading_blocked
+                and
+                not trading_blocked
             ):
 
                 history = df.iloc[
@@ -919,7 +1195,8 @@ class BacktestEngine:
                             condition,
                             False,
                         )
-                        for condition in conditions
+                        for condition
+                        in conditions
                     )
 
                 except Exception:
@@ -936,19 +1213,25 @@ class BacktestEngine:
                     )
 
                     self.execute_buy(
+
                         symbol=symbol,
+
                         timestamp=timestamp,
+
                         close=float(
                             current["close"]
                         ),
+
                         atr=atr,
                     )
 
-            # ==============================
+            # ----------------------------------
             # Equity
-            # ==============================
+            # ----------------------------------
 
-            equity = self.balance
+            equity = (
+                self.balance
+            )
 
             if self.position is not None:
 
@@ -972,7 +1255,7 @@ class BacktestEngine:
             )
 
         # ==================================
-        # Close final position
+        # END OF TEST
         # ==================================
 
         if self.position is not None:
@@ -980,10 +1263,13 @@ class BacktestEngine:
             final = df.iloc[-1]
 
             self.close_position(
+
                 market_price=float(
                     final["close"]
                 ),
+
                 timestamp=final.name,
+
                 reason="END_OF_TEST",
             )
 
@@ -994,13 +1280,20 @@ class BacktestEngine:
 # METRICS
 # ==========================================
 
-def calculate_metrics(engine):
+def calculate_metrics(
+    engine,
+):
 
     trades = engine.trades
+
+    # ======================================
+    # NO TRADES
+    # ======================================
 
     if not trades:
 
         return {
+
             "final":
                 engine.balance,
 
@@ -1011,46 +1304,70 @@ def calculate_metrics(engine):
                     engine.starting_balance
                     -
                     1
-                ) * 100,
+                )
+                *
+                100,
 
             "trades": 0,
+
             "wins": 0,
+
             "losses": 0,
 
             "win_rate": 0.0,
+
             "average_win": 0.0,
+
             "average_loss": 0.0,
 
             "profit_factor": 0.0,
+
             "expectancy": 0.0,
+
             "average_r": 0.0,
+
             "max_drawdown": 0.0,
 
             "fees": 0.0,
+
             "slippage": 0.0,
         }
 
+    # ======================================
+    # PROFITS
+    # ======================================
+
     profits = [
-        float(t.net_profit)
-        for t in trades
+        float(
+            trade.net_profit
+        )
+        for trade in trades
     ]
 
     winners = [
-        p for p in profits
-        if p > 0
+        profit
+        for profit in profits
+        if profit > 0
     ]
 
     losers = [
-        p for p in profits
-        if p < 0
+        profit
+        for profit in profits
+        if profit < 0
     ]
+
+    # ======================================
+    # PROFIT FACTOR
+    # ======================================
 
     gross_profit = sum(
         winners
     )
 
     gross_loss = abs(
-        sum(losers)
+        sum(
+            losers
+        )
     )
 
     if gross_loss > 0:
@@ -1065,6 +1382,10 @@ def calculate_metrics(engine):
 
         profit_factor = 0.0
 
+    # ======================================
+    # WIN RATE
+    # ======================================
+
     win_rate = (
         len(winners)
         /
@@ -1073,21 +1394,39 @@ def calculate_metrics(engine):
         100
     )
 
+    # ======================================
+    # AVERAGE WIN
+    # ======================================
+
     average_win = (
+
         sum(winners)
         /
         len(winners)
+
         if winners
+
         else 0.0
     )
 
+    # ======================================
+    # AVERAGE LOSS
+    # ======================================
+
     average_loss = (
+
         sum(losers)
         /
         len(losers)
+
         if losers
+
         else 0.0
     )
+
+    # ======================================
+    # EXPECTANCY
+    # ======================================
 
     expectancy = (
         sum(profits)
@@ -1095,14 +1434,22 @@ def calculate_metrics(engine):
         len(profits)
     )
 
+    # ======================================
+    # AVERAGE R
+    # ======================================
+
     average_r = (
         sum(
-            t.r_multiple
-            for t in trades
+            trade.r_multiple
+            for trade in trades
         )
         /
         len(trades)
     )
+
+    # ======================================
+    # MAX DRAWDOWN
+    # ======================================
 
     equity = pd.DataFrame(
         engine.equity_curve
@@ -1135,6 +1482,10 @@ def calculate_metrics(engine):
             100
         )
 
+    # ======================================
+    # RESULT
+    # ======================================
+
     return {
 
         "final":
@@ -1147,7 +1498,9 @@ def calculate_metrics(engine):
                 engine.starting_balance
                 -
                 1
-            ) * 100,
+            )
+            *
+            100,
 
         "trades":
             len(trades),
@@ -1181,13 +1534,13 @@ def calculate_metrics(engine):
 
         "fees":
             sum(
-                t.fees
-                for t in trades
+                trade.fees
+                for trade in trades
             ),
 
         "slippage":
             sum(
-                t.slippage_cost
-                for t in trades
+                trade.slippage_cost
+                for trade in trades
             ),
     }
