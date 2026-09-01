@@ -1,11 +1,11 @@
 # ==========================================
 # 20to100 Trading Bot
-# Main Backtest Runner
-# Strategy v3.1
-# Targeted Entry Combination Analyzer
+# A/B/C Strategy Backtest
 # ==========================================
 
 from pathlib import Path
+from dataclasses import dataclass
+from typing import Optional
 
 import pandas as pd
 
@@ -14,6 +14,20 @@ from config import (
     TIMEFRAME,
     STARTING_CAPITAL,
     HISTORICAL_DAYS,
+    FEE_RATE,
+    SLIPPAGE_RATE,
+    RISK_PER_TRADE,
+    ATR_STOP_MULTIPLIER,
+    PARTIAL_EXIT_1_R,
+    PARTIAL_EXIT_1_SIZE,
+    PARTIAL_EXIT_2_R,
+    PARTIAL_EXIT_2_SIZE,
+    TRAILING_ATR_MULTIPLIER,
+    MAX_TRADE_MINUTES,
+    MAX_DAILY_LOSS,
+    MAX_CONSECUTIVE_LOSSES,
+    LOSS_COOLDOWN_MINUTES,
+    TRADE_COOLDOWN_MINUTES,
 )
 
 from data.data_manager import (
@@ -27,196 +41,38 @@ from strategy.indicators import (
 
 from strategy.signals import (
     evaluate_conditions,
-    diagnose_signals,
-    print_signal_diagnostics,
+)
+
+from risk.risk_manager import (
+    RiskManager,
+    RiskConfig,
 )
 
 
 # ==========================================
-# TEST SETUPS
+# STRATEGIES
 # ==========================================
 
-ENTRY_TESTS = {
+STRATEGIES = {
 
-    # --------------------------------------
-    # Baseline
-    # --------------------------------------
-
-    "TREND": [
-        "trend",
-    ],
-
-    "TREND + VOLUME": [
-        "trend",
-        "volume",
-    ],
-
-    "TREND + PULLBACK": [
-        "trend",
-        "pullback",
-    ],
-
-    "TREND + CONFIRMATION": [
-        "trend",
-        "confirmation",
-    ],
-
-    # --------------------------------------
-    # Core combinations
-    # --------------------------------------
-
-    "TREND + PULLBACK + CONFIRMATION": [
-        "trend",
-        "pullback",
-        "confirmation",
-    ],
-
-    "TREND + PULLBACK + VOLUME": [
-        "trend",
-        "pullback",
-        "volume",
-    ],
-
-    "TREND + CONFIRMATION + VOLUME": [
-        "trend",
-        "confirmation",
-        "volume",
-    ],
-
-    "TREND + PULLBACK + CONFIRMATION + VOLUME": [
-        "trend",
-        "pullback",
-        "confirmation",
-        "volume",
-    ],
-
-    # --------------------------------------
-    # RSI variants
-    # --------------------------------------
-
-    "TREND + RSI + PULLBACK": [
-        "trend",
-        "rsi",
-        "pullback",
-    ],
-
-    "TREND + RSI + CONFIRMATION": [
-        "trend",
-        "rsi",
-        "confirmation",
-    ],
-
-    "TREND + RSI + VOLUME": [
-        "trend",
-        "rsi",
-        "volume",
-    ],
-
-    "TREND + RSI + PULLBACK + CONFIRMATION": [
-        "trend",
-        "rsi",
-        "pullback",
-        "confirmation",
-    ],
-
-    "TREND + RSI + PULLBACK + VOLUME": [
-        "trend",
-        "rsi",
-        "pullback",
-        "volume",
-    ],
-
-    "TREND + RSI + CONFIRMATION + VOLUME": [
-        "trend",
-        "rsi",
-        "confirmation",
-        "volume",
-    ],
-
-    "TREND + RSI + PULLBACK + CONFIRMATION + VOLUME": [
-        "trend",
-        "rsi",
-        "pullback",
-        "confirmation",
-        "volume",
-    ],
-
-    # --------------------------------------
-    # RSI rising variants
-    # --------------------------------------
-
-    "TREND + RSI RISING + VOLUME": [
-        "trend",
-        "rsi_rising",
-        "volume",
-    ],
-
-    "TREND + RSI + RSI RISING + VOLUME": [
-        "trend",
-        "rsi",
-        "rsi_rising",
-        "volume",
-    ],
-
-    "TREND + RSI + RSI RISING + PULLBACK + VOLUME": [
-        "trend",
-        "rsi",
-        "rsi_rising",
-        "pullback",
-        "volume",
-    ],
-
-    "TREND + RSI + RSI RISING + PULLBACK + CONFIRMATION": [
-        "trend",
-        "rsi",
-        "rsi_rising",
-        "pullback",
-        "confirmation",
-    ],
-
-    "TREND + RSI + RSI RISING + PULLBACK + CONFIRMATION + VOLUME": [
-        "trend",
-        "rsi",
-        "rsi_rising",
-        "pullback",
-        "confirmation",
-        "volume",
-    ],
-
-    # --------------------------------------
-    # EMA50 variants
-    # --------------------------------------
-
-    "TREND + EMA50 + VOLUME": [
-        "trend",
-        "price_above_ema50",
-        "volume",
-    ],
-
-    "TREND + EMA50 + PULLBACK + CONFIRMATION": [
-        "trend",
-        "price_above_ema50",
-        "pullback",
-        "confirmation",
-    ],
-
-    "TREND + EMA50 + PULLBACK + CONFIRMATION + VOLUME": [
-        "trend",
-        "price_above_ema50",
-        "pullback",
-        "confirmation",
-        "volume",
-    ],
-
-    # --------------------------------------
-    # Original strategy
-    # --------------------------------------
-
-    "ALL CONDITIONS": [
+    "A_ORIGINAL": [
         "trend",
         "price_above_ema50",
         "rsi",
         "rsi_rising",
+        "pullback",
+        "confirmation",
+        "volume",
+    ],
+
+    "B_TREND_CONFIRM_VOLUME": [
+        "trend",
+        "confirmation",
+        "volume",
+    ],
+
+    "C_TREND_PULLBACK_CONFIRM_VOLUME": [
+        "trend",
         "pullback",
         "confirmation",
         "volume",
@@ -225,587 +81,1463 @@ ENTRY_TESTS = {
 
 
 # ==========================================
-# BUILD CONDITION MASKS
+# POSITION
 # ==========================================
 
-def build_condition_masks(df):
+@dataclass
+class Position:
 
-    condition_names = [
-        "trend",
-        "price_above_ema50",
-        "rsi",
-        "rsi_rising",
-        "pullback",
-        "confirmation",
-        "volume",
-    ]
+    strategy: str
+    symbol: str
 
-    masks = {
-        name: []
-        for name in condition_names
-    }
+    entry_time: object
 
-    valid_rows = []
+    entry_price: float
+    quantity: float
 
-    required_columns = [
-        "open",
-        "close",
-        "low",
-        "ema_9",
-        "ema_21",
-        "ema_50",
-        "rsi_14",
-        "volume",
-        "volume_sma_20",
-    ]
+    initial_stop: float
+    current_stop: float
 
-    for i in range(60, len(df)):
+    risk_per_unit: float
 
-        history = df.iloc[:i + 1]
+    remaining_quantity: float
+    highest_price: float
 
-        row = history.iloc[-1]
+    realized_profit: float = 0.0
+    total_fees: float = 0.0
+    total_slippage_cost: float = 0.0
 
-        valid = True
+    partial_1_done: bool = False
+    partial_2_done: bool = False
 
-        for column in required_columns:
 
-            if column not in row.index:
-                valid = False
-                break
+# ==========================================
+# TRADE
+# ==========================================
 
-            if pd.isna(row[column]):
-                valid = False
-                break
+@dataclass
+class Trade:
 
-        if not valid:
+    strategy: str
+    symbol: str
 
-            valid_rows.append(False)
+    entry_time: object
+    exit_time: object
 
-            for name in condition_names:
-                masks[name].append(False)
+    entry_price: float
+    final_exit_price: float
 
-            continue
+    initial_quantity: float
+
+    gross_profit: float
+    fees: float
+    slippage_cost: float
+    net_profit: float
+
+    exit_reason: str
+    r_multiple: float
+
+
+# ==========================================
+# ENGINE
+# ==========================================
+
+class StrategyBacktest:
+
+    def __init__(
+        self,
+        strategy_name: str,
+        conditions: list[str],
+        starting_balance: float,
+        symbol: str,
+    ):
+
+        self.strategy_name = strategy_name
+        self.conditions = conditions
+        self.symbol = symbol
+
+        self.starting_balance = float(
+            starting_balance
+        )
+
+        self.balance = float(
+            starting_balance
+        )
+
+        self.position: Optional[
+            Position
+        ] = None
+
+        self.trades = []
+
+        self.equity_curve = []
+
+        self.risk_manager = RiskManager(
+            starting_balance,
+            RiskConfig(
+                risk_per_trade=RISK_PER_TRADE,
+                max_daily_loss=MAX_DAILY_LOSS,
+                max_consecutive_losses=(
+                    MAX_CONSECUTIVE_LOSSES
+                ),
+            ),
+        )
+
+        self.cooldown_until = None
+        self.loss_cooldown_until = None
+
+        self.current_day = None
+
+        self.signal_count = 0
+        self.entry_count = 0
+
+    # ======================================
+    # DAY RESET
+    # ======================================
+
+    def update_day(
+        self,
+        timestamp,
+    ):
+
+        day = timestamp.date()
+
+        if (
+            self.current_day is None
+            or day != self.current_day
+        ):
+
+            self.current_day = day
+
+            self.risk_manager.reset_daily(
+                self.balance
+            )
+
+    # ======================================
+    # SIGNAL
+    # ======================================
+
+    def check_entry(
+        self,
+        df,
+    ) -> bool:
+
+        if len(df) < 60:
+            return False
+
+        row = df.iloc[-1]
 
         try:
 
             conditions = evaluate_conditions(
-                history,
+                df,
                 spread=None,
             )
 
         except Exception:
 
-            valid_rows.append(False)
+            return False
 
-            for name in condition_names:
-                masks[name].append(False)
+        for condition in self.conditions:
 
-            continue
+            if not conditions.get(
+                condition,
+                False,
+            ):
 
-        valid_rows.append(True)
+                return False
 
-        for name in condition_names:
+        return True
 
-            masks[name].append(
-                bool(
-                    conditions.get(
-                        name,
-                        False,
-                    )
-                )
+    # ======================================
+    # BUY
+    # ======================================
+
+    def execute_buy(
+        self,
+        timestamp,
+        close,
+        atr,
+    ):
+
+        if self.position is not None:
+            return False
+
+        if pd.isna(atr) or atr <= 0:
+            return False
+
+        if self.balance <= 0:
+            return False
+
+        entry_price = (
+            float(close)
+            *
+            (1 + SLIPPAGE_RATE)
+        )
+
+        stop_distance = (
+            float(atr)
+            *
+            ATR_STOP_MULTIPLIER
+        )
+
+        if stop_distance <= 0:
+            return False
+
+        stop_price = (
+            entry_price -
+            stop_distance
+        )
+
+        if stop_price <= 0:
+            return False
+
+        # ----------------------------------
+        # Risk based position size
+        # ----------------------------------
+
+        quantity = (
+            self.risk_manager
+            .calculate_position_size(
+                balance=self.balance,
+                entry_price=entry_price,
+                stop_price=stop_price,
+                fee_rate=FEE_RATE,
+            )
+        )
+
+        if quantity <= 0:
+            return False
+
+        position_value = (
+            quantity *
+            entry_price
+        )
+
+        entry_fee = (
+            position_value *
+            FEE_RATE
+        )
+
+        total_cost = (
+            position_value +
+            entry_fee
+        )
+
+        # ----------------------------------
+        # Safety adjustment
+        # ----------------------------------
+
+        if total_cost > self.balance:
+
+            max_position_value = (
+                self.balance /
+                (1 + FEE_RATE)
             )
 
-    index = df.index[60:]
+            quantity = (
+                max_position_value /
+                entry_price
+            )
 
-    for name in condition_names:
+            position_value = (
+                quantity *
+                entry_price
+            )
 
-        masks[name] = pd.Series(
-            masks[name],
-            index=index,
-            dtype=bool,
+            entry_fee = (
+                position_value *
+                FEE_RATE
+            )
+
+            total_cost = (
+                position_value +
+                entry_fee
+            )
+
+        if quantity <= 0:
+            return False
+
+        if total_cost > self.balance:
+            return False
+
+        # ----------------------------------
+        # Open position
+        # ----------------------------------
+
+        self.balance -= total_cost
+
+        self.position = Position(
+
+            strategy=self.strategy_name,
+
+            symbol=self.symbol,
+
+            entry_time=timestamp,
+
+            entry_price=entry_price,
+
+            quantity=quantity,
+
+            initial_stop=stop_price,
+
+            current_stop=stop_price,
+
+            risk_per_unit=stop_distance,
+
+            remaining_quantity=quantity,
+
+            highest_price=entry_price,
+
+            total_fees=entry_fee,
         )
 
-    valid_series = pd.Series(
-        valid_rows,
-        index=index,
-        dtype=bool,
-    )
+        self.entry_count += 1
 
-    return masks, valid_series
+        return True
 
+    # ======================================
+    # SELL
+    # ======================================
 
-# ==========================================
-# COMBINE CONDITIONS
-# ==========================================
+    def execute_sell(
+        self,
+        position,
+        market_price,
+        quantity,
+    ):
 
-def combined_mask(
-    masks,
-    conditions,
-):
+        if quantity <= 0:
+            return
 
-    result = masks[
-        conditions[0]
-    ].copy()
-
-    for condition in conditions[1:]:
-
-        result = (
-            result
-            &
-            masks[condition]
+        quantity = min(
+            quantity,
+            position.remaining_quantity,
         )
 
-    return result
+        if quantity <= 0:
+            return
 
-
-# ==========================================
-# FORWARD RETURN ANALYSIS
-# ==========================================
-
-def forward_return_analysis(
-    df,
-    signal_mask,
-):
-
-    close = df["close"]
-
-    signal_mask = (
-        signal_mask
-        .reindex(
-            df.index,
-            fill_value=False,
-        )
-        .astype(bool)
-    )
-
-    results = {}
-
-    for candles in [
-        3,
-        6,
-        12,
-        24,
-    ]:
-
-        future_price = (
-            close.shift(-candles)
+        exit_price = (
+            float(market_price)
+            *
+            (1 - SLIPPAGE_RATE)
         )
 
-        forward_return = (
+        gross_value = (
+            quantity *
+            exit_price
+        )
+
+        exit_fee = (
+            gross_value *
+            FEE_RATE
+        )
+
+        self.balance += (
+            gross_value -
+            exit_fee
+        )
+
+        entry_value = (
+            quantity *
+            position.entry_price
+        )
+
+        entry_fee = (
+            entry_value *
+            FEE_RATE
+        )
+
+        gross_profit = (
             (
-                future_price /
-                close
+                exit_price -
+                position.entry_price
             )
-            - 1
-        ) * 100
-
-        valid = (
-            signal_mask
-            &
-            forward_return.notna()
-            &
-            close.notna()
+            *
+            quantity
         )
 
-        values = (
-            forward_return.loc[valid]
+        net_profit = (
+            gross_profit
+            -
+            entry_fee
+            -
+            exit_fee
         )
 
-        if values.empty:
+        entry_slippage = (
+            quantity
+            *
+            position.entry_price
+            *
+            SLIPPAGE_RATE
+        )
 
-            results[candles] = {
-                "count": 0,
-                "average": 0.0,
-                "median": 0.0,
-                "positive_pct": 0.0,
-            }
+        exit_slippage = (
+            quantity
+            *
+            float(market_price)
+            *
+            SLIPPAGE_RATE
+        )
+
+        position.realized_profit += (
+            net_profit
+        )
+
+        position.total_fees += (
+            entry_fee +
+            exit_fee
+        )
+
+        position.total_slippage_cost += (
+            entry_slippage +
+            exit_slippage
+        )
+
+        position.remaining_quantity -= (
+            quantity
+        )
+
+    # ======================================
+    # CLOSE
+    # ======================================
+
+    def close_position(
+        self,
+        market_price,
+        timestamp,
+        reason,
+    ):
+
+        if self.position is None:
+            return
+
+        position = self.position
+
+        if position.remaining_quantity > 0:
+
+            self.execute_sell(
+                position,
+                market_price,
+                position.remaining_quantity,
+            )
+
+        initial_risk = (
+            position.risk_per_unit
+            *
+            position.quantity
+        )
+
+        if initial_risk > 0:
+
+            r_multiple = (
+                position.realized_profit
+                /
+                initial_risk
+            )
 
         else:
 
-            results[candles] = {
+            r_multiple = 0.0
 
-                "count":
-                    int(len(values)),
-
-                "average":
-                    float(
-                        values.mean()
-                    ),
-
-                "median":
-                    float(
-                        values.median()
-                    ),
-
-                "positive_pct":
-                    float(
-                        (
-                            values > 0
-                        ).mean()
-                        * 100
-                    ),
-            }
-
-    return results
-
-
-# ==========================================
-# ENTRY QUALITY TEST
-# ==========================================
-
-def run_entry_quality_test(
-    df,
-    symbol,
-):
-
-    print()
-    print("=" * 110)
-    print(
-        f"ENTRY QUALITY TEST: {symbol}"
-    )
-    print("=" * 110)
-
-    print()
-    print(
-        "3 candles  = 15 minutes"
-    )
-
-    print(
-        "6 candles  = 30 minutes"
-    )
-
-    print(
-        "12 candles = 60 minutes"
-    )
-
-    print(
-        "24 candles = 120 minutes"
-    )
-
-    print()
-
-    masks, valid_series = (
-        build_condition_masks(
-            df
-        )
-    )
-
-    print(
-        f"{'Setup':<62}"
-        f"{'Signals':>9}"
-        f"{'15m':>10}"
-        f"{'30m':>10}"
-        f"{'60m':>10}"
-        f"{'120m':>10}"
-    )
-
-    print("-" * 110)
-
-    results = []
-
-    for name, conditions in ENTRY_TESTS.items():
-
-        mask = combined_mask(
-            masks,
-            conditions,
+        gross_profit = (
+            position.realized_profit
+            +
+            position.total_fees
         )
 
-        mask = (
-            mask
-            &
-            valid_series
+        trade = Trade(
+
+            strategy=position.strategy,
+
+            symbol=position.symbol,
+
+            entry_time=position.entry_time,
+
+            exit_time=timestamp,
+
+            entry_price=position.entry_price,
+
+            final_exit_price=market_price,
+
+            initial_quantity=position.quantity,
+
+            gross_profit=gross_profit,
+
+            fees=position.total_fees,
+
+            slippage_cost=(
+                position.total_slippage_cost
+            ),
+
+            net_profit=(
+                position.realized_profit
+            ),
+
+            exit_reason=reason,
+
+            r_multiple=r_multiple,
         )
 
-        analysis = (
-            forward_return_analysis(
-                df,
-                mask,
+        self.trades.append(
+            trade
+        )
+
+        self.risk_manager.record_trade(
+            trade.net_profit
+        )
+
+        # ----------------------------------
+        # Cooldown
+        # ----------------------------------
+
+        if (
+            self.risk_manager
+            .loss_streak_limit_reached()
+        ):
+
+            self.loss_cooldown_until = (
+                timestamp
+                +
+                pd.Timedelta(
+                    minutes=
+                    LOSS_COOLDOWN_MINUTES
+                )
             )
-        )
 
-        signals = int(
-            mask.sum()
-        )
+        else:
 
-        avg_3 = analysis[3]["average"]
-        avg_6 = analysis[6]["average"]
-        avg_12 = analysis[12]["average"]
-        avg_24 = analysis[24]["average"]
+            self.cooldown_until = (
+                timestamp
+                +
+                pd.Timedelta(
+                    minutes=
+                    TRADE_COOLDOWN_MINUTES
+                )
+            )
 
-        positive_12 = (
-            analysis[12]["positive_pct"]
-        )
-
-        print(
-            f"{name:<62}"
-            f"{signals:>9}"
-            f"{avg_3:>9.3f}%"
-            f"{avg_6:>9.3f}%"
-            f"{avg_12:>9.3f}%"
-            f"{avg_24:>9.3f}%"
-        )
-
-        results.append(
-            {
-                "name": name,
-                "conditions": conditions,
-                "signals": signals,
-
-                "avg_3": avg_3,
-                "avg_6": avg_6,
-                "avg_12": avg_12,
-                "avg_24": avg_24,
-
-                "positive_3":
-                    analysis[3][
-                        "positive_pct"
-                    ],
-
-                "positive_6":
-                    analysis[6][
-                        "positive_pct"
-                    ],
-
-                "positive_12":
-                    positive_12,
-
-                "positive_24":
-                    analysis[24][
-                        "positive_pct"
-                    ],
-            }
-        )
-
-    print("-" * 110)
+        self.position = None
 
     # ======================================
-    # BEST SETUPS
+    # MANAGE POSITION
     # ======================================
 
-    if not results:
-        return []
-
-    best_15m = max(
-        results,
-        key=lambda x:
-            x["avg_3"],
-    )
-
-    best_30m = max(
-        results,
-        key=lambda x:
-            x["avg_6"],
-    )
-
-    best_60m = max(
-        results,
-        key=lambda x:
-            x["avg_12"],
-    )
-
-    best_120m = max(
-        results,
-        key=lambda x:
-            x["avg_24"],
-    )
-
-    print()
-    print(
-        "BEST SETUPS"
-    )
-
-    print("-" * 110)
-
-    print(
-        f"15 min : "
-        f"{best_15m['name']} "
-        f"({best_15m['avg_3']:+.3f}%)"
-    )
-
-    print(
-        f"30 min : "
-        f"{best_30m['name']} "
-        f"({best_30m['avg_6']:+.3f}%)"
-    )
-
-    print(
-        f"60 min : "
-        f"{best_60m['name']} "
-        f"({best_60m['avg_12']:+.3f}%)"
-    )
-
-    print(
-        f"120 min: "
-        f"{best_120m['name']} "
-        f"({best_120m['avg_24']:+.3f}%)"
-    )
-
-    # ======================================
-    # RANKING
-    # ======================================
-
-    print()
-    print(
-        "TOP 5 BY 60-MINUTE FORWARD RETURN"
-    )
-
-    print("-" * 110)
-
-    ranked = sorted(
-        results,
-        key=lambda x:
-            x["avg_12"],
-        reverse=True,
-    )
-
-    for rank, result in enumerate(
-        ranked[:5],
-        start=1,
+    def manage_position(
+        self,
+        row,
     ):
 
-        print(
-            f"{rank}. "
-            f"{result['name']}"
+        if self.position is None:
+            return
+
+        position = self.position
+
+        timestamp = row.name
+
+        high = float(row["high"])
+        low = float(row["low"])
+        close = float(row["close"])
+
+        atr = row.get(
+            "atr_14",
+            None,
         )
 
-        print(
-            f"   Signals: "
-            f"{result['signals']}"
+        if atr is None or pd.isna(atr):
+            atr = 0.0
+
+        # ----------------------------------
+        # Highest price
+        # ----------------------------------
+
+        if high > position.highest_price:
+
+            position.highest_price = high
+
+        # ----------------------------------
+        # Initial stop
+        # ----------------------------------
+
+        if low <= position.current_stop:
+
+            self.close_position(
+                market_price=position.current_stop,
+                timestamp=timestamp,
+                reason="STOP_LOSS",
+            )
+
+            return
+
+        # ==================================
+        # R CALCULATION
+        # ==================================
+
+        risk_distance = (
+            position.risk_per_unit
         )
 
-        print(
-            f"   60m: "
-            f"{result['avg_12']:+.3f}%"
+        if risk_distance <= 0:
+            return
+
+        current_r = (
+            (
+                close -
+                position.entry_price
+            )
+            /
+            risk_distance
         )
 
-        print(
-            f"   Positive: "
-            f"{result['positive_12']:.2f}%"
+        # ==================================
+        # PARTIAL EXIT 1
+        # ==================================
+
+        if (
+            not position.partial_1_done
+            and
+            current_r >= PARTIAL_EXIT_1_R
+        ):
+
+            quantity = (
+                position.quantity
+                *
+                PARTIAL_EXIT_1_SIZE
+            )
+
+            self.execute_sell(
+                position,
+                close,
+                quantity,
+            )
+
+            position.partial_1_done = True
+
+            # Move stop to breakeven
+            position.current_stop = max(
+                position.current_stop,
+                position.entry_price,
+            )
+
+        # ==================================
+        # PARTIAL EXIT 2
+        # ==================================
+
+        if (
+            not position.partial_2_done
+            and
+            current_r >= PARTIAL_EXIT_2_R
+        ):
+
+            quantity = (
+                position.quantity
+                *
+                PARTIAL_EXIT_2_SIZE
+            )
+
+            self.execute_sell(
+                position,
+                close,
+                quantity,
+            )
+
+            position.partial_2_done = True
+
+        # ==================================
+        # TRAILING STOP
+        # ==================================
+
+        if (
+            position.partial_1_done
+            and
+            atr > 0
+        ):
+
+            trailing_stop = (
+                position.highest_price
+                -
+                (
+                    atr
+                    *
+                    TRAILING_ATR_MULTIPLIER
+                )
+            )
+
+            if trailing_stop > position.current_stop:
+
+                position.current_stop = (
+                    trailing_stop
+                )
+
+        # ==================================
+        # TAKE PROFIT
+        # ==================================
+
+        if current_r >= 3.0:
+
+            self.close_position(
+                market_price=close,
+                timestamp=timestamp,
+                reason="TAKE_PROFIT",
+            )
+
+            return
+
+        # ==================================
+        # TIME STOP
+        # ==================================
+
+        elapsed = (
+            timestamp -
+            position.entry_time
         )
 
-    print()
-    print(
-        "TOP 5 BY 120-MINUTE FORWARD RETURN"
-    )
+        if (
+            elapsed.total_seconds()
+            >=
+            MAX_TRADE_MINUTES * 60
+        ):
 
-    print("-" * 110)
+            self.close_position(
+                market_price=close,
+                timestamp=timestamp,
+                reason="TIME_STOP",
+            )
 
-    ranked_120 = sorted(
-        results,
-        key=lambda x:
-            x["avg_24"],
-        reverse=True,
-    )
+            return
 
-    for rank, result in enumerate(
-        ranked_120[:5],
-        start=1,
+    # ======================================
+    # RUN
+    # ======================================
+
+    def run(
+        self,
+        df,
     ):
 
-        print(
-            f"{rank}. "
-            f"{result['name']}"
-        )
+        for i in range(
+            60,
+            len(df),
+        ):
 
-        print(
-            f"   Signals: "
-            f"{result['signals']}"
-        )
+            history = df.iloc[
+                : i + 1
+            ]
 
-        print(
-            f"   120m: "
-            f"{result['avg_24']:+.3f}%"
-        )
+            row = history.iloc[-1]
 
-        print(
-            f"   Positive: "
-            f"{result['positive_24']:.2f}%"
-        )
+            timestamp = row.name
 
-    print("=" * 110)
+            self.update_day(
+                timestamp
+            )
 
-    return results
+            # ----------------------------------
+            # Manage open position first
+            # ----------------------------------
+
+            if self.position is not None:
+
+                self.manage_position(
+                    row
+                )
+
+            # ----------------------------------
+            # Entry checks
+            # ----------------------------------
+
+            if self.position is None:
+
+                if (
+                    self.cooldown_until
+                    is not None
+                    and
+                    timestamp <
+                    self.cooldown_until
+                ):
+
+                    pass
+
+                elif (
+                    self.loss_cooldown_until
+                    is not None
+                    and
+                    timestamp <
+                    self.loss_cooldown_until
+                ):
+
+                    pass
+
+                elif (
+                    self.risk_manager
+                    .daily_loss_limit_reached(
+                        self.balance
+                    )
+                ):
+
+                    pass
+
+                else:
+
+                    if self.check_entry(
+                        history
+                    ):
+
+                        self.signal_count += 1
+
+                        atr = row.get(
+                            "atr_14",
+                            None,
+                        )
+
+                        self.execute_buy(
+                            timestamp,
+                            float(row["close"]),
+                            atr,
+                        )
+
+            # ----------------------------------
+            # Equity
+            # ----------------------------------
+
+            equity = self.balance
+
+            if self.position is not None:
+
+                equity += (
+                    self.position
+                    .remaining_quantity
+                    *
+                    float(row["close"])
+                )
+
+            self.equity_curve.append(
+                {
+                    "timestamp":
+                        timestamp,
+
+                    "equity":
+                        equity,
+                }
+            )
+
+        # ==================================
+        # Close at end
+        # ==================================
+
+        if self.position is not None:
+
+            last = df.iloc[-1]
+
+            self.close_position(
+                market_price=float(
+                    last["close"]
+                ),
+
+                timestamp=last.name,
+
+                reason="END_OF_TEST",
+            )
+
+        return self
 
 
 # ==========================================
-# SAVE RESULTS
+# METRICS
 # ==========================================
 
-def save_entry_results(
-    results,
-    symbol,
+def calculate_metrics(
+    engine,
 ):
 
-    if not results:
+    trades = engine.trades
+
+    if not trades:
+
+        return {
+            "final":
+                engine.balance,
+
+            "return_pct":
+                (
+                    engine.balance /
+                    engine.starting_balance
+                    - 1
+                ) * 100,
+
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+
+            "win_rate": 0.0,
+
+            "average_win": 0.0,
+            "average_loss": 0.0,
+
+            "profit_factor": 0.0,
+
+            "expectancy": 0.0,
+
+            "average_r": 0.0,
+
+            "max_drawdown": 0.0,
+
+            "fees": 0.0,
+            "slippage": 0.0,
+        }
+
+    profits = [
+        float(t.net_profit)
+        for t in trades
+    ]
+
+    winners = [
+        p for p in profits
+        if p > 0
+    ]
+
+    losers = [
+        p for p in profits
+        if p < 0
+    ]
+
+    gross_profit = sum(
+        winners
+    )
+
+    gross_loss = abs(
+        sum(losers)
+    )
+
+    if gross_loss > 0:
+
+        profit_factor = (
+            gross_profit /
+            gross_loss
+        )
+
+    else:
+
+        profit_factor = 0.0
+
+    win_rate = (
+        len(winners)
+        /
+        len(profits)
+        *
+        100
+    )
+
+    average_win = (
+        sum(winners) /
+        len(winners)
+        if winners
+        else 0.0
+    )
+
+    average_loss = (
+        sum(losers) /
+        len(losers)
+        if losers
+        else 0.0
+    )
+
+    expectancy = (
+        sum(profits) /
+        len(profits)
+    )
+
+    average_r = (
+        sum(
+            t.r_multiple
+            for t in trades
+        )
+        /
+        len(trades)
+    )
+
+    # ======================================
+    # DRAW DOWN
+    # ======================================
+
+    equity = pd.DataFrame(
+        engine.equity_curve
+    )
+
+    if equity.empty:
+
+        max_drawdown = 0.0
+
+    else:
+
+        peak = (
+            equity["equity"]
+            .cummax()
+        )
+
+        drawdown = (
+            (
+                equity["equity"]
+                /
+                peak
+            )
+            - 1
+        )
+
+        max_drawdown = (
+            abs(
+                drawdown.min()
+            )
+            * 100
+        )
+
+    total_fees = sum(
+        t.fees
+        for t in trades
+    )
+
+    total_slippage = sum(
+        t.slippage_cost
+        for t in trades
+    )
+
+    return {
+
+        "final":
+            engine.balance,
+
+        "return_pct":
+            (
+                engine.balance /
+                engine.starting_balance
+                - 1
+            ) * 100,
+
+        "trades":
+            len(trades),
+
+        "wins":
+            len(winners),
+
+        "losses":
+            len(losers),
+
+        "win_rate":
+            win_rate,
+
+        "average_win":
+            average_win,
+
+        "average_loss":
+            average_loss,
+
+        "profit_factor":
+            profit_factor,
+
+        "expectancy":
+            expectancy,
+
+        "average_r":
+            average_r,
+
+        "max_drawdown":
+            max_drawdown,
+
+        "fees":
+            total_fees,
+
+        "slippage":
+            total_slippage,
+    }
+
+
+# ==========================================
+# PRINT STRATEGY RESULT
+# ==========================================
+
+def print_result(
+    engine,
+):
+
+    metrics = calculate_metrics(
+        engine
+    )
+
+    print()
+    print("=" * 70)
+
+    print(
+        f"STRATEGY RESULT: "
+        f"{engine.strategy_name}"
+    )
+
+    print("=" * 70)
+
+    print(
+        f"Starting capital:  "
+        f"${engine.starting_balance:.2f}"
+    )
+
+    print(
+        f"Final capital:     "
+        f"${metrics['final']:.2f}"
+    )
+
+    print(
+        f"Profit/Loss:       "
+        f"${metrics['final'] - engine.starting_balance:+.2f}"
+    )
+
+    print(
+        f"Return:            "
+        f"{metrics['return_pct']:+.2f}%"
+    )
+
+    print("-" * 70)
+
+    print(
+        f"Signals:           "
+        f"{engine.signal_count}"
+    )
+
+    print(
+        f"Trades:            "
+        f"{metrics['trades']}"
+    )
+
+    print(
+        f"Winners:           "
+        f"{metrics['wins']}"
+    )
+
+    print(
+        f"Losers:            "
+        f"{metrics['losses']}"
+    )
+
+    print(
+        f"Win rate:          "
+        f"{metrics['win_rate']:.2f}%"
+    )
+
+    print("-" * 70)
+
+    print(
+        f"Average win:       "
+        f"${metrics['average_win']:+.4f}"
+    )
+
+    print(
+        f"Average loss:      "
+        f"${metrics['average_loss']:+.4f}"
+    )
+
+    print(
+        f"Profit factor:     "
+        f"{metrics['profit_factor']:.3f}"
+    )
+
+    print(
+        f"Expectancy:        "
+        f"${metrics['expectancy']:+.4f}"
+    )
+
+    print(
+        f"Average R:         "
+        f"{metrics['average_r']:+.3f}"
+    )
+
+    print(
+        f"Max drawdown:      "
+        f"{metrics['max_drawdown']:.2f}%"
+    )
+
+    print("-" * 70)
+
+    print(
+        f"Fees:              "
+        f"${metrics['fees']:.4f}"
+    )
+
+    print(
+        f"Slippage:          "
+        f"${metrics['slippage']:.4f}"
+    )
+
+    print(
+        f"Progress to $100:  "
+        f"{metrics['final']:.2f}%"
+    )
+
+    status = (
+        "🟢 PROFIT"
+        if metrics["final"] >
+        engine.starting_balance
+        else
+        "🔴 LOSS"
+    )
+
+    print(
+        f"Status:            "
+        f"{status}"
+    )
+
+    print("=" * 70)
+
+    return metrics
+
+
+# ==========================================
+# SAVE TRADES
+# ==========================================
+
+def save_trades(
+    engine,
+):
+
+    Path("logs").mkdir(
+        exist_ok=True
+    )
+
+    if not engine.trades:
         return
 
     rows = []
 
-    for result in results:
+    for trade in engine.trades:
 
         rows.append(
             {
+                "strategy":
+                    trade.strategy,
+
                 "symbol":
-                    symbol,
+                    trade.symbol,
 
-                "setup":
-                    result["name"],
+                "entry_time":
+                    trade.entry_time,
 
-                "signals":
-                    result["signals"],
+                "exit_time":
+                    trade.exit_time,
 
-                "avg_15m_pct":
-                    result["avg_3"],
+                "entry_price":
+                    trade.entry_price,
 
-                "avg_30m_pct":
-                    result["avg_6"],
+                "final_exit_price":
+                    trade.final_exit_price,
 
-                "avg_60m_pct":
-                    result["avg_12"],
+                "quantity":
+                    trade.initial_quantity,
 
-                "avg_120m_pct":
-                    result["avg_24"],
+                "gross_profit":
+                    trade.gross_profit,
 
-                "positive_15m_pct":
-                    result["positive_3"],
+                "fees":
+                    trade.fees,
 
-                "positive_30m_pct":
-                    result["positive_6"],
+                "slippage":
+                    trade.slippage_cost,
 
-                "positive_60m_pct":
-                    result["positive_12"],
+                "net_profit":
+                    trade.net_profit,
 
-                "positive_120m_pct":
-                    result["positive_24"],
+                "exit_reason":
+                    trade.exit_reason,
+
+                "r_multiple":
+                    trade.r_multiple,
             }
         )
 
-    output_df = pd.DataFrame(
-        rows
-    )
-
-    output_file = (
-        Path("logs")
-        /
-        (
-            symbol.replace(
-                "/",
-                "_",
-            )
-            +
-            "_entry_quality_v3_1.csv"
+    filename = (
+        engine.symbol.replace(
+            "/",
+            "_",
         )
+        +
+        "_"
+        +
+        engine.strategy_name
+        +
+        "_trades.csv"
     )
 
-    output_df.to_csv(
-        output_file,
+    pd.DataFrame(
+        rows
+    ).to_csv(
+        Path("logs") /
+        filename,
         index=False,
     )
 
-    print(
-        f"Entry quality log: "
-        f"{output_file}"
+
+# ==========================================
+# SAVE EQUITY
+# ==========================================
+
+def save_equity(
+    engine,
+):
+
+    Path("logs").mkdir(
+        exist_ok=True
     )
+
+    if not engine.equity_curve:
+        return
+
+    filename = (
+        engine.symbol.replace(
+            "/",
+            "_",
+        )
+        +
+        "_"
+        +
+        engine.strategy_name
+        +
+        "_equity.csv"
+    )
+
+    pd.DataFrame(
+        engine.equity_curve
+    ).to_csv(
+        Path("logs") /
+        filename,
+        index=False,
+    )
+
+
+# ==========================================
+# DATA LOADER
+# ==========================================
+
+def load_market_data(
+    symbol,
+):
+
+    Path("data").mkdir(
+        exist_ok=True
+    )
+
+    filename = (
+        symbol.replace(
+            "/",
+            "_",
+        )
+        +
+        "_"
+        +
+        TIMEFRAME
+        +
+        ".csv"
+    )
+
+    data_file = (
+        Path("data") /
+        filename
+    )
+
+    if data_file.exists():
+
+        print(
+            f"Using cached data: "
+            f"{data_file}"
+        )
+
+        return pd.read_csv(
+            data_file,
+            index_col="timestamp",
+            parse_dates=True,
+        )
+
+    print(
+        "No local data found."
+    )
+
+    print(
+        "Downloading historical data..."
+    )
+
+    df = fetch_ohlcv(
+        symbol=symbol,
+        timeframe=TIMEFRAME,
+        days=HISTORICAL_DAYS,
+    )
+
+    save_data(
+        df,
+        symbol=symbol,
+        timeframe=TIMEFRAME,
+    )
+
+    return df
+
+
+# ==========================================
+# RUN STRATEGY
+# ==========================================
+
+def run_strategy(
+    df,
+    symbol,
+    strategy_name,
+    conditions,
+):
+
+    print()
+    print("-" * 70)
+
+    print(
+        f"RUNNING: "
+        f"{strategy_name}"
+    )
+
+    print("-" * 70)
+
+    print(
+        "Entry:"
+    )
+
+    print(
+        " + ".join(
+            conditions
+        )
+    )
+
+    engine = StrategyBacktest(
+
+        strategy_name=
+            strategy_name,
+
+        conditions=
+            conditions,
+
+        starting_balance=
+            STARTING_CAPITAL,
+
+        symbol=
+            symbol,
+    )
+
+    engine.run(
+        df
+    )
+
+    metrics = print_result(
+        engine
+    )
+
+    save_trades(
+        engine
+    )
+
+    save_equity(
+        engine
+    )
+
+    return metrics
 
 
 # ==========================================
@@ -824,252 +1556,364 @@ def main():
 
     print()
     print("=" * 70)
+
     print(
         "20→100 TRADING BOT"
     )
+
     print(
-        "Strategy v3.1"
+        "A/B/C STRATEGY BACKTEST"
     )
-    print(
-        "TARGETED ENTRY ANALYZER"
-    )
+
     print("=" * 70)
 
-    all_results = []
+    print()
+    print(
+        f"Starting capital: "
+        f"${STARTING_CAPITAL:.2f}"
+    )
+
+    print(
+        f"Timeframe: "
+        f"{TIMEFRAME}"
+    )
+
+    print(
+        f"Historical days: "
+        f"{HISTORICAL_DAYS}"
+    )
+
+    # ======================================
+    # SUMMARY STORAGE
+    # ======================================
+
+    portfolio_results = []
+
+    # ======================================
+    # MARKET LOOP
+    # ======================================
 
     for symbol in SYMBOLS:
 
         print()
-        print("-" * 70)
+        print("=" * 70)
+
         print(
-            f"ANALYSIS: {symbol}"
-        )
-        print("-" * 70)
-
-        filename = (
-            symbol.replace(
-                "/",
-                "_",
-            )
-            +
-            "_"
-            +
-            TIMEFRAME
-            +
-            ".csv"
+            f"MARKET: {symbol}"
         )
 
-        data_file = (
-            Path("data")
-            /
-            filename
+        print("=" * 70)
+
+        df = load_market_data(
+            symbol
         )
-
-        # ==================================
-        # DATA
-        # ==================================
-
-        if data_file.exists():
-
-            print(
-                f"Using cached data: "
-                f"{data_file}"
-            )
-
-            df = pd.read_csv(
-                data_file,
-                index_col="timestamp",
-                parse_dates=True,
-            )
-
-        else:
-
-            print(
-                "No local data found."
-            )
-
-            print(
-                "Downloading historical data..."
-            )
-
-            df = fetch_ohlcv(
-                symbol=symbol,
-                timeframe=TIMEFRAME,
-                days=HISTORICAL_DAYS,
-            )
-
-            save_data(
-                df,
-                symbol=symbol,
-                timeframe=TIMEFRAME,
-            )
 
         print(
             f"Candles: {len(df)}"
         )
 
-        # ==================================
-        # INDICATORS
-        # ==================================
-
-        print()
         print(
             "Calculating indicators..."
         )
 
-        indicator_df = (
-            calculate_indicators(
-                df
-            )
+        df = calculate_indicators(
+            df
         )
 
-        # ==================================
-        # ORIGINAL DIAGNOSTICS
-        # ==================================
-
-        print()
-        print(
-            "Running signal diagnostics..."
-        )
-
-        try:
-
-            diagnostics = (
-                diagnose_signals(
-                    indicator_df
-                )
-            )
-
-            print_signal_diagnostics(
-                diagnostics,
-                symbol,
-            )
-
-        except Exception as exc:
-
-            print(
-                "Diagnostics error:"
-            )
-
-            print(
-                str(exc)
-            )
+        market_results = []
 
         # ==================================
-        # QUALITY ANALYSIS
+        # STRATEGY LOOP
         # ==================================
 
-        results = (
-            run_entry_quality_test(
-                indicator_df,
-                symbol,
+        for (
+            strategy_name,
+            conditions
+        ) in STRATEGIES.items():
+
+            metrics = run_strategy(
+                df=df,
+                symbol=symbol,
+                strategy_name=
+                    strategy_name,
+                conditions=
+                    conditions,
             )
-        )
 
-        save_entry_results(
-            results,
-            symbol,
-        )
+            market_results.append(
+                {
+                    "symbol":
+                        symbol,
 
-        all_results.append(
-            {
-                "symbol":
-                    symbol,
+                    "strategy":
+                        strategy_name,
 
-                "results":
-                    results,
-            }
+                    **metrics,
+                }
+            )
+
+        portfolio_results.extend(
+            market_results
         )
 
     # ======================================
-    # FINAL SUMMARY
+    # COMPARISON
     # ======================================
 
     print()
-    print("=" * 110)
+    print("=" * 100)
+
     print(
-        "20→100 TARGETED ENTRY SUMMARY"
+        "20→100 STRATEGY COMPARISON"
     )
-    print("=" * 110)
 
-    for market in all_results:
+    print("=" * 100)
 
-        symbol = market[
-            "symbol"
-        ]
+    print()
 
-        results = market[
-            "results"
+    print(
+        f"{'Market':<12}"
+        f"{'Strategy':<38}"
+        f"{'Final':>10}"
+        f"{'Return':>10}"
+        f"{'Trades':>9}"
+        f"{'Win %':>9}"
+        f"{'PF':>8}"
+        f"{'Expect':>10}"
+        f"{'Max DD':>10}"
+    )
+
+    print("-" * 100)
+
+    for result in portfolio_results:
+
+        print(
+            f"{result['symbol']:<12}"
+            f"{result['strategy']:<38}"
+            f"${result['final']:>8.2f}"
+            f"{result['return_pct']:>9.2f}%"
+            f"{result['trades']:>9}"
+            f"{result['win_rate']:>8.2f}%"
+            f"{result['profit_factor']:>8.3f}"
+            f"${result['expectancy']:>9.4f}"
+            f"{result['max_drawdown']:>9.2f}%"
+        )
+
+    print("-" * 100)
+
+    # ======================================
+    # BEST STRATEGY PER MARKET
+    # ======================================
+
+    print()
+    print(
+        "BEST STRATEGY PER MARKET"
+    )
+
+    print("-" * 100)
+
+    for symbol in SYMBOLS:
+
+        results = [
+            r
+            for r in portfolio_results
+            if r["symbol"] == symbol
         ]
 
         if not results:
             continue
 
-        best_60 = max(
+        best = max(
             results,
-            key=lambda x:
-                x["avg_12"],
-        )
-
-        best_120 = max(
-            results,
-            key=lambda x:
-                x["avg_24"],
+            key=lambda r:
+                r["final"],
         )
 
         print()
         print(
-            symbol
+            f"{symbol}"
         )
 
         print(
-            f"Best 60m setup:   "
-            f"{best_60['name']}"
+            f"Winner:            "
+            f"{best['strategy']}"
         )
 
         print(
-            f"Signals:          "
-            f"{best_60['signals']}"
+            f"Final capital:     "
+            f"${best['final']:.2f}"
         )
 
         print(
-            f"60m return:       "
-            f"{best_60['avg_12']:+.3f}%"
+            f"Return:            "
+            f"{best['return_pct']:+.2f}%"
         )
 
         print(
-            f"Positive 60m:     "
-            f"{best_60['positive_12']:.2f}%"
-        )
-
-        print()
-
-        print(
-            f"Best 120m setup:  "
-            f"{best_120['name']}"
+            f"Trades:            "
+            f"{best['trades']}"
         )
 
         print(
-            f"Signals:          "
-            f"{best_120['signals']}"
+            f"Profit factor:     "
+            f"{best['profit_factor']:.3f}"
         )
 
         print(
-            f"120m return:      "
-            f"{best_120['avg_24']:+.3f}%"
+            f"Expectancy:        "
+            f"${best['expectancy']:+.4f}"
         )
 
-        print(
-            f"Positive 120m:    "
-            f"{best_120['positive_24']:.2f}%"
-        )
+    # ======================================
+    # OVERALL STRATEGY AVERAGE
+    # ======================================
 
     print()
-    print("=" * 110)
+    print("=" * 100)
+
     print(
-        "TARGETED ENTRY TEST COMPLETE"
+        "20→100 OVERALL STRATEGY SUMMARY"
     )
-    print("=" * 110)
+
+    print("=" * 100)
+
+    for strategy_name in STRATEGIES:
+
+        results = [
+            r
+            for r in portfolio_results
+            if r["strategy"] ==
+            strategy_name
+        ]
+
+        if not results:
+            continue
+
+        average_final = (
+            sum(
+                r["final"]
+                for r in results
+            )
+            /
+            len(results)
+        )
+
+        total_trades = sum(
+            r["trades"]
+            for r in results
+        )
+
+        average_return = (
+            sum(
+                r["return_pct"]
+                for r in results
+            )
+            /
+            len(results)
+        )
+
+        average_pf = (
+            sum(
+                r["profit_factor"]
+                for r in results
+            )
+            /
+            len(results)
+        )
+
+        average_expectancy = (
+            sum(
+                r["expectancy"]
+                for r in results
+            )
+            /
+            len(results)
+        )
+
+        print()
+        print(
+            strategy_name
+        )
+
+        print(
+            f"Average final:     "
+            f"${average_final:.2f}"
+        )
+
+        print(
+            f"Average return:    "
+            f"{average_return:+.2f}%"
+        )
+
+        print(
+            f"Total trades:      "
+            f"{total_trades}"
+        )
+
+        print(
+            f"Average PF:        "
+            f"{average_pf:.3f}"
+        )
+
+        print(
+            f"Average expectancy:"
+            f" ${average_expectancy:+.4f}"
+        )
+
+    # ======================================
+    # FINAL WINNER
+    # ======================================
+
+    print()
+    print("=" * 100)
+
+    strategy_totals = {}
+
+    for strategy_name in STRATEGIES:
+
+        results = [
+            r
+            for r in portfolio_results
+            if r["strategy"] ==
+            strategy_name
+        ]
+
+        strategy_totals[
+            strategy_name
+        ] = sum(
+            r["final"]
+            for r in results
+        )
+
+    if strategy_totals:
+
+        winner = max(
+            strategy_totals,
+            key=strategy_totals.get,
+        )
+
+        print(
+            "🏆 CURRENT WINNER"
+        )
+
+        print()
+        print(
+            winner
+        )
+
+        print(
+            f"Combined final capital: "
+            f"${strategy_totals[winner]:.2f}"
+        )
+
+    print("=" * 100)
+
+    print()
+    print(
+        "A/B/C BACKTEST COMPLETE"
+    )
+
+    print("=" * 100)
 
 
 if __name__ == "__main__":
