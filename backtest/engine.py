@@ -8,19 +8,52 @@ from typing import Optional
 
 import pandas as pd
 
-from strategy.indicators import calculate_indicators
-from strategy.signals import check_buy_signal
+from config import (
+    FEE_RATE,
+    SLIPPAGE_RATE,
+    RISK_PER_TRADE,
+    ATR_STOP_MULTIPLIER,
+    TAKE_PROFIT_R,
+    PARTIAL_EXIT_1_R,
+    PARTIAL_EXIT_1_SIZE,
+    PARTIAL_EXIT_2_R,
+    PARTIAL_EXIT_2_SIZE,
+    TRAILING_ATR_MULTIPLIER,
+    MAX_TRADE_MINUTES,
+    MAX_DAILY_LOSS,
+    MAX_CONSECUTIVE_LOSSES,
+    LOSS_COOLDOWN_MINUTES,
+    TRADE_COOLDOWN_MINUTES,
+)
+
+from strategy.indicators import (
+    calculate_indicators,
+)
+
+from strategy.signals import (
+    check_buy_signal,
+    check_ema_exit,
+    check_rsi_exit,
+)
+
+from risk.risk_manager import (
+    RiskManager,
+    RiskConfig,
+)
 
 
 @dataclass
 class Position:
+
     symbol: str
     entry_time: object
+
     entry_price: float
     quantity: float
 
     initial_stop: float
     current_stop: float
+
     risk_per_unit: float
 
     remaining_quantity: float
@@ -36,7 +69,9 @@ class Position:
 
 @dataclass
 class Trade:
+
     symbol: str
+
     entry_time: object
     exit_time: object
 
@@ -44,7 +79,6 @@ class Trade:
     final_exit_price: float
 
     initial_quantity: float
-    remaining_quantity: float
 
     gross_profit: float
     fees: float
@@ -60,27 +94,60 @@ class BacktestEngine:
     def __init__(
         self,
         starting_balance: float = 20.0,
-        fee_rate: float = 0.001,
-        slippage_rate: float = 0.0005,
-        risk_per_trade: float = 0.015,
-        atr_stop_multiplier: float = 1.5,
-        take_profit_r: float = 2.0,
     ):
 
-        self.starting_balance = starting_balance
-        self.balance = starting_balance
+        self.starting_balance = (
+            starting_balance
+        )
 
-        self.fee_rate = fee_rate
-        self.slippage_rate = slippage_rate
+        self.balance = (
+            starting_balance
+        )
 
-        self.risk_per_trade = risk_per_trade
-        self.atr_stop_multiplier = atr_stop_multiplier
-        self.take_profit_r = take_profit_r
-
-        self.position: Optional[Position] = None
+        self.position: Optional[
+            Position
+        ] = None
 
         self.trades = []
+
         self.equity_curve = []
+
+        self.risk_manager = RiskManager(
+            starting_balance,
+            RiskConfig(
+                risk_per_trade=RISK_PER_TRADE,
+                max_daily_loss=MAX_DAILY_LOSS,
+                max_consecutive_losses=(
+                    MAX_CONSECUTIVE_LOSSES
+                ),
+            ),
+        )
+
+        self.cooldown_until = None
+        self.loss_cooldown_until = None
+        self.current_day = None
+
+    # ======================================
+    # DAILY RESET
+    # ======================================
+
+    def update_day(
+        self,
+        timestamp,
+    ):
+
+        day = timestamp.date()
+
+        if (
+            self.current_day is None
+            or day != self.current_day
+        ):
+
+            self.current_day = day
+
+            self.risk_manager.reset_daily(
+                self.balance
+            )
 
     # ======================================
     # BUY
@@ -97,18 +164,17 @@ class BacktestEngine:
         if self.position is not None:
             return
 
-        if pd.isna(atr) or atr <= 0:
+        if atr <= 0:
             return
 
-        # Market BUY with slippage.
         entry_price = (
             close *
-            (1 + self.slippage_rate)
+            (1 + SLIPPAGE_RATE)
         )
 
         stop_distance = (
             atr *
-            self.atr_stop_multiplier
+            ATR_STOP_MULTIPLIER
         )
 
         stop_price = (
@@ -116,30 +182,13 @@ class BacktestEngine:
             stop_distance
         )
 
-        # Maximum monetary risk.
-        risk_amount = (
-            self.balance *
-            self.risk_per_trade
-        )
-
-        # Quantity based on risk.
         quantity = (
-            risk_amount /
-            stop_distance
-        )
-
-        # No leverage.
-        max_quantity = (
-            self.balance /
-            (
-                entry_price *
-                (1 + self.fee_rate)
+            self.risk_manager
+            .calculate_position_size(
+                balance=self.balance,
+                entry_price=entry_price,
+                stop_price=stop_price,
             )
-        )
-
-        quantity = min(
-            quantity,
-            max_quantity,
         )
 
         if quantity <= 0:
@@ -152,7 +201,7 @@ class BacktestEngine:
 
         entry_fee = (
             position_value *
-            self.fee_rate
+            FEE_RATE
         )
 
         total_cost = (
@@ -179,29 +228,27 @@ class BacktestEngine:
         )
 
     # ======================================
-    # PARTIAL SELL
+    # SELL
     # ======================================
 
-    def execute_partial_sell(
+    def execute_sell(
         self,
-        position: Position,
-        market_price: float,
-        quantity: float,
-        timestamp,
-    ) -> float:
+        position,
+        market_price,
+        quantity,
+    ):
 
         if quantity <= 0:
-            return 0.0
+            return
 
         quantity = min(
             quantity,
             position.remaining_quantity,
         )
 
-        # Market SELL with slippage.
         exit_price = (
             market_price *
-            (1 - self.slippage_rate)
+            (1 - SLIPPAGE_RATE)
         )
 
         gross_value = (
@@ -211,17 +258,14 @@ class BacktestEngine:
 
         exit_fee = (
             gross_value *
-            self.fee_rate
+            FEE_RATE
         )
 
-        net_value = (
+        self.balance += (
             gross_value -
             exit_fee
         )
 
-        self.balance += net_value
-
-        # Proportional entry cost.
         entry_value = (
             quantity *
             position.entry_price
@@ -229,64 +273,56 @@ class BacktestEngine:
 
         entry_fee = (
             entry_value *
-            self.fee_rate
+            FEE_RATE
         )
 
         gross_profit = (
-            exit_price -
-            position.entry_price
-        ) * quantity
-
-        total_fees = (
-            entry_fee +
-            exit_fee
-        )
-
-        # Approximate round-trip slippage cost.
-        theoretical_value = (
-            quantity *
-            position.entry_price
-        )
-
-        actual_entry_value = (
-            quantity *
-            position.entry_price *
-            (1 + self.slippage_rate)
-        )
-
-        actual_exit_value = (
-            quantity *
-            exit_price
-        )
-
-        slippage_cost = abs(
-            actual_entry_value -
-            theoretical_value
-        ) + abs(
-            theoretical_value -
-            actual_exit_value
+            (
+                exit_price -
+                position.entry_price
+            )
+            * quantity
         )
 
         net_profit = (
             gross_profit -
-            total_fees
+            entry_fee -
+            exit_fee
         )
 
-        position.realized_profit += net_profit
+        # Approximate total slippage.
+        entry_slippage = (
+            quantity *
+            position.entry_price *
+            SLIPPAGE_RATE
+        )
+
+        exit_slippage = (
+            quantity *
+            market_price *
+            SLIPPAGE_RATE
+        )
+
+        position.realized_profit += (
+            net_profit
+        )
+
         position.total_fees += (
-            exit_fee +
-            entry_fee
+            entry_fee +
+            exit_fee
         )
+
         position.total_slippage_cost += (
-            slippage_cost
+            entry_slippage +
+            exit_slippage
         )
 
-        position.remaining_quantity -= quantity
-
-        return net_profit
+        position.remaining_quantity -= (
+            quantity
+        )
 
     # ======================================
-    # CLOSE COMPLETE POSITION
+    # CLOSE TRADE
     # ======================================
 
     def close_position(
@@ -301,30 +337,33 @@ class BacktestEngine:
 
         position = self.position
 
-        remaining = position.remaining_quantity
+        if position.remaining_quantity > 0:
 
-        if remaining > 0:
-
-            self.execute_partial_sell(
-                position=position,
-                market_price=market_price,
-                quantity=remaining,
-                timestamp=timestamp,
+            self.execute_sell(
+                position,
+                market_price,
+                position.remaining_quantity,
             )
 
-        # Total risk of original position.
         initial_risk = (
             position.risk_per_unit *
             position.quantity
         )
 
         if initial_risk > 0:
+
             r_multiple = (
                 position.realized_profit /
                 initial_risk
             )
+
         else:
             r_multiple = 0.0
+
+        gross_profit = (
+            position.realized_profit +
+            position.total_fees
+        )
 
         trade = Trade(
             symbol=position.symbol,
@@ -333,30 +372,54 @@ class BacktestEngine:
             entry_price=position.entry_price,
             final_exit_price=market_price,
             initial_quantity=position.quantity,
-            remaining_quantity=0.0,
-            gross_profit=(
-                position.realized_profit +
-                position.total_fees
-            ),
+            gross_profit=gross_profit,
             fees=position.total_fees,
-            slippage_cost=position.total_slippage_cost,
-            net_profit=position.realized_profit,
+            slippage_cost=(
+                position.total_slippage_cost
+            ),
+            net_profit=(
+                position.realized_profit
+            ),
             exit_reason=reason,
             r_multiple=r_multiple,
         )
 
         self.trades.append(trade)
 
+        self.risk_manager.record_trade(
+            trade.net_profit
+        )
+
+        if (
+            self.risk_manager
+            .loss_streak_limit_reached()
+        ):
+
+            self.loss_cooldown_until = (
+                timestamp +
+                pd.Timedelta(
+                    minutes=LOSS_COOLDOWN_MINUTES
+                )
+            )
+
+        else:
+
+            self.cooldown_until = (
+                timestamp +
+                pd.Timedelta(
+                    minutes=TRADE_COOLDOWN_MINUTES
+                )
+            )
+
         self.position = None
 
     # ======================================
-    # MANAGE POSITION
+    # POSITION MANAGEMENT
     # ======================================
 
     def manage_position(
         self,
         row,
-        history,
     ):
 
         if self.position is None:
@@ -369,18 +432,16 @@ class BacktestEngine:
         close = float(row["close"])
 
         # ----------------------------------
-        # Update highest price
+        # Highest price
         # ----------------------------------
 
-        if high > position.highest_price:
-            position.highest_price = high
+        position.highest_price = max(
+            position.highest_price,
+            high,
+        )
 
         # ----------------------------------
         # STOP FIRST
-        #
-        # Conservative assumption:
-        # if both stop and target are touched
-        # within the same candle, stop wins.
         # ----------------------------------
 
         if low <= position.current_stop:
@@ -397,61 +458,65 @@ class BacktestEngine:
         # 1R
         # ----------------------------------
 
-        one_r_price = (
+        one_r = (
             position.entry_price +
-            position.risk_per_unit
+            position.risk_per_unit *
+            PARTIAL_EXIT_1_R
         )
 
         if (
             not position.partial_1_done
-            and high >= one_r_price
+            and high >= one_r
         ):
 
             quantity = (
                 position.quantity *
-                0.50
+                PARTIAL_EXIT_1_SIZE
             )
 
-            self.execute_partial_sell(
-                position=position,
-                market_price=one_r_price,
-                quantity=quantity,
-                timestamp=row.name,
+            self.execute_sell(
+                position,
+                one_r,
+                quantity,
             )
 
             position.partial_1_done = True
 
-            # Break-even including entry fee.
-            position.current_stop = (
+            # Break-even including approximate fee.
+            break_even = (
                 position.entry_price *
-                (1 + self.fee_rate)
+                (1 + FEE_RATE)
+            )
+
+            position.current_stop = max(
+                position.current_stop,
+                break_even,
             )
 
         # ----------------------------------
         # 2R
         # ----------------------------------
 
-        two_r_price = (
+        two_r = (
             position.entry_price +
             position.risk_per_unit *
-            self.take_profit_r
+            PARTIAL_EXIT_2_R
         )
 
         if (
             not position.partial_2_done
-            and high >= two_r_price
+            and high >= two_r
         ):
 
             quantity = (
                 position.quantity *
-                0.25
+                PARTIAL_EXIT_2_SIZE
             )
 
-            self.execute_partial_sell(
-                position=position,
-                market_price=two_r_price,
-                quantity=quantity,
-                timestamp=row.name,
+            self.execute_sell(
+                position,
+                two_r,
+                quantity,
             )
 
             position.partial_2_done = True
@@ -471,28 +536,22 @@ class BacktestEngine:
 
                 trailing_stop = (
                     position.highest_price -
-                    atr
+                    (
+                        atr *
+                        TRAILING_ATR_MULTIPLIER
+                    )
                 )
 
-                if (
-                    trailing_stop >
-                    position.current_stop
-                ):
-
-                    position.current_stop = (
-                        trailing_stop
-                    )
+                position.current_stop = max(
+                    position.current_stop,
+                    trailing_stop,
+                )
 
         # ----------------------------------
-        # EMA EXIT
+        # EMA exit
         # ----------------------------------
 
-        ema_exit = (
-            row["ema_9"] <
-            row["ema_21"]
-        )
-
-        if ema_exit:
+        if check_ema_exit(row):
 
             self.close_position(
                 market_price=close,
@@ -503,10 +562,10 @@ class BacktestEngine:
             return
 
         # ----------------------------------
-        # RSI EXIT
+        # RSI exit
         # ----------------------------------
 
-        if row["rsi_14"] < 45:
+        if check_rsi_exit(row):
 
             self.close_position(
                 market_price=close,
@@ -520,12 +579,12 @@ class BacktestEngine:
         # TIME STOP
         # ----------------------------------
 
-        duration_minutes = (
+        duration = (
             row.name -
             position.entry_time
         ).total_seconds() / 60
 
-        if duration_minutes >= 60:
+        if duration >= MAX_TRADE_MINUTES:
 
             self.close_position(
                 market_price=close,
@@ -534,50 +593,102 @@ class BacktestEngine:
             )
 
     # ======================================
-    # RUN BACKTEST
+    # RUN
     # ======================================
 
     def run(
         self,
         df: pd.DataFrame,
-        symbol: str = "BTC/USDT",
+        symbol: str,
     ):
 
         df = calculate_indicators(df)
 
-        self.balance = self.starting_balance
+        self.balance = (
+            self.starting_balance
+        )
+
         self.position = None
         self.trades = []
         self.equity_curve = []
+
+        self.current_day = None
+        self.cooldown_until = None
+        self.loss_cooldown_until = None
 
         for i in range(60, len(df)):
 
             current = df.iloc[i]
 
-            history = df.iloc[: i + 1]
+            timestamp = current.name
 
-            # --------------------------------
-            # Manage existing position
-            # --------------------------------
+            self.update_day(timestamp)
+
+            # ------------------------------
+            # Existing position
+            # ------------------------------
 
             if self.position is not None:
 
                 self.manage_position(
-                    row=current,
-                    history=history,
+                    current
                 )
 
-            # --------------------------------
+            # ------------------------------
+            # Daily loss protection
+            # ------------------------------
+
+            trading_blocked = (
+                self.risk_manager
+                .daily_loss_limit_reached(
+                    self.balance
+                )
+            )
+
+            # ------------------------------
+            # Loss cooldown
+            # ------------------------------
+
+            if (
+                self.loss_cooldown_until
+                is not None
+                and
+                timestamp <
+                self.loss_cooldown_until
+            ):
+
+                trading_blocked = True
+
+            # ------------------------------
+            # Normal cooldown
+            # ------------------------------
+
+            if (
+                self.cooldown_until
+                is not None
+                and
+                timestamp <
+                self.cooldown_until
+            ):
+
+                trading_blocked = True
+
+            # ------------------------------
             # New entry
-            # --------------------------------
+            # ------------------------------
 
-            if self.position is None:
+            if (
+                self.position is None
+                and not trading_blocked
+            ):
 
-                if check_buy_signal(history):
+                if check_buy_signal(
+                    df.iloc[: i + 1]
+                ):
 
                     self.execute_buy(
                         symbol=symbol,
-                        timestamp=current.name,
+                        timestamp=timestamp,
                         close=float(
                             current["close"]
                         ),
@@ -586,39 +697,41 @@ class BacktestEngine:
                         ),
                     )
 
-            # --------------------------------
+            # ------------------------------
             # Equity
-            # --------------------------------
+            # ------------------------------
 
             equity = self.balance
 
             if self.position is not None:
 
                 equity += (
-                    self.position.remaining_quantity *
+                    self.position
+                    .remaining_quantity
+                    *
                     float(current["close"])
                 )
 
             self.equity_curve.append(
                 {
-                    "timestamp": current.name,
+                    "timestamp": timestamp,
                     "equity": equity,
                 }
             )
 
-        # ------------------------------------
-        # Close open position at end
-        # ------------------------------------
+        # ----------------------------------
+        # Final position
+        # ----------------------------------
 
         if self.position is not None:
 
-            final_row = df.iloc[-1]
+            final = df.iloc[-1]
 
             self.close_position(
                 market_price=float(
-                    final_row["close"]
+                    final["close"]
                 ),
-                timestamp=final_row.name,
+                timestamp=final.name,
                 reason="END_OF_TEST",
             )
 
