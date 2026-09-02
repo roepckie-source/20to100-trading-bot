@@ -155,13 +155,19 @@ jobs:
 
           python v4_backtest.py
 
-            - name: Run V5 walk-forward backtest
+
+      # ======================================================
+      # V5 WALK-FORWARD BACKTEST
+      # ======================================================
+
+      - name: Run V5 walk-forward backtest
         run: |
           echo "=================================================="
           echo "RUNNING V5 REGIME-FILTER WALK-FORWARD BACKTEST"
           echo "=================================================="
 
           python v5_backtest.py
+
 
       # ======================================================
       # UPLOAD RESULTS
