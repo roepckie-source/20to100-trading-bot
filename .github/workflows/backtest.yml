@@ -142,15 +142,20 @@ jobs:
 
           python v3_backtest.py
 
-            - name: Run V4 walk-forward backtest
+
+      # ======================================================
+      # V4 WALK-FORWARD BACKTEST
+      # ======================================================
+
+      - name: Run V4 walk-forward backtest
         run: |
           echo "=================================================="
           echo "RUNNING V4 WALK-FORWARD BACKTEST"
           echo "=================================================="
 
           python v4_backtest.py
-  
-      
+
+
       # ======================================================
       # UPLOAD RESULTS
       # ======================================================
