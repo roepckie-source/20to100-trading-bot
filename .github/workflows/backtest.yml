@@ -66,6 +66,7 @@ jobs:
 
           echo ""
           echo "BTC:"
+
           python - <<'PY'
           import pandas as pd
 
@@ -84,6 +85,7 @@ jobs:
 
           echo ""
           echo "ETH:"
+
           python - <<'PY'
           import pandas as pd
 
@@ -126,6 +128,19 @@ jobs:
           echo "=================================================="
 
           python v2_backtest.py
+
+
+      # ======================================================
+      # V3 ROBUSTNESS BACKTEST
+      # ======================================================
+
+      - name: Run V3 robustness backtest
+        run: |
+          echo "=================================================="
+          echo "RUNNING V3 ROBUSTNESS BACKTEST"
+          echo "=================================================="
+
+          python v3_backtest.py
 
 
       # ======================================================
