@@ -28,6 +28,7 @@ DEFAULT_DAYS = 5 * 365
 SYMBOLS = [
     "BTC/USDT",
     "ETH/USDT",
+    "SOL/USDT",
 ]
 
 
