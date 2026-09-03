@@ -157,27 +157,79 @@ def load_eth_1h():
 
 def month_windows(index):
 
+    # ======================================
+    # IMPORTANT:
+    # Keep all timestamps timezone-aware
+    # because market data uses UTC.
+    # ======================================
+
+    index = pd.DatetimeIndex(index)
+
+    if index.tz is None:
+        index = index.tz_localize("UTC")
+    else:
+        index = index.tz_convert("UTC")
+
     start = (
         index.min()
         .to_period("M")
         .to_timestamp()
+        .tz_localize("UTC")
     )
 
     end = (
         index.max()
         .to_period("M")
         .to_timestamp()
+        .tz_localize("UTC")
     )
 
     cursor = (
         start
-        +
-        pd.DateOffset(
+        + pd.DateOffset(
             months=TRAIN_MONTHS
         )
     )
 
     while (
+        cursor
+        + pd.DateOffset(
+            months=OOS_MONTHS
+        )
+        <= end
+    ):
+
+        train_start = (
+            cursor
+            - pd.DateOffset(
+                months=TRAIN_MONTHS
+            )
+        )
+
+        train_end = cursor
+
+        oos_start = cursor
+
+        oos_end = (
+            cursor
+            + pd.DateOffset(
+                months=OOS_MONTHS
+            )
+        )
+
+        yield (
+            train_start,
+            train_end,
+            oos_start,
+            oos_end,
+        )
+
+        cursor += (
+            pd.DateOffset(
+                months=OOS_MONTHS
+            )
+        )
+        while (
         cursor
         +
         pd.DateOffset(
