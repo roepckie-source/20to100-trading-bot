@@ -6,6 +6,7 @@
 # 1% Risk per Trade
 # ATR Stop
 # ATR Trailing
+# Correct Cash / Equity Accounting
 # ==========================================
 
 from dataclasses import dataclass, asdict
@@ -123,6 +124,13 @@ class V5BacktestEngine:
 
         # ======================================
         # ACCOUNT
+        #
+        # balance = available cash
+        # position value is NOT included here
+        # while a position is open.
+        #
+        # equity = cash + market value
+        # of open position.
         # ======================================
 
         self.balance = (
@@ -145,7 +153,7 @@ class V5BacktestEngine:
 
         self.current_day = None
 
-        self.day_start_balance = (
+        self.day_start_equity = (
             self.starting_balance
         )
 
@@ -158,12 +166,34 @@ class V5BacktestEngine:
         self._current_index = 0
 
     # ==========================================
+    # EQUITY
+    # ==========================================
+
+    def _calculate_equity(
+        self,
+        market_price: float
+    ):
+
+        equity = self.balance
+
+        if self.position is not None:
+
+            equity += (
+                self.position["quantity"]
+                *
+                float(market_price)
+            )
+
+        return float(equity)
+
+    # ==========================================
     # DAILY RESET
     # ==========================================
 
     def _reset_day_if_needed(
         self,
-        timestamp
+        timestamp,
+        equity
     ):
 
         day = pd.Timestamp(
@@ -174,23 +204,28 @@ class V5BacktestEngine:
 
             self.current_day = day
 
-            self.day_start_balance = (
-                self.balance
+            self.day_start_equity = float(
+                equity
             )
 
     # ==========================================
     # DAILY LOSS
     # ==========================================
 
-    def _daily_loss_limit_hit(self):
+    def _daily_loss_limit_hit(
+        self,
+        equity
+    ):
 
-        if self.day_start_balance <= 0:
+        if self.day_start_equity <= 0:
+
             return True
 
         loss = (
-            self.day_start_balance
-            - self.balance
-        ) / self.day_start_balance
+            self.day_start_equity
+            -
+            equity
+        ) / self.day_start_equity
 
         return (
             loss
@@ -213,11 +248,13 @@ class V5BacktestEngine:
         )
 
         if self.peak_equity <= 0:
+
             return True
 
         drawdown = (
             self.peak_equity
-            - equity
+            -
+            equity
         ) / self.peak_equity
 
         return (
@@ -237,22 +274,40 @@ class V5BacktestEngine:
         entry_row
     ):
 
+        # ======================================
+        # RAW ENTRY
+        # ======================================
+
         entry_raw = float(
             entry_row["open"]
         )
 
-        # Slippage on BUY
+        # ======================================
+        # BUY SLIPPAGE
+        # ======================================
+
         entry_price = (
             entry_raw
             *
             (1.0 + self.slippage_rate)
         )
 
+        # ======================================
+        # ATR
+        # ======================================
+
         atr = float(
             signal_row["atr_14"]
         )
 
+        if atr <= 0:
+
+            return
+
+        # ======================================
         # ATR STOP
+        # ======================================
+
         stop_price = (
             entry_price
             -
@@ -262,9 +317,11 @@ class V5BacktestEngine:
         )
 
         if stop_price <= 0:
+
             return
 
         if stop_price >= entry_price:
+
             return
 
         # ======================================
@@ -277,6 +334,14 @@ class V5BacktestEngine:
             self.risk_per_trade
         )
 
+        if risk_money <= 0:
+
+            return
+
+        # ======================================
+        # RISK PER UNIT
+        # ======================================
+
         risk_per_unit = (
             entry_price
             -
@@ -284,16 +349,29 @@ class V5BacktestEngine:
         )
 
         if risk_per_unit <= 0:
+
             return
 
-        # Position size based on risk
+        # ======================================
+        # POSITION SIZE BY RISK
+        # ======================================
+
         qty_by_risk = (
             risk_money
             /
             risk_per_unit
         )
 
-        # Position size based on available cash
+        # ======================================
+        # POSITION SIZE BY CASH
+        #
+        # We need enough cash for:
+        #
+        # position notional
+        # +
+        # entry fee
+        # ======================================
+
         qty_by_cash = (
             self.balance
             /
@@ -310,10 +388,11 @@ class V5BacktestEngine:
         )
 
         if quantity <= 0:
+
             return
 
         # ======================================
-        # ENTRY FEE
+        # ENTRY NOTIONAL
         # ======================================
 
         notional = (
@@ -322,16 +401,43 @@ class V5BacktestEngine:
             entry_price
         )
 
+        # ======================================
+        # ENTRY FEE
+        # ======================================
+
         entry_fee = (
             notional
             *
             self.fee_rate
         )
 
-        if entry_fee >= self.balance:
+        # ======================================
+        # TOTAL CASH REQUIRED
+        # ======================================
+
+        total_entry_cost = (
+            notional
+            +
+            entry_fee
+        )
+
+        if total_entry_cost > self.balance:
+
             return
 
-        self.balance -= entry_fee
+        # ======================================
+        # IMPORTANT:
+        #
+        # REMOVE THE COMPLETE POSITION
+        # VALUE + ENTRY FEE FROM CASH.
+        #
+        # This fixes the previous accounting
+        # bug that caused artificial profits.
+        # ======================================
+
+        self.balance -= (
+            total_entry_cost
+        )
 
         # ======================================
         # STORE POSITION
@@ -339,23 +445,32 @@ class V5BacktestEngine:
 
         self.position = {
 
-            "entry_time": timestamp,
+            "entry_time":
+                timestamp,
 
-            "entry_price": entry_price,
+            "entry_price":
+                entry_price,
 
-            "quantity": quantity,
+            "quantity":
+                quantity,
 
-            "initial_stop": stop_price,
+            "initial_stop":
+                stop_price,
 
-            "stop": stop_price,
+            "stop":
+                stop_price,
 
-            "risk_per_unit": risk_per_unit,
+            "risk_per_unit":
+                risk_per_unit,
 
-            "entry_fee": entry_fee,
+            "entry_fee":
+                entry_fee,
 
-            "highest": entry_price,
+            "highest":
+                entry_price,
 
-            "entry_atr": atr,
+            "entry_atr":
+                atr,
         }
 
     # ==========================================
@@ -372,9 +487,13 @@ class V5BacktestEngine:
         pos = self.position
 
         if pos is None:
+
             return
 
-        # Slippage on SELL
+        # ======================================
+        # SELL SLIPPAGE
+        # ======================================
+
         exit_price = (
             float(raw_exit_price)
             *
@@ -391,11 +510,19 @@ class V5BacktestEngine:
             pos["entry_price"]
         ) * pos["quantity"]
 
+        # ======================================
+        # EXIT NOTIONAL
+        # ======================================
+
         exit_notional = (
             exit_price
             *
             pos["quantity"]
         )
+
+        # ======================================
+        # EXIT FEE
+        # ======================================
 
         exit_fee = (
             exit_notional
@@ -403,14 +530,25 @@ class V5BacktestEngine:
             self.fee_rate
         )
 
-        fees = (
+        # ======================================
+        # TOTAL FEES
+        # ======================================
+
+        entry_fee = float(
             pos["entry_fee"]
+        )
+
+        fees = (
+            entry_fee
             +
             exit_fee
         )
 
         # ======================================
         # SLIPPAGE COST
+        #
+        # Compare execution prices with
+        # theoretical no-slippage prices.
         # ======================================
 
         theoretical_entry = (
@@ -425,8 +563,7 @@ class V5BacktestEngine:
             (1.0 - self.slippage_rate)
         )
 
-        slippage_cost = (
-
+        entry_slippage = (
             abs(
                 theoretical_entry
                 -
@@ -434,9 +571,9 @@ class V5BacktestEngine:
             )
             *
             pos["quantity"]
+        )
 
-            +
-
+        exit_slippage = (
             abs(
                 theoretical_exit
                 -
@@ -446,17 +583,37 @@ class V5BacktestEngine:
             pos["quantity"]
         )
 
+        slippage_cost = (
+            entry_slippage
+            +
+            exit_slippage
+        )
+
         # ======================================
         # NET PROFIT
+        #
+        # IMPORTANT:
+        # Entry AND exit fee are included.
         # ======================================
 
         net = (
             gross
             -
+            entry_fee
+            -
             exit_fee
         )
 
-        # Return position capital
+        # ======================================
+        # RETURN SELL PROCEEDS TO CASH
+        #
+        # At entry the complete position value
+        # was removed from cash.
+        #
+        # At exit we therefore add only the
+        # actual net sale proceeds.
+        # ======================================
+
         self.balance += (
             exit_notional
             -
@@ -550,6 +707,10 @@ class V5BacktestEngine:
 
             self.consecutive_losses = 0
 
+        # ======================================
+        # CLOSE POSITION
+        # ======================================
+
         self.position = None
 
     # ==========================================
@@ -562,6 +723,7 @@ class V5BacktestEngine:
     ):
 
         if len(df) < 250:
+
             return self._result()
 
         data = df.copy()
@@ -579,12 +741,38 @@ class V5BacktestEngine:
 
                 data["timestamp"] = (
                     pd.to_datetime(
-                        data["timestamp"]
+                        data["timestamp"],
+                        utc=True
                     )
                 )
 
                 data = data.set_index(
                     "timestamp"
+                )
+
+            else:
+
+                raise ValueError(
+                    "DataFrame benötigt einen "
+                    "DatetimeIndex oder eine "
+                    "timestamp-Spalte."
+                )
+
+        else:
+
+            # Make sure timestamps are UTC-aware
+            if data.index.tz is None:
+
+                data.index = (
+                    data.index
+                    .tz_localize("UTC")
+                )
+
+            else:
+
+                data.index = (
+                    data.index
+                    .tz_convert("UTC")
                 )
 
         data = data.sort_index()
@@ -606,30 +794,42 @@ class V5BacktestEngine:
 
             timestamp = data.index[i]
 
-            self._reset_day_if_needed(
-                timestamp
+            current_price = float(
+                row["close"]
             )
 
             # ==================================
-            # MARK TO MARKET
+            # CURRENT EQUITY
             # ==================================
 
-            equity = self.balance
+            equity = self._calculate_equity(
+                current_price
+            )
 
-            if self.position is not None:
+            # ==================================
+            # DAILY RESET
+            # ==================================
 
-                equity += (
-                    self.position[
-                        "quantity"
-                    ]
-                    *
-                    float(row["close"])
-                )
+            self._reset_day_if_needed(
+                timestamp,
+                equity
+            )
+
+            # ==================================
+            # UPDATE EQUITY
+            # ==================================
+
+            equity = self._calculate_equity(
+                current_price
+            )
 
             self.equity_curve.append(
                 {
-                    "timestamp": timestamp,
-                    "equity": equity,
+                    "timestamp":
+                        timestamp,
+
+                    "equity":
+                        equity,
                 }
             )
 
@@ -651,7 +851,14 @@ class V5BacktestEngine:
 
                 pos = self.position
 
+                # ==================================
                 # STOP FIRST
+                #
+                # Conservative assumption:
+                # If candle low touches stop,
+                # stop is executed.
+                # ==================================
+
                 if (
                     float(row["low"])
                     <=
@@ -666,7 +873,10 @@ class V5BacktestEngine:
 
                     continue
 
-                # Update highest price
+                # ==================================
+                # UPDATE HIGHEST PRICE
+                # ==================================
+
                 pos["highest"] = max(
                     pos["highest"],
                     float(row["high"])
@@ -676,17 +886,23 @@ class V5BacktestEngine:
                 # TRAILING STOP
                 # ==================================
 
-                candidate = (
-                    pos["highest"]
-                    -
-                    float(row["atr_14"])
-                    *
-                    self.trailing_atr_multiplier
+                current_atr = float(
+                    row["atr_14"]
                 )
 
-                if candidate > pos["stop"]:
+                if current_atr > 0:
 
-                    pos["stop"] = candidate
+                    candidate = (
+                        pos["highest"]
+                        -
+                        current_atr
+                        *
+                        self.trailing_atr_multiplier
+                    )
+
+                    if candidate > pos["stop"]:
+
+                        pos["stop"] = candidate
 
                 # ==================================
                 # END OF TEST
@@ -700,7 +916,7 @@ class V5BacktestEngine:
 
                     self._exit(
                         timestamp,
-                        float(row["close"]),
+                        current_price,
                         "END"
                     )
 
@@ -711,16 +927,29 @@ class V5BacktestEngine:
             # ==================================
 
             if self.kill_switch:
+
                 continue
 
-            if self._daily_loss_limit_hit():
+            # ==================================
+            # DAILY LOSS LIMIT
+            # ==================================
+
+            if self._daily_loss_limit_hit(
+                equity
+            ):
+
                 continue
+
+            # ==================================
+            # CONSECUTIVE LOSS COOLDOWN
+            # ==================================
 
             if (
                 i
                 <
                 self.cooldown_until
             ):
+
                 continue
 
             # ==================================
@@ -772,18 +1001,21 @@ class V5BacktestEngine:
 
         profits = [
             trade.net_profit
-            for trade in self.trades
+            for trade
+            in self.trades
         ]
 
         wins = [
             profit
-            for profit in profits
+            for profit
+            in profits
             if profit > 0
         ]
 
         losses = [
             profit
-            for profit in profits
+            for profit
+            in profits
             if profit < 0
         ]
 
@@ -791,10 +1023,14 @@ class V5BacktestEngine:
         # PROFIT FACTOR
         # ======================================
 
-        gross_profit = sum(wins)
+        gross_profit = sum(
+            wins
+        )
 
         gross_loss = abs(
-            sum(losses)
+            sum(
+                losses
+            )
         )
 
         if gross_loss > 0:
@@ -881,6 +1117,26 @@ class V5BacktestEngine:
             max_drawdown = 0.0
 
         # ======================================
+        # TOTAL FEES
+        # ======================================
+
+        total_fees = sum(
+            trade.fees
+            for trade
+            in self.trades
+        )
+
+        # ======================================
+        # TOTAL SLIPPAGE
+        # ======================================
+
+        total_slippage = sum(
+            trade.slippage_cost
+            for trade
+            in self.trades
+        )
+
+        # ======================================
         # RESULT
         # ======================================
 
@@ -929,18 +1185,10 @@ class V5BacktestEngine:
                 max_drawdown,
 
             "fees":
-                sum(
-                    trade.fees
-                    for trade
-                    in self.trades
-                ),
+                total_fees,
 
             "slippage_cost":
-                sum(
-                    trade.slippage_cost
-                    for trade
-                    in self.trades
-                ),
+                total_slippage,
 
             "trades_detail":
                 [
