@@ -186,44 +186,53 @@ jobs:
 
 
       # ======================================================
-      # V6 MULTI-ASSET WALK-FORWARD BACKTEST
+      # V6 EXTENDED MULTI-ASSET WALK-FORWARD BACKTEST
       # ======================================================
 
-      - name: Run V6 multi-asset walk-forward backtest
+      - name: Run V6 extended multi-asset walk-forward backtest
         run: |
           echo "=================================================="
-          echo "RUNNING V6 MULTI-ASSET WALK-FORWARD BACKTEST"
+          echo "RUNNING V6 EXTENDED MULTI-ASSET WALK-FORWARD BACKTEST"
           echo "BTC + ETH + SOL"
           echo "V6_A + V6_B + V6_C"
           echo "=================================================="
 
-          python v6_multi_asset_backtest.py
+          python v6_extended_multi_asset_backtest.py
 
 
       # ======================================================
-      # SHOW V6 RESULTS
+      # SHOW V6 EXTENDED RESULTS
       # ======================================================
 
-      - name: Show V6 results
+      - name: Show V6 extended results
         if: always()
         run: |
           echo "=================================================="
-          echo "V6 MULTI-ASSET RESULTS"
+          echo "V6 EXTENDED MULTI-ASSET RESULTS"
           echo "=================================================="
 
-          if [ -f logs/v6_multi_asset_summary.csv ]; then
+          if [ -f logs/v6_extended_multi_asset_results.csv ]; then
             echo ""
-            echo "ASSET / VARIANT SUMMARY:"
-            cat logs/v6_multi_asset_summary.csv
+            echo "DETAILED RESULTS:"
+            cat logs/v6_extended_multi_asset_results.csv
           fi
 
           echo ""
           echo "=================================================="
-          echo "V6 VARIANT SUMMARY"
+          echo "V6 ASSET SUMMARY"
           echo "=================================================="
 
-          if [ -f logs/v6_multi_asset_variant_summary.csv ]; then
-            cat logs/v6_multi_asset_variant_summary.csv
+          if [ -f logs/v6_extended_asset_summary.csv ]; then
+            cat logs/v6_extended_asset_summary.csv
+          fi
+
+          echo ""
+          echo "=================================================="
+          echo "V6 GLOBAL VARIANT SUMMARY"
+          echo "=================================================="
+
+          if [ -f logs/v6_extended_multi_asset_summary.csv ]; then
+            cat logs/v6_extended_multi_asset_summary.csv
           fi
 
 
