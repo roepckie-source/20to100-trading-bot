@@ -43,7 +43,7 @@ jobs:
       # DOWNLOAD HISTORICAL DATA
       # ======================================================
 
-      - name: Download historical BTC and ETH data
+      - name: Download historical BTC ETH and SOL data
         run: |
           echo "=================================================="
           echo "DOWNLOADING HISTORICAL MARKET DATA"
@@ -66,7 +66,6 @@ jobs:
 
           echo ""
           echo "BTC:"
-
           python - <<'PY'
           import pandas as pd
 
@@ -85,11 +84,28 @@ jobs:
 
           echo ""
           echo "ETH:"
-
           python - <<'PY'
           import pandas as pd
 
           file = "data/ETH_USDT_5m.csv"
+
+          df = pd.read_csv(
+              file,
+              index_col="timestamp",
+              parse_dates=True
+          )
+
+          print(f"Rows: {len(df):,}")
+          print(f"From: {df.index.min()}")
+          print(f"To:   {df.index.max()}")
+          PY
+
+          echo ""
+          echo "SOL:"
+          python - <<'PY'
+          import pandas as pd
+
+          file = "data/SOL_USDT_5m.csv"
 
           df = pd.read_csv(
               file,
@@ -167,6 +183,48 @@ jobs:
           echo "=================================================="
 
           python v5_backtest.py
+
+
+      # ======================================================
+      # V6 MULTI-ASSET WALK-FORWARD BACKTEST
+      # ======================================================
+
+      - name: Run V6 multi-asset walk-forward backtest
+        run: |
+          echo "=================================================="
+          echo "RUNNING V6 MULTI-ASSET WALK-FORWARD BACKTEST"
+          echo "BTC + ETH + SOL"
+          echo "V6_A + V6_B + V6_C"
+          echo "=================================================="
+
+          python v6_multi_asset_backtest.py
+
+
+      # ======================================================
+      # SHOW V6 RESULTS
+      # ======================================================
+
+      - name: Show V6 results
+        if: always()
+        run: |
+          echo "=================================================="
+          echo "V6 MULTI-ASSET RESULTS"
+          echo "=================================================="
+
+          if [ -f logs/v6_multi_asset_summary.csv ]; then
+            echo ""
+            echo "ASSET / VARIANT SUMMARY:"
+            cat logs/v6_multi_asset_summary.csv
+          fi
+
+          echo ""
+          echo "=================================================="
+          echo "V6 VARIANT SUMMARY"
+          echo "=================================================="
+
+          if [ -f logs/v6_multi_asset_variant_summary.csv ]; then
+            cat logs/v6_multi_asset_variant_summary.csv
+          fi
 
 
       # ======================================================
