@@ -122,6 +122,14 @@ def find_data_file(symbol: str):
 def load_data(symbol: str):
     """
     Load 5m OHLCV data.
+
+    Handles:
+    - integer timestamps
+    - string timestamps
+    - Pandas StringDtype
+    - object timestamps
+    - milliseconds
+    - seconds
     """
 
     path = find_data_file(symbol)
@@ -173,27 +181,69 @@ def load_data(symbol: str):
         )
 
     # --------------------------------------------------------
-    # Convert timestamp
+    # TIMESTAMP
     # --------------------------------------------------------
 
-    if np.issubdtype(
-        df[timestamp_col].dtype,
-        np.number
-    ):
-        # Detect milliseconds vs seconds
-        median_value = df[timestamp_col].median()
+    timestamp_series = df[timestamp_col]
 
-        unit = "ms" if median_value > 10_000_000_000 else "s"
+    # Pandas StringDtype / object / numeric sicher behandeln
+    if pd.api.types.is_numeric_dtype(timestamp_series):
+
+        numeric_timestamp = pd.to_numeric(
+            timestamp_series,
+            errors="coerce",
+        )
+
+        median_value = numeric_timestamp.median()
+
+        if pd.isna(median_value):
+            raise ValueError(
+                f"{symbol}: Timestamp-Spalte enthält "
+                f"keine gültigen numerischen Werte."
+            )
+
+        # Detect milliseconds vs seconds
+        unit = (
+            "ms"
+            if median_value > 10_000_000_000
+            else "s"
+        )
 
         df["timestamp"] = pd.to_datetime(
-            df[timestamp_col],
+            numeric_timestamp,
             unit=unit,
             utc=True,
+            errors="coerce",
         )
+
     else:
+
         df["timestamp"] = pd.to_datetime(
-            df[timestamp_col],
+            timestamp_series,
             utc=True,
+            errors="coerce",
+        )
+
+    # --------------------------------------------------------
+    # Remove invalid timestamps
+    # --------------------------------------------------------
+
+    invalid_timestamps = df["timestamp"].isna().sum()
+
+    if invalid_timestamps > 0:
+        print(
+            f"   ⚠️ {invalid_timestamps:,} "
+            f"ungültige Timestamps entfernt."
+        )
+
+        df = df.dropna(
+            subset=["timestamp"]
+        )
+
+    if df.empty:
+        raise ValueError(
+            f"{symbol}: Nach Timestamp-Konvertierung "
+            f"sind keine Daten übrig."
         )
 
     df = df.set_index("timestamp")
@@ -210,7 +260,8 @@ def load_data(symbol: str):
     ]
 
     missing = [
-        col for col in required
+        col
+        for col in required
         if col not in df.columns
     ]
 
@@ -224,33 +275,41 @@ def load_data(symbol: str):
     # --------------------------------------------------------
 
     for col in required:
+
         df[col] = pd.to_numeric(
             df[col],
             errors="coerce",
         )
 
     if "volume" in df.columns:
+
         df["volume"] = pd.to_numeric(
             df["volume"],
             errors="coerce",
         )
 
     # --------------------------------------------------------
-    # Cleanup
+    # Keep relevant columns
     # --------------------------------------------------------
 
-    df = df[
-        required
-        + (
-            ["volume"]
-            if "volume" in df.columns
-            else []
-        )
-    ]
+    columns = required.copy()
+
+    if "volume" in df.columns:
+        columns.append("volume")
+
+    df = df[columns]
+
+    # --------------------------------------------------------
+    # Remove invalid OHLC rows
+    # --------------------------------------------------------
 
     df = df.dropna(
         subset=required
     )
+
+    # --------------------------------------------------------
+    # Remove duplicate timestamps
+    # --------------------------------------------------------
 
     df = df[
         ~df.index.duplicated(
@@ -258,15 +317,47 @@ def load_data(symbol: str):
         )
     ]
 
+    # --------------------------------------------------------
+    # Sort chronologically
+    # --------------------------------------------------------
+
     df = df.sort_index()
+
+    # --------------------------------------------------------
+    # Price validation
+    # --------------------------------------------------------
+
+    df = df[
+        (df["open"] > 0)
+        & (df["high"] > 0)
+        & (df["low"] > 0)
+        & (df["close"] > 0)
+    ]
+
+    # High must be >= Low
+    df = df[
+        df["high"] >= df["low"]
+    ]
+
+    if df.empty:
+        raise ValueError(
+            f"{symbol}: Nach Datenvalidierung "
+            f"sind keine gültigen Kerzen übrig."
+        )
+
+    # --------------------------------------------------------
+    # Summary
+    # --------------------------------------------------------
 
     print(
         f"   Zeitraum: "
-        f"{df.index.min()} → {df.index.max()}"
+        f"{df.index.min()} → "
+        f"{df.index.max()}"
     )
 
     print(
-        f"   5m Kerzen: {len(df):,}"
+        f"   5m Kerzen: "
+        f"{len(df):,}"
     )
 
     return df
@@ -276,7 +367,9 @@ def load_data(symbol: str):
 # RESAMPLE 5m -> 1h
 # ============================================================
 
-def resample_to_1h(df: pd.DataFrame):
+def resample_to_1h(
+    df: pd.DataFrame,
+):
     """
     Convert 5m OHLCV data into 1h candles.
     """
@@ -353,17 +446,30 @@ def create_walk_forward_windows(
             & (df.index < oos_end)
         ].copy()
 
-        if len(train) == 0 or len(oos) == 0:
+        if (
+            len(train) == 0
+            or len(oos) == 0
+        ):
             break
 
         windows.append(
             {
                 "window": len(windows) + 1,
-                "train_start": train.index.min(),
-                "train_end": train.index.max(),
-                "oos_start": oos.index.min(),
-                "oos_end": oos.index.max(),
+
+                "train_start":
+                    train.index.min(),
+
+                "train_end":
+                    train.index.max(),
+
+                "oos_start":
+                    oos.index.min(),
+
+                "oos_end":
+                    oos.index.max(),
+
                 "train": train,
+
                 "oos": oos,
             }
         )
@@ -409,6 +515,32 @@ def run_window(
 
 
 # ============================================================
+# SAFE RESULT VALUE
+# ============================================================
+
+def safe_float(
+    value,
+):
+    """
+    Convert a value safely to float.
+    """
+
+    try:
+
+        if value is None:
+            return np.nan
+
+        return float(value)
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return np.nan
+
+
+# ============================================================
 # EXTRACT RESULT
 # ============================================================
 
@@ -427,90 +559,121 @@ def extract_result(
 
     return {
         "symbol": symbol,
+
         "variant": variant,
 
-        "window": window_info["window"],
+        "window":
+            window_info["window"],
 
-        "train_start": window_info[
-            "train_start"
-        ],
+        "train_start":
+            window_info["train_start"],
 
-        "train_end": window_info[
-            "train_end"
-        ],
+        "train_end":
+            window_info["train_end"],
 
-        "oos_start": window_info[
-            "oos_start"
-        ],
+        "oos_start":
+            window_info["oos_start"],
 
-        "oos_end": window_info[
-            "oos_end"
-        ],
+        "oos_end":
+            window_info["oos_end"],
 
-        "starting_balance": result.get(
-            "starting_balance",
-            STARTING_BALANCE,
-        ),
+        "starting_balance":
+            safe_float(
+                result.get(
+                    "starting_balance",
+                    STARTING_BALANCE,
+                )
+            ),
 
-        "final_balance": result.get(
-            "final_balance",
-            np.nan,
-        ),
+        "final_balance":
+            safe_float(
+                result.get(
+                    "final_balance",
+                    np.nan,
+                )
+            ),
 
-        "profit": result.get(
-            "profit",
-            np.nan,
-        ),
+        "profit":
+            safe_float(
+                result.get(
+                    "profit",
+                    np.nan,
+                )
+            ),
 
-        "return_pct": result.get(
-            "return_pct",
-            np.nan,
-        ),
+        "return_pct":
+            safe_float(
+                result.get(
+                    "return_pct",
+                    np.nan,
+                )
+            ),
 
-        "trades": result.get(
-            "trades",
-            0,
-        ),
+        "trades":
+            result.get(
+                "trades",
+                0,
+            ),
 
-        "wins": result.get(
-            "wins",
-            0,
-        ),
+        "wins":
+            result.get(
+                "wins",
+                0,
+            ),
 
-        "losses": result.get(
-            "losses",
-            0,
-        ),
+        "losses":
+            result.get(
+                "losses",
+                0,
+            ),
 
-        "win_rate": result.get(
-            "win_rate",
-            np.nan,
-        ),
+        "win_rate":
+            safe_float(
+                result.get(
+                    "win_rate",
+                    np.nan,
+                )
+            ),
 
-        "profit_factor": result.get(
-            "profit_factor",
-            np.nan,
-        ),
+        "profit_factor":
+            safe_float(
+                result.get(
+                    "profit_factor",
+                    np.nan,
+                )
+            ),
 
-        "expectancy": result.get(
-            "expectancy",
-            np.nan,
-        ),
+        "expectancy":
+            safe_float(
+                result.get(
+                    "expectancy",
+                    np.nan,
+                )
+            ),
 
-        "max_drawdown": result.get(
-            "max_drawdown",
-            np.nan,
-        ),
+        "max_drawdown":
+            safe_float(
+                result.get(
+                    "max_drawdown",
+                    np.nan,
+                )
+            ),
 
-        "fees": result.get(
-            "fees",
-            np.nan,
-        ),
+        "fees":
+            safe_float(
+                result.get(
+                    "fees",
+                    np.nan,
+                )
+            ),
 
-        "slippage": result.get(
-            "slippage",
-            np.nan,
-        ),
+        "slippage":
+            safe_float(
+                result.get(
+                    "slippage",
+                    np.nan,
+                )
+            ),
     }
 
 
@@ -518,12 +681,16 @@ def extract_result(
 # SUMMARY
 # ============================================================
 
-def create_summary(results):
+def create_summary(
+    results,
+):
     """
     Create summary per asset / variant.
     """
 
-    df = pd.DataFrame(results)
+    df = pd.DataFrame(
+        results
+    )
 
     if df.empty:
         return df
@@ -570,62 +737,57 @@ def create_summary(results):
         summaries.append(
             {
                 "symbol": symbol,
+
                 "variant": variant,
 
-                "windows": len(group),
+                "windows":
+                    len(group),
 
-                "positive_windows": (
-                    returns > 0
-                ).sum(),
+                "positive_windows":
+                    int(
+                        (returns > 0).sum()
+                    ),
 
-                "positive_window_pct": (
-                    (returns > 0).mean()
-                    * 100
-                ),
+                "positive_window_pct":
+                    (
+                        (returns > 0).mean()
+                        * 100
+                    ),
 
-                "pf_above_1_windows": (
-                    pf > 1
-                ).sum(),
+                "pf_above_1_windows":
+                    int(
+                        (pf > 1).sum()
+                    ),
 
-                "avg_return_pct": (
-                    returns.mean()
-                ),
+                "avg_return_pct":
+                    returns.mean(),
 
-                "median_return_pct": (
-                    returns.median()
-                ),
+                "median_return_pct":
+                    returns.median(),
 
-                "best_return_pct": (
-                    returns.max()
-                ),
+                "best_return_pct":
+                    returns.max(),
 
-                "worst_return_pct": (
-                    returns.min()
-                ),
+                "worst_return_pct":
+                    returns.min(),
 
-                "avg_profit_factor": (
-                    pf.mean()
-                ),
+                "avg_profit_factor":
+                    pf.mean(),
 
-                "median_profit_factor": (
-                    pf.median()
-                ),
+                "median_profit_factor":
+                    pf.median(),
 
-                "total_trades": (
-                    trades.sum()
-                ),
+                "total_trades":
+                    trades.sum(),
 
-                "avg_trades_per_window": (
-                    trades.mean()
-                ),
+                "avg_trades_per_window":
+                    trades.mean(),
 
-                "avg_win_rate": (
-                    win_rate.mean()
-                ),
+                "avg_win_rate":
+                    win_rate.mean(),
 
-                "worst_drawdown": (
-                    dd.min()
-                ),
+                "worst_drawdown":
+                    dd.min(),
             }
         )
 
@@ -633,6 +795,10 @@ def create_summary(results):
         summaries
     )
 
+
+# ============================================================
+# VARIANT SUMMARY
+# ============================================================
 
 def create_variant_summary(
     summary_df,
@@ -658,51 +824,47 @@ def create_variant_summary(
 
         rows.append(
             {
-                "variant": variant,
+                "variant":
+                    variant,
 
-                "assets_tested": len(
-                    subset
-                ),
+                "assets_tested":
+                    len(subset),
 
-                "avg_asset_return_pct": (
+                "avg_asset_return_pct":
                     subset[
                         "avg_return_pct"
-                    ].mean()
-                ),
+                    ].mean(),
 
-                "median_asset_return_pct": (
+                "median_asset_return_pct":
                     subset[
                         "median_return_pct"
-                    ].median()
-                ),
+                    ].median(),
 
-                "avg_profit_factor": (
+                "avg_profit_factor":
                     subset[
                         "avg_profit_factor"
-                    ].mean()
-                ),
+                    ].mean(),
 
-                "positive_window_pct_avg": (
+                "positive_window_pct_avg":
                     subset[
                         "positive_window_pct"
-                    ].mean()
-                ),
+                    ].mean(),
 
-                "total_trades": (
+                "total_trades":
                     subset[
                         "total_trades"
-                    ].sum()
-                ),
+                    ].sum(),
 
-                "worst_drawdown": (
+                "worst_drawdown":
                     subset[
                         "worst_drawdown"
-                    ].min()
-                ),
+                    ].min(),
             }
         )
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        rows
+    )
 
 
 # ============================================================
@@ -714,21 +876,27 @@ def print_summary(
     variant_summary,
 ):
     """
-
+    Print readable V6 summary.
     """
 
     print()
+
     print("=" * 90)
     print("V6 MULTI-ASSET SUMMARY")
     print("=" * 90)
 
     if summary_df.empty:
-        print("❌ Keine Ergebnisse.")
+
+        print(
+            "❌ Keine Ergebnisse."
+        )
+
         return
 
     for _, row in summary_df.iterrows():
 
         print()
+
         print(
             f"{row['symbol']} | "
             f"{row['variant']}"
@@ -793,6 +961,7 @@ def print_summary(
         )
 
     print()
+
     print("=" * 90)
     print("VARIANT COMPARISON")
     print("=" * 90)
@@ -807,6 +976,8 @@ def print_summary(
                 f"{row['variant']}: "
                 f"Avg Return "
                 f"{row['avg_asset_return_pct']:.2f}% | "
+                f"Median Return "
+                f"{row['median_asset_return_pct']:.2f}% | "
                 f"Avg PF "
                 f"{row['avg_profit_factor']:.3f} | "
                 f"Positive Windows "
@@ -818,6 +989,7 @@ def print_summary(
             )
 
     print()
+
     print("=" * 90)
 
 
@@ -828,11 +1000,15 @@ def print_summary(
 def main():
 
     print()
+
     print("=" * 90)
-    print("V6 MULTI-ASSET WALK-FORWARD BACKTEST")
+    print(
+        "V6 MULTI-ASSET WALK-FORWARD BACKTEST"
+    )
     print("=" * 90)
 
     print()
+
     print(
         "Assets:",
         ", ".join(ASSETS)
@@ -853,7 +1029,8 @@ def main():
     )
 
     print(
-        "⚠️ Kein Parameter-Fitting im TRAIN-Bereich."
+        "⚠️ Kein Parameter-Fitting "
+        "im TRAIN-Bereich."
     )
 
     print()
@@ -872,26 +1049,45 @@ def main():
     for symbol in ASSETS:
 
         print()
-        print("#" * 90)
-        print(f"ASSET: {symbol}")
+
         print("#" * 90)
 
-        # ----------------------------------------------------
-        # Load
-        # ----------------------------------------------------
-
-        df_5m = load_data(
-            symbol
+        print(
+            f"ASSET: {symbol}"
         )
 
+        print("#" * 90)
+
+        # ----------------------------------------------------
+        # LOAD
+        # ----------------------------------------------------
+
+        try:
+
+            df_5m = load_data(
+                symbol
+            )
+
+        except Exception as e:
+
+            print(
+                f"❌ Fehler beim Laden "
+                f"von {symbol}: "
+                f"{type(e).__name__}: {e}"
+            )
+
+            continue
+
         if df_5m is None:
+
             print(
                 f"⏭️ {symbol} übersprungen."
             )
+
             continue
 
         # ----------------------------------------------------
-        # Resample
+        # RESAMPLE
         # ----------------------------------------------------
 
         print(
@@ -903,17 +1099,20 @@ def main():
         )
 
         print(
-            f"   1h Kerzen: {len(df):,}"
+            f"   1h Kerzen: "
+            f"{len(df):,}"
         )
 
         if len(df) < 5000:
+
             print(
-                f"⚠️ Wenige 1h Kerzen für "
-                f"{symbol}: {len(df)}"
+                f"⚠️ Wenige 1h Kerzen "
+                f"für {symbol}: "
+                f"{len(df)}"
             )
 
         # ----------------------------------------------------
-        # Indicators
+        # INDICATORS
         # ----------------------------------------------------
 
         print(
@@ -921,12 +1120,25 @@ def main():
             f"V6 Indikatoren berechnen..."
         )
 
-        df = calculate_indicators(
-            df
-        )
+        try:
+
+            df = calculate_indicators(
+                df
+            )
+
+        except Exception as e:
+
+            print(
+                f"❌ Fehler bei V6 "
+                f"Indikatoren für "
+                f"{symbol}: "
+                f"{type(e).__name__}: {e}"
+            )
+
+            continue
 
         # ----------------------------------------------------
-        # Walk Forward Windows
+        # WALK-FORWARD WINDOWS
         # ----------------------------------------------------
 
         windows = (
@@ -941,10 +1153,12 @@ def main():
         )
 
         if not windows:
+
             print(
                 f"❌ Keine vollständigen "
                 f"Windows für {symbol}."
             )
+
             continue
 
         # ====================================================
@@ -954,6 +1168,7 @@ def main():
         for variant in VARIANTS:
 
             print()
+
             print(
                 "-" * 90
             )
@@ -967,7 +1182,7 @@ def main():
             )
 
             # ------------------------------------------------
-            # Window Loop
+            # WINDOW LOOP
             # ------------------------------------------------
 
             for window in windows:
@@ -1003,11 +1218,37 @@ def main():
                         row
                     )
 
+                    return_pct = safe_float(
+                        row["return_pct"]
+                    )
+
+                    profit_factor = safe_float(
+                        row["profit_factor"]
+                    )
+
+                    if pd.isna(
+                        return_pct
+                    ):
+                        return_text = "n/a"
+                    else:
+                        return_text = (
+                            f"{return_pct:.2f}%"
+                        )
+
+                    if pd.isna(
+                        profit_factor
+                    ):
+                        pf_text = "n/a"
+                    else:
+                        pf_text = (
+                            f"{profit_factor:.3f}"
+                        )
+
                     print(
                         f"      Return: "
-                        f"{row['return_pct']:.2f}% | "
+                        f"{return_text} | "
                         f"PF: "
-                        f"{row['profit_factor']:.3f} | "
+                        f"{pf_text} | "
                         f"Trades: "
                         f"{int(row['trades'])}"
                     )
@@ -1031,6 +1272,7 @@ def main():
     if results_df.empty:
 
         print()
+
         print(
             "❌ Keine Ergebnisse erzeugt."
         )
@@ -1094,9 +1336,14 @@ def main():
         variant_summary,
     )
 
+    # ========================================================
+    # FILE OUTPUT
+    # ========================================================
+
     print()
+
     print(
-        f"💾 Ergebnisse gespeichert:"
+        "💾 Ergebnisse gespeichert:"
     )
 
     print(
@@ -1112,6 +1359,7 @@ def main():
     )
 
     print()
+
     print(
         "✅ V6 Multi-Asset Backtest abgeschlossen."
     )
