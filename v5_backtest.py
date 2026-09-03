@@ -96,11 +96,14 @@ def load_eth_1h():
             "CSV besitzt keine timestamp-Spalte."
         )
 
-    df["timestamp"] = (
-        pd.to_datetime(
-            df["timestamp"],
-            utc=True
-        )
+    # ======================================
+    # IMPORTANT:
+    # Always use UTC-aware timestamps.
+    # ======================================
+
+    df["timestamp"] = pd.to_datetime(
+        df["timestamp"],
+        utc=True
     )
 
     df = df.set_index(
@@ -166,9 +169,20 @@ def month_windows(index):
     index = pd.DatetimeIndex(index)
 
     if index.tz is None:
-        index = index.tz_localize("UTC")
+
+        index = index.tz_localize(
+            "UTC"
+        )
+
     else:
-        index = index.tz_convert("UTC")
+
+        index = index.tz_convert(
+            "UTC"
+        )
+
+    # ======================================
+    # Start of first month
+    # ======================================
 
     start = (
         index.min()
@@ -177,6 +191,10 @@ def month_windows(index):
         .tz_localize("UTC")
     )
 
+    # ======================================
+    # End of last month
+    # ======================================
+
     end = (
         index.max()
         .to_period("M")
@@ -184,12 +202,21 @@ def month_windows(index):
         .tz_localize("UTC")
     )
 
+    # ======================================
+    # First OOS period starts after
+    # TRAIN_MONTHS
+    # ======================================
+
     cursor = (
         start
         + pd.DateOffset(
             months=TRAIN_MONTHS
         )
     )
+
+    # ======================================
+    # Generate rolling windows
+    # ======================================
 
     while (
         cursor
@@ -213,47 +240,6 @@ def month_windows(index):
         oos_end = (
             cursor
             + pd.DateOffset(
-                months=OOS_MONTHS
-            )
-        )
-
-        yield (
-            train_start,
-            train_end,
-            oos_start,
-            oos_end,
-        )
-
-        cursor += (
-            pd.DateOffset(
-                months=OOS_MONTHS
-            )
-        )
-        while (
-        cursor
-        +
-        pd.DateOffset(
-            months=OOS_MONTHS
-        )
-        <= end
-    ):
-
-        train_start = (
-            cursor
-            -
-            pd.DateOffset(
-                months=TRAIN_MONTHS
-            )
-        )
-
-        train_end = cursor
-
-        oos_start = cursor
-
-        oos_end = (
-            cursor
-            +
-            pd.DateOffset(
                 months=OOS_MONTHS
             )
         )
@@ -482,7 +468,9 @@ def summarize(rows):
             len(df),
 
         "positive_windows":
-            int(positive),
+            int(
+                positive
+            ),
 
         "positive_window_pct":
             positive
@@ -492,7 +480,9 @@ def summarize(rows):
             100,
 
         "pf_gt_1_windows":
-            int(pf_above_1),
+            int(
+                pf_above_1
+            ),
 
         "pf_gt_1_pct":
             pf_above_1
