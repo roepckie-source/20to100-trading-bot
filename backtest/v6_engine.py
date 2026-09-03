@@ -2,20 +2,26 @@
 # 20to100 Trading Bot
 # V6 Backtest Engine
 #
+# Adaptive Regime Filter
+# ADX Rising
+# Stronger EMA200 Slope
+# ATR Volatility Filter
+#
 # Based on corrected V5 accounting
 #
-# V6:
-# - Adaptive regime filter
-# - ADX rising
-# - Stronger EMA200 slope
-# - ATR volatility filter
+# IMPORTANT:
+# - Cash / Equity accounting
+# - Entry fee included
+# - Exit fee included
+# - Slippage included
 # - 1% risk per trade
 # - ATR stop
 # - ATR trailing
 # - Daily loss limit
 # - Consecutive loss cooldown
 # - Global drawdown kill switch
-# - Correct cash/equity accounting
+# - Next-candle entry
+# - No look-ahead
 # ==========================================
 
 from dataclasses import dataclass, asdict
@@ -74,15 +80,35 @@ class V6BacktestEngine:
         max_daily_loss: float = 0.05,
         max_consecutive_losses: int = 3,
         loss_cooldown_bars: int = 24,
+
+        # Backward compatibility:
+        # Some V6 multi-asset scripts use
+        # "cooldown_bars".
+        cooldown_bars: int = None,
+
         global_max_drawdown: float = 0.20,
         variant: str = "V6_A",
     ):
 
-        self.starting_balance = float(starting_balance)
-        self.risk_per_trade = float(risk_per_trade)
+        # ======================================
+        # BASIC PARAMETERS
+        # ======================================
 
-        self.fee_rate = float(fee_rate)
-        self.slippage_rate = float(slippage_rate)
+        self.starting_balance = float(
+            starting_balance
+        )
+
+        self.risk_per_trade = float(
+            risk_per_trade
+        )
+
+        self.fee_rate = float(
+            fee_rate
+        )
+
+        self.slippage_rate = float(
+            slippage_rate
+        )
 
         self.atr_stop_multiplier = float(
             atr_stop_multiplier
@@ -92,7 +118,9 @@ class V6BacktestEngine:
             trailing_atr_multiplier
         )
 
-        self.adx_min = float(adx_min)
+        self.adx_min = float(
+            adx_min
+        )
 
         self.max_daily_loss = float(
             max_daily_loss
@@ -102,21 +130,61 @@ class V6BacktestEngine:
             max_consecutive_losses
         )
 
+        # ======================================
+        # COOLDOWN COMPATIBILITY
+        # ======================================
+
         self.loss_cooldown_bars = int(
             loss_cooldown_bars
         )
+
+        if cooldown_bars is not None:
+
+            self.loss_cooldown_bars = int(
+                cooldown_bars
+            )
 
         self.global_max_drawdown = float(
             global_max_drawdown
         )
 
-        self.variant = str(variant).upper()
+        self.variant = str(
+            variant
+        ).upper()
+
+        # ======================================
+        # VALIDATE VARIANT
+        # ======================================
+
+        valid_variants = {
+            "V6_A",
+            "V6_B",
+            "V6_C",
+        }
+
+        if self.variant not in valid_variants:
+
+            raise ValueError(
+                f"Unbekannte V6 Variante: "
+                f"{self.variant}. "
+                f"Erlaubt: {valid_variants}"
+            )
 
         # ======================================
         # ACCOUNT
+        #
+        # balance = available cash
+        #
+        # position value is NOT included in
+        # balance while position is open.
+        #
+        # equity = cash + current position
+        # market value.
         # ======================================
 
-        self.balance = self.starting_balance
+        self.balance = (
+            self.starting_balance
+        )
 
         self.position: Optional[dict] = None
 
@@ -165,7 +233,9 @@ class V6BacktestEngine:
                 float(market_price)
             )
 
-        return float(equity)
+        return float(
+            equity
+        )
 
     # ==========================================
     # DAILY RESET
@@ -199,6 +269,7 @@ class V6BacktestEngine:
     ):
 
         if self.day_start_equity <= 0:
+
             return True
 
         loss = (
@@ -228,6 +299,7 @@ class V6BacktestEngine:
         )
 
         if self.peak_equity <= 0:
+
             return True
 
         drawdown = (
@@ -253,6 +325,10 @@ class V6BacktestEngine:
         entry_row
     ):
 
+        # ======================================
+        # RAW ENTRY
+        # ======================================
+
         entry_raw = float(
             entry_row["open"]
         )
@@ -264,7 +340,11 @@ class V6BacktestEngine:
         entry_price = (
             entry_raw
             *
-            (1.0 + self.slippage_rate)
+            (
+                1.0
+                +
+                self.slippage_rate
+            )
         )
 
         # ======================================
@@ -276,10 +356,11 @@ class V6BacktestEngine:
         )
 
         if atr <= 0:
+
             return
 
         # ======================================
-        # INITIAL STOP
+        # INITIAL ATR STOP
         # ======================================
 
         stop_price = (
@@ -291,9 +372,11 @@ class V6BacktestEngine:
         )
 
         if stop_price <= 0:
+
             return
 
         if stop_price >= entry_price:
+
             return
 
         # ======================================
@@ -307,6 +390,7 @@ class V6BacktestEngine:
         )
 
         if risk_money <= 0:
+
             return
 
         # ======================================
@@ -320,6 +404,7 @@ class V6BacktestEngine:
         )
 
         if risk_per_unit <= 0:
+
             return
 
         # ======================================
@@ -333,7 +418,13 @@ class V6BacktestEngine:
         )
 
         # ======================================
-        # POSITION SIZE BY AVAILABLE CASH
+        # POSITION SIZE BY CASH
+        #
+        # Cash must cover:
+        #
+        # notional
+        # +
+        # entry fee
         # ======================================
 
         qty_by_cash = (
@@ -342,7 +433,11 @@ class V6BacktestEngine:
             (
                 entry_price
                 *
-                (1.0 + self.fee_rate)
+                (
+                    1.0
+                    +
+                    self.fee_rate
+                )
             )
         )
 
@@ -352,6 +447,7 @@ class V6BacktestEngine:
         )
 
         if quantity <= 0:
+
             return
 
         # ======================================
@@ -374,6 +470,10 @@ class V6BacktestEngine:
             self.fee_rate
         )
 
+        # ======================================
+        # TOTAL CASH REQUIRED
+        # ======================================
+
         total_entry_cost = (
             notional
             +
@@ -381,13 +481,17 @@ class V6BacktestEngine:
         )
 
         if total_entry_cost > self.balance:
+
             return
 
         # ======================================
-        # REMOVE CASH
+        # REMOVE COMPLETE POSITION VALUE
+        # + ENTRY FEE FROM CASH
         # ======================================
 
-        self.balance -= total_entry_cost
+        self.balance -= (
+            total_entry_cost
+        )
 
         # ======================================
         # STORE POSITION
@@ -437,6 +541,7 @@ class V6BacktestEngine:
         pos = self.position
 
         if pos is None:
+
             return
 
         # ======================================
@@ -446,7 +551,11 @@ class V6BacktestEngine:
         exit_price = (
             float(raw_exit_price)
             *
-            (1.0 - self.slippage_rate)
+            (
+                1.0
+                -
+                self.slippage_rate
+            )
         )
 
         # ======================================
@@ -479,6 +588,10 @@ class V6BacktestEngine:
             self.fee_rate
         )
 
+        # ======================================
+        # TOTAL FEES
+        # ======================================
+
         entry_fee = float(
             pos["entry_fee"]
         )
@@ -496,13 +609,21 @@ class V6BacktestEngine:
         theoretical_entry = (
             pos["entry_price"]
             /
-            (1.0 + self.slippage_rate)
+            (
+                1.0
+                +
+                self.slippage_rate
+            )
         )
 
         theoretical_exit = (
             exit_price
             /
-            (1.0 - self.slippage_rate)
+            (
+                1.0
+                -
+                self.slippage_rate
+            )
         )
 
         entry_slippage = (
@@ -533,6 +654,8 @@ class V6BacktestEngine:
 
         # ======================================
         # NET PROFIT
+        #
+        # Entry + exit fees included.
         # ======================================
 
         net = (
@@ -544,7 +667,7 @@ class V6BacktestEngine:
         )
 
         # ======================================
-        # RETURN CASH
+        # RETURN SALE PROCEEDS TO CASH
         # ======================================
 
         self.balance += (
@@ -554,7 +677,7 @@ class V6BacktestEngine:
         )
 
         # ======================================
-        # R MULTIPLE
+        # INITIAL RISK
         # ======================================
 
         initial_risk = (
@@ -562,6 +685,10 @@ class V6BacktestEngine:
             *
             pos["quantity"]
         )
+
+        # ======================================
+        # R MULTIPLE
+        # ======================================
 
         if initial_risk > 0:
 
@@ -640,6 +767,10 @@ class V6BacktestEngine:
 
             self.consecutive_losses = 0
 
+        # ======================================
+        # CLOSE POSITION
+        # ======================================
+
         self.position = None
 
     # ==========================================
@@ -652,6 +783,7 @@ class V6BacktestEngine:
     ):
 
         if len(df) < 300:
+
             return self._result()
 
         data = df.copy()
@@ -688,6 +820,10 @@ class V6BacktestEngine:
 
         else:
 
+            # ==================================
+            # MAKE UTC AWARE
+            # ==================================
+
             if data.index.tz is None:
 
                 data.index = (
@@ -702,10 +838,54 @@ class V6BacktestEngine:
                     .tz_convert("UTC")
                 )
 
+        # ======================================
+        # SORT
+        # ======================================
+
         data = data.sort_index()
 
         # ======================================
+        # REQUIRED V6 COLUMNS
+        # ======================================
+
+        required_columns = [
+            "open",
+            "high",
+            "low",
+            "close",
+            "atr_14",
+            "adx_14",
+            "ema_100",
+            "ema_200",
+            "ema_200_slope",
+            "ema_200_slope_reference",
+            "atr_14_ma50",
+            "donchian_high_20",
+        ]
+
+        missing = [
+            column
+            for column
+            in required_columns
+            if column not in data.columns
+        ]
+
+        if missing:
+
+            raise ValueError(
+                "Fehlende V6-Indikator-Spalten: "
+                f"{missing}"
+            )
+
+        # ======================================
         # MAIN LOOP
+        #
+        # i-2 = previous previous candle
+        # i-1 = last closed candle
+        # i   = current candle
+        #
+        # Signal on i-1
+        # Entry on i open
         # ======================================
 
         for i in range(
@@ -717,9 +897,13 @@ class V6BacktestEngine:
 
             row = data.iloc[i]
 
-            previous = data.iloc[i - 1]
+            previous = data.iloc[
+                i - 1
+            ]
 
-            previous_previous = data.iloc[i - 2]
+            previous_previous = data.iloc[
+                i - 2
+            ]
 
             timestamp = data.index[i]
 
@@ -731,8 +915,10 @@ class V6BacktestEngine:
             # CURRENT EQUITY
             # ==================================
 
-            equity = self._calculate_equity(
-                current_price
+            equity = (
+                self._calculate_equity(
+                    current_price
+                )
             )
 
             # ==================================
@@ -748,8 +934,10 @@ class V6BacktestEngine:
             # EQUITY CURVE
             # ==================================
 
-            equity = self._calculate_equity(
-                current_price
+            equity = (
+                self._calculate_equity(
+                    current_price
+                )
             )
 
             self.equity_curve.append(
@@ -763,7 +951,7 @@ class V6BacktestEngine:
             )
 
             # ==================================
-            # GLOBAL DRAWDOWN
+            # GLOBAL DD
             # ==================================
 
             if self._global_drawdown_hit(
@@ -782,6 +970,10 @@ class V6BacktestEngine:
 
                 # ==================================
                 # STOP FIRST
+                #
+                # Conservative:
+                # if LOW touches stop,
+                # stop executes.
                 # ==================================
 
                 if (
@@ -799,7 +991,7 @@ class V6BacktestEngine:
                     continue
 
                 # ==================================
-                # UPDATE HIGH
+                # UPDATE HIGHEST PRICE
                 # ==================================
 
                 pos["highest"] = max(
@@ -827,7 +1019,9 @@ class V6BacktestEngine:
 
                     if candidate > pos["stop"]:
 
-                        pos["stop"] = candidate
+                        pos["stop"] = (
+                            candidate
+                        )
 
                 # ==================================
                 # END OF TEST
@@ -848,10 +1042,11 @@ class V6BacktestEngine:
                 continue
 
             # ==================================
-            # RISK BLOCK
+            # GLOBAL KILL SWITCH
             # ==================================
 
             if self.kill_switch:
+
                 continue
 
             # ==================================
@@ -861,10 +1056,11 @@ class V6BacktestEngine:
             if self._daily_loss_limit_hit(
                 equity
             ):
+
                 continue
 
             # ==================================
-            # LOSS COOLDOWN
+            # CONSECUTIVE LOSS COOLDOWN
             # ==================================
 
             if (
@@ -872,26 +1068,25 @@ class V6BacktestEngine:
                 <
                 self.cooldown_until
             ):
+
                 continue
 
             # ==================================
             # V6 SIGNAL
-            #
-            # previous =
-            # last completed candle
-            #
-            # previous_previous =
-            # candle before that
-            #
-            # Entry happens on current OPEN.
             # ==================================
 
-            if buy_signal(
+            signal = buy_signal(
                 previous,
                 previous_previous,
                 variant=self.variant,
                 adx_min=self.adx_min
-            ):
+            )
+
+            # ==================================
+            # ENTRY
+            # ==================================
+
+            if signal:
 
                 self._enter(
                     timestamp,
@@ -929,16 +1124,28 @@ class V6BacktestEngine:
             self.balance
         )
 
+        # ======================================
+        # PROFITS
+        # ======================================
+
         profits = [
             trade.net_profit
             for trade in self.trades
         ]
+
+        # ======================================
+        # WINS
+        # ======================================
 
         wins = [
             profit
             for profit in profits
             if profit > 0
         ]
+
+        # ======================================
+        # LOSSES
+        # ======================================
 
         losses = [
             profit
