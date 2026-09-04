@@ -1,129 +1,252 @@
-from pathlib import Path
-
-workflow = """name: 20to100 Backtest
+name: 20to100 Backtest
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
+
   schedule:
     - cron: "0 5 * * *"
 
+
 jobs:
   backtest:
+
     runs-on: ubuntu-latest
+
     timeout-minutes: 90
 
+
     steps:
+
+      # ==================================================
+      # CHECKOUT
+      # ==================================================
+
       - name: Checkout
         uses: actions/checkout@v4
+
+
+      # ==================================================
+      # PYTHON
+      # ==================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+
+      # ==================================================
+      # DEPENDENCIES
+      # ==================================================
+
       - name: Install dependencies
         run: |
+
           python -m pip install --upgrade pip
-          pip install pandas numpy requests ccxt
+
+          pip install \
+            pandas \
+            numpy \
+            requests \
+            ccxt
+
+
+      # ==================================================
+      # DIRECTORIES
+      # ==================================================
 
       - name: Prepare directories
         run: |
+
           mkdir -p data
           mkdir -p logs
 
+
+      # ==================================================
+      # SHOW REPOSITORY
+      # ==================================================
+
       - name: Show repository data
         run: |
+
           echo "=================================================="
-          echo "EXISTING DATA"
+          echo "REPOSITORY"
           echo "=================================================="
-          ls -lah data || true
+
           echo
-          echo "Repository:"
+          echo "Current directory:"
+          pwd
+
+          echo
+          echo "Repository files:"
           ls -lah
 
-      # ==========================================================
-      # FULL HISTORICAL DATA
-      # ==========================================================
+          echo
+          echo "Data directory:"
+          ls -lah data || true
+
+          echo
+          echo "Workflow directory:"
+          ls -lah .github/workflows || true
+
+
+      # ==================================================
+      # DOWNLOAD FULL HISTORICAL DATA
+      # ==================================================
 
       - name: Download full historical data
         run: |
+
           echo "=================================================="
           echo "DOWNLOADING FULL HISTORICAL DATA"
+          echo "=================================================="
+
+          echo
+          echo "Assets:"
           echo "BTC + ETH + SOL"
-          echo "5m | approximately 5 years"
+
+          echo
+          echo "Timeframe:"
+          echo "5m"
+
+          echo
+          echo "History:"
+          echo "approximately 5 years"
+
+          echo
+          echo "Expected:"
+          echo "approximately 525,600 candles per asset"
+
           echo "=================================================="
 
           python download_data.py
 
+
+      # ==================================================
+      # VERIFY HISTORICAL DATA
+      # ==================================================
+
       - name: Verify historical data
         run: |
+
           echo "=================================================="
           echo "VERIFY HISTORICAL DATA"
           echo "=================================================="
 
           python - <<'PY'
+
           from pathlib import Path
           import pandas as pd
 
+
           files = [
+
               Path("data/BTC_USDT_5m.csv"),
+
               Path("data/ETH_USDT_5m.csv"),
+
               Path("data/SOL_USDT_5m.csv"),
+
           ]
 
+
           minimum = 500_000
+
           failed = False
 
+
           for path in files:
+
               print()
+              print("--------------------------------------------------")
               print(f"Checking: {path}")
+              print("--------------------------------------------------")
+
 
               if not path.exists():
+
                   print(f"ERROR: {path} does not exist")
+
                   failed = True
+
                   continue
 
-              rows = len(pd.read_csv(path))
+
+              try:
+
+                  df = pd.read_csv(path)
+
+                  rows = len(df)
+
+              except Exception as exc:
+
+                  print(f"ERROR reading {path}: {exc}")
+
+                  failed = True
+
+                  continue
+
+
               print(f"Rows: {rows:,}")
 
+
               if rows < minimum:
+
                   print(
                       f"ERROR: only {rows:,} rows "
                       f"(minimum {minimum:,})"
                   )
+
                   failed = True
+
               else:
+
                   print("OK")
 
+
+          print()
+          print("==================================================")
+
+
           if failed:
+
               raise SystemExit(
                   "Historical data verification failed."
               )
+
+
+          print("All historical datasets are valid.")
+
           PY
 
-      # ==========================================================
-      # ORIGINAL / BASELINE
-      # ==========================================================
+
+      # ==================================================
+      # BASELINE
+      # ==================================================
 
       - name: Run main baseline
         continue-on-error: true
         run: |
+
           echo "=================================================="
           echo "RUNNING BASELINE"
           echo "=================================================="
 
           python main.py
 
-      # ==========================================================
+
+      # ==================================================
       # V2
-      # ==========================================================
+      # ==================================================
 
       - name: Run V2 Backtest
         continue-on-error: true
         run: |
+
           echo "=================================================="
           echo "RUNNING V2.1"
           echo "DONCHIAN + EMA200 + ATR"
@@ -131,13 +254,15 @@ jobs:
 
           python v2_backtest.py
 
-      # ==========================================================
+
+      # ==================================================
       # V3
-      # ==========================================================
+      # ==================================================
 
       - name: Run V3 Backtest
         continue-on-error: true
         run: |
+
           echo "=================================================="
           echo "RUNNING V3"
           echo "TREND FOLLOWING"
@@ -145,187 +270,392 @@ jobs:
 
           python v3_backtest.py
 
-      # ==========================================================
+
+      # ==================================================
       # V4
-      # ==========================================================
+      # ==================================================
 
       - name: Run V4 Walk Forward
         continue-on-error: true
         run: |
+
           echo "=================================================="
           echo "RUNNING V4 WALK-FORWARD"
           echo "=================================================="
 
           python v4_backtest.py
 
-      # ==========================================================
+
+      # ==================================================
       # V5
-      # ==========================================================
+      # ==================================================
 
       - name: Run V5 Walk Forward
         continue-on-error: true
         run: |
+
           echo "=================================================="
           echo "RUNNING V5 WALK-FORWARD"
           echo "=================================================="
 
           python v5_backtest.py
 
-      # ==========================================================
-      # V6 EXTENDED
-      # ==========================================================
+
+      # ==================================================
+      # V6 EXTENDED MULTI-ASSET
+      # ==================================================
 
       - name: Run V6 Extended Multi Asset
+        continue-on-error: true
         run: |
+
           echo "=================================================="
           echo "RUNNING V6 EXTENDED MULTI-ASSET"
+          echo "=================================================="
+
+          echo
+          echo "Assets:"
           echo "BTC + ETH + SOL"
+
+          echo
+          echo "Variants:"
           echo "V6_A + V6_B + V6_C"
+
+          echo
+          echo "Walk Forward:"
+          echo "12 months TRAIN"
+          echo "3 months OOS"
+          echo "3 months rolling step"
+
           echo "=================================================="
 
           python v6_extended_multi_asset_backtest.py
 
+
+      # ==================================================
+      # SHOW V6 EXTENDED RESULTS
+      # ==================================================
+
       - name: Show V6 Extended Results
         if: always()
         run: |
+
           echo "=================================================="
           echo "V6 EXTENDED MULTI-ASSET RESULTS"
           echo "=================================================="
 
+
           if [ -f logs/v6_extended_multi_asset_results.csv ]; then
+
             echo
-            echo "DETAILED RESULTS:"
+            echo "=================================================="
+            echo "DETAILED RESULTS"
+            echo "=================================================="
+
             cat logs/v6_extended_multi_asset_results.csv
+
+          else
+
+            echo
+            echo "No detailed V6 results file found."
+
           fi
+
 
           if [ -f logs/v6_extended_asset_summary.csv ]; then
+
             echo
-            echo "ASSET SUMMARY:"
+            echo "=================================================="
+            echo "ASSET SUMMARY"
+            echo "=================================================="
+
             cat logs/v6_extended_asset_summary.csv
+
+          else
+
+            echo
+            echo "No V6 asset summary found."
+
           fi
+
 
           if [ -f logs/v6_extended_multi_asset_summary.csv ]; then
+
             echo
-            echo "GLOBAL VARIANT SUMMARY:"
+            echo "=================================================="
+            echo "GLOBAL VARIANT SUMMARY"
+            echo "=================================================="
+
             cat logs/v6_extended_multi_asset_summary.csv
+
+          else
+
+            echo
+            echo "No V6 global summary found."
+
           fi
 
-      # ==========================================================
+
+      # ==================================================
       # V6_C STRESS TEST
-      # ==========================================================
+      # ==================================================
 
       - name: Run V6_C Stress Test
         if: always()
         continue-on-error: true
         run: |
+
           echo "=================================================="
           echo "RUNNING V6_C STRESS TEST"
           echo "=================================================="
 
+          echo
+          echo "Frozen strategy:"
+          echo "V6_C"
+
+          echo
+          echo "Assets:"
+          echo "BTC + ETH + SOL"
+
+          echo
+          echo "Stress dimensions:"
+          echo "Fees"
+          echo "Slippage"
+          echo "Risk per trade"
+
+          echo "=================================================="
+
+
           if [ -f v6_c_stress_test.py ]; then
+
             python v6_c_stress_test.py
+
           else
+
             echo "v6_c_stress_test.py not found - skipped."
+
           fi
+
+
+      # ==================================================
+      # SHOW STRESS TEST RESULTS
+      # ==================================================
 
       - name: Show V6_C Stress Results
         if: always()
         run: |
+
           echo "=================================================="
           echo "V6_C STRESS TEST RESULTS"
           echo "=================================================="
 
+
+          found=0
+
+
           for file in \
+
             logs/v6_c_stress_test_results.csv \
+
             logs/v6_c_stress_test_summary.csv \
+
             logs/v6_c_stress_results.csv \
+
             logs/v6_c_stress_summary.csv
+
           do
+
             if [ -f "$file" ]; then
+
+              found=1
+
               echo
+              echo "=================================================="
               echo "FILE: $file"
+              echo "=================================================="
+
               cat "$file"
+
             fi
+
           done
 
-      # ==========================================================
+
+          if [ "$found" -eq 0 ]; then
+
+            echo
+            echo "No V6_C stress-test result files found."
+
+          fi
+
+
+      # ==================================================
       # V6_C MONTE CARLO
-      # ==========================================================
+      # ==================================================
 
       - name: Run V6_C Monte Carlo
         if: always()
         continue-on-error: true
         run: |
+
           echo "=================================================="
           echo "RUNNING V6_C MONTE-CARLO VALIDATION"
-          echo "10,000 simulations per OOS window"
           echo "=================================================="
 
+          echo
+          echo "Strategy:"
+          echo "V6_C"
+
+          echo
+          echo "Assets:"
+          echo "BTC + ETH + SOL"
+
+          echo
+          echo "Simulations:"
+          echo "10,000 per OOS window"
+
+          echo "=================================================="
+
+
           if [ -f v6_c_monte_carlo.py ]; then
+
             python v6_c_monte_carlo.py
+
           else
+
             echo "v6_c_monte_carlo.py not found - skipped."
+
           fi
+
+
+      # ==================================================
+      # SHOW MONTE CARLO RESULTS
+      # ==================================================
 
       - name: Show V6_C Monte Carlo Results
         if: always()
         run: |
+
           echo "=================================================="
           echo "V6_C MONTE-CARLO RESULTS"
           echo "=================================================="
 
+
+          found=0
+
+
           for file in \
+
             logs/v6_c_monte_carlo_summary.csv \
-            logs/v6_c_monte_carlo_window_results.csv
+
+            logs/v6_c_monte_carlo_window_results.csv \
+
+            logs/v6_c_monte_carlo_trades.csv
+
           do
+
             if [ -f "$file" ]; then
+
+              found=1
+
               echo
+              echo "=================================================="
               echo "FILE: $file"
+              echo "=================================================="
+
               cat "$file"
+
             fi
+
           done
 
-      # ==========================================================
+
+          if [ "$found" -eq 0 ]; then
+
+            echo
+            echo "No V6_C Monte-Carlo result files found."
+
+          fi
+
+
+      # ==================================================
       # FINAL DATA REPORT
-      # ==========================================================
+      # ==================================================
 
       - name: Final data report
         if: always()
         run: |
+
           echo "=================================================="
           echo "FINAL DATA REPORT"
           echo "=================================================="
 
+
           for file in \
+
             data/BTC_USDT_5m.csv \
+
             data/ETH_USDT_5m.csv \
+
             data/SOL_USDT_5m.csv
+
           do
+
+            echo
+            echo "--------------------------------------------------"
+            echo "$file"
+            echo "--------------------------------------------------"
+
+
             if [ -f "$file" ]; then
+
               echo
-              echo "$file"
+              echo "Lines:"
+
               wc -l "$file"
-              ls -lh "$file"
-            else
+
               echo
+              echo "File size:"
+
+              ls -lh "$file"
+
+            else
+
               echo "MISSING: $file"
+
             fi
+
           done
 
-      # ==========================================================
+
+      # ==================================================
+      # SHOW LOG DIRECTORY
+      # ==================================================
+
+      - name: Show log directory
+        if: always()
+        run: |
+
+          echo "=================================================="
+          echo "LOG DIRECTORY"
+          echo "=================================================="
+
+          ls -lah logs || true
+
+
+      # ==================================================
       # UPLOAD LOGS
-      # ==========================================================
+      # ==================================================
 
       - name: Upload backtest logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: 20to100-backtest-logs
-          path: |
-            logs/
-          if-no-files-found: warn
-"""
 
-path = Path("/mnt/data/backtest.yml")
-path.write_text(workflow, encoding="utf-8")
-print(f"Erstellt: {path}")
+          name: 20to100-backtest-logs
+
+          path: |
+
+            logs/
+
+          if-no-files-found: warn
