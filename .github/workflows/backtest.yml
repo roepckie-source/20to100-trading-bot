@@ -1,3 +1,87 @@
+name: Trading Bot Backtests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  backtest:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ==================================================
+      # CHECKOUT
+      # ==================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ==================================================
+      # PYTHON
+      # ==================================================
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      # ==================================================
+      # INSTALL DEPENDENCIES
+      # ==================================================
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+
+          pip install \
+            pandas \
+            numpy \
+            requests \
+            ccxt
+
+
+      # ==================================================
+      # PREPARE DIRECTORIES
+      # ==================================================
+
+      - name: Prepare directories
+        run: |
+          mkdir -p data
+          mkdir -p logs
+
+          echo "=================================================="
+          echo "DIRECTORIES READY"
+          echo "=================================================="
+
+
+      # ==================================================
+      # EXISTING DATA
+      # ==================================================
+
+      - name: Show existing data
+        run: |
+
+          echo "=================================================="
+          echo "EXISTING DATA"
+          echo "=================================================="
+
+          if [ -d data ]; then
+            ls -lh data || true
+          else
+            echo "No data directory."
+          fi
+
+
+      # ==================================================
+      # DOWNLOAD FULL HISTORICAL DATA
+      # ==================================================
+
       - name: Download BTC ETH SOL historical data
         run: |
 
@@ -8,3 +92,259 @@
           echo "=================================================="
 
           python download_data.py
+
+
+      # ==================================================
+      # VERIFY DATA
+      # ==================================================
+
+      - name: Verify historical data
+        run: |
+
+          echo "=================================================="
+          echo "VERIFYING HISTORICAL DATA"
+          echo "=================================================="
+
+          for FILE in \
+            data/BTC_USDT_5m.csv \
+            data/ETH_USDT_5m.csv \
+            data/SOL_USDT_5m.csv
+          do
+
+            echo ""
+            echo "Checking: $FILE"
+
+            if [ ! -f "$FILE" ]; then
+              echo "ERROR: Missing $FILE"
+              exit 1
+            fi
+
+            LINES=$(wc -l < "$FILE")
+            CANDLES=$((LINES - 1))
+
+            echo "Candles: $CANDLES"
+
+            if [ "$CANDLES" -lt 500000 ]; then
+              echo ""
+              echo "ERROR:"
+              echo "$FILE contains only $CANDLES candles."
+              echo "Expected at least 500000."
+              exit 1
+            fi
+
+            echo "OK"
+
+          done
+
+          echo ""
+          echo "=================================================="
+          echo "ALL HISTORICAL DATA VERIFIED"
+          echo "=================================================="
+
+
+      # ==================================================
+      # BASIC BOT TEST
+      # ==================================================
+
+      - name: Run main.py
+        run: |
+
+          echo "=================================================="
+          echo "RUNNING MAIN BOT TEST"
+          echo "=================================================="
+
+          python main.py
+
+
+      # ==================================================
+      # V2
+      # ==================================================
+
+      - name: Run V2 Backtest
+        run: |
+
+          echo "=================================================="
+          echo "RUNNING V2 BACKTEST"
+          echo "=================================================="
+
+          python v2_backtest.py
+
+
+      # ==================================================
+      # V3
+      # ==================================================
+
+      - name: Run V3 Backtest
+        run: |
+
+          echo "=================================================="
+          echo "RUNNING V3 BACKTEST"
+          echo "=================================================="
+
+          python v3_backtest.py
+
+
+      # ==================================================
+      # V4
+      # ==================================================
+
+      - name: Run V4 Walk Forward
+        run: |
+
+          echo "=================================================="
+          echo "RUNNING V4 WALK-FORWARD"
+          echo "=================================================="
+
+          python v4_backtest.py
+
+
+      # ==================================================
+      # V5
+      # ==================================================
+
+      - name: Run V5 Walk Forward
+        continue-on-error: true
+        run: |
+
+          echo "=================================================="
+          echo "RUNNING V5 WALK-FORWARD"
+          echo "=================================================="
+
+          python v5_backtest.py
+
+
+      # ==================================================
+      # V6 EXTENDED
+      # ==================================================
+
+      - name: Run V6 Extended Multi Asset
+        run: |
+
+          echo "=================================================="
+          echo "RUNNING V6 EXTENDED MULTI-ASSET"
+          echo "BTC + ETH + SOL"
+          echo "V6_A + V6_B + V6_C"
+          echo "=================================================="
+
+          python v6_extended_multi_asset_backtest.py
+
+
+      # ==================================================
+      # SHOW V6 RESULTS
+      # ==================================================
+
+      - name: Show V6 Extended Results
+        run: |
+
+          echo "=================================================="
+          echo "V6 EXTENDED RESULTS"
+          echo "=================================================="
+
+          echo ""
+          echo "Asset Results:"
+          if [ -f logs/v6_extended_multi_asset_results.csv ]; then
+            cat logs/v6_extended_multi_asset_results.csv
+          else
+            echo "No asset results found."
+          fi
+
+          echo ""
+          echo "Asset Summary:"
+          if [ -f logs/v6_extended_asset_summary.csv ]; then
+            cat logs/v6_extended_asset_summary.csv
+          else
+            echo "No asset summary found."
+          fi
+
+          echo ""
+          echo "Global Variant Summary:"
+          if [ -f logs/v6_extended_multi_asset_summary.csv ]; then
+            cat logs/v6_extended_multi_asset_summary.csv
+          else
+            echo "No global summary found."
+          fi
+
+
+      # ==================================================
+      # V6_C STRESS TEST
+      # ==================================================
+
+      - name: Run V6_C Stress Test
+        if: ${{ hashFiles('v6_c_stress_test.py') != '' }}
+        run: |
+
+          echo "=================================================="
+          echo "RUNNING V6_C STRESS TEST"
+          echo "=================================================="
+
+          echo ""
+          echo "BTC + ETH + SOL"
+          echo ""
+          echo "Fees:"
+          echo "0.10%"
+          echo "0.15%"
+          echo "0.20%"
+          echo ""
+          echo "Slippage:"
+          echo "0.05%"
+          echo "0.10%"
+          echo "0.20%"
+          echo ""
+          echo "Risk per Trade:"
+          echo "0.50%"
+          echo "1.00%"
+          echo "1.50%"
+          echo ""
+
+          python v6_c_stress_test.py
+
+
+      # ==================================================
+      # SHOW STRESS TEST RESULTS
+      # ==================================================
+
+      - name: Show V6_C Stress Results
+        if: ${{ hashFiles('logs/v6_c_stress_results.csv') != '' }}
+        run: |
+
+          echo "=================================================="
+          echo "V6_C STRESS TEST RESULTS"
+          echo "=================================================="
+
+          cat logs/v6_c_stress_results.csv
+
+
+      # ==================================================
+      # FINAL DATA REPORT
+      # ==================================================
+
+      - name: Final data report
+        if: always()
+        run: |
+
+          echo "=================================================="
+          echo "FINAL DATA REPORT"
+          echo "=================================================="
+
+          echo ""
+          echo "DATA DIRECTORY:"
+          ls -lh data || true
+
+          echo ""
+          echo "LOG DIRECTORY:"
+          ls -lh logs || true
+
+
+      # ==================================================
+      # UPLOAD LOGS
+      # ==================================================
+
+      - name: Upload backtest logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-bot-backtest-logs
+          path: |
+            logs/
+            data/
+          if-no-files-found: warn
