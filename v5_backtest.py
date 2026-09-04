@@ -1,6 +1,22 @@
 # ==========================================
 # 20to100 Trading Bot
 # V5 Walk-Forward Backtest
+#
+# ETH/USDT 1H
+#
+# 12 Monate TRAIN
+# 3 Monate OOS
+#
+# V5 Varianten:
+# A = Base
+# B = Strict Regime
+# C = Wider Stop
+#
+# WICHTIG:
+# - Indikatoren werden auf dem kompletten Datensatz berechnet
+# - Danach erfolgt der Train/OOS Split
+# - UTC bleibt erhalten
+# - Kein Absturz bei zu wenig Daten
 # ==========================================
 
 from pathlib import Path
@@ -24,15 +40,11 @@ from backtest.v5_engine import (
 STARTING_BALANCE = 20.0
 
 TRAIN_MONTHS = 12
-
 OOS_MONTHS = 3
 
 
 # ==========================================
 # V5 VARIANTS
-#
-# Nur kleine Sensitivitätsprüfung.
-# KEIN aggressives Optimieren.
 # ==========================================
 
 VARIANTS = {
@@ -44,6 +56,7 @@ VARIANTS = {
         "atr_stop_multiplier": 2.5,
 
         "trailing_atr_multiplier": 2.5,
+
     },
 
     "V5_B_STRICT_REGIME": {
@@ -53,6 +66,7 @@ VARIANTS = {
         "atr_stop_multiplier": 2.5,
 
         "trailing_atr_multiplier": 2.5,
+
     },
 
     "V5_C_WIDER_STOP": {
@@ -62,7 +76,9 @@ VARIANTS = {
         "atr_stop_multiplier": 3.0,
 
         "trailing_atr_multiplier": 3.0,
+
     },
+
 }
 
 
@@ -97,13 +113,17 @@ def load_eth_1h():
         )
 
     # ======================================
-    # IMPORTANT:
-    # Always use UTC-aware timestamps.
+    # UTC
     # ======================================
 
     df["timestamp"] = pd.to_datetime(
         df["timestamp"],
-        utc=True
+        utc=True,
+        errors="coerce"
+    )
+
+    df = df.dropna(
+        subset=["timestamp"]
     )
 
     df = df.set_index(
@@ -111,6 +131,10 @@ def load_eth_1h():
     )
 
     df = df.sort_index()
+
+    # ======================================
+    # REQUIRED COLUMNS
+    # ======================================
 
     required = [
         "open",
@@ -122,8 +146,7 @@ def load_eth_1h():
 
     missing = [
         column
-        for column
-        in required
+        for column in required
         if column not in df.columns
     ]
 
@@ -134,11 +157,27 @@ def load_eth_1h():
         )
 
     # ======================================
+    # NUMERIC
+    # ======================================
+
+    for column in required:
+
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce"
+        )
+
+    df = df.dropna(
+        subset=required
+    )
+
+    # ======================================
     # 5m -> 1h
     # ======================================
 
     hourly = (
-        df.resample("1h")
+        df
+        .resample("1h")
         .agg(
             {
                 "open": "first",
@@ -160,13 +199,17 @@ def load_eth_1h():
 
 def month_windows(index):
 
-    # ======================================
-    # IMPORTANT:
-    # Keep all timestamps timezone-aware
-    # because market data uses UTC.
-    # ======================================
+    index = pd.DatetimeIndex(
+        index
+    )
 
-    index = pd.DatetimeIndex(index)
+    if len(index) == 0:
+
+        return
+
+    # ======================================
+    # Make sure timestamps are UTC-aware
+    # ======================================
 
     if index.tz is None:
 
@@ -181,30 +224,38 @@ def month_windows(index):
         )
 
     # ======================================
-    # Start of first month
+    # IMPORTANT:
+    #
+    # Do NOT use:
+    #
+    # .to_period("M")
+    #
+    # because that generates timezone warnings.
+    #
+    # We construct the first day of the month
+    # directly instead.
     # ======================================
 
-    start = (
-        index.min()
-        .to_period("M")
-        .to_timestamp()
-        .tz_localize("UTC")
+    first_timestamp = index.min()
+
+    start = pd.Timestamp(
+        year=first_timestamp.year,
+        month=first_timestamp.month,
+        day=1,
+        tz="UTC"
+    )
+
+    last_timestamp = index.max()
+
+    end = pd.Timestamp(
+        year=last_timestamp.year,
+        month=last_timestamp.month,
+        day=1,
+        tz="UTC"
     )
 
     # ======================================
-    # End of last month
-    # ======================================
-
-    end = (
-        index.max()
-        .to_period("M")
-        .to_timestamp()
-        .tz_localize("UTC")
-    )
-
-    # ======================================
-    # First OOS period starts after
-    # TRAIN_MONTHS
+    # First OOS starts after TRAIN
     # ======================================
 
     cursor = (
@@ -215,16 +266,21 @@ def month_windows(index):
     )
 
     # ======================================
-    # Generate rolling windows
+    # Generate windows
     # ======================================
 
-    while (
-        cursor
-        + pd.DateOffset(
-            months=OOS_MONTHS
+    while True:
+
+        oos_end = (
+            cursor
+            + pd.DateOffset(
+                months=OOS_MONTHS
+            )
         )
-        <= end
-    ):
+
+        if oos_end > end:
+
+            break
 
         train_start = (
             cursor
@@ -236,13 +292,6 @@ def month_windows(index):
         train_end = cursor
 
         oos_start = cursor
-
-        oos_end = (
-            cursor
-            + pd.DateOffset(
-                months=OOS_MONTHS
-            )
-        )
 
         yield (
             train_start,
@@ -259,7 +308,7 @@ def month_windows(index):
 
 
 # ==========================================
-# RUN WINDOW
+# RUN ONE WINDOW
 # ==========================================
 
 def run_window(
@@ -272,12 +321,7 @@ def run_window(
 ):
 
     # ======================================
-    # IMPORTANT:
-    #
-    # Indicators were calculated BEFORE
-    # the train/OOS split.
-    #
-    # This fixes the V4 warm-up problem.
+    # TRAIN
     # ======================================
 
     train = full_data[
@@ -290,7 +334,11 @@ def run_window(
             full_data.index
             < train_end
         )
-    ]
+    ].copy()
+
+    # ======================================
+    # OOS
+    # ======================================
 
     oos = full_data[
         (
@@ -302,7 +350,11 @@ def run_window(
             full_data.index
             < oos_end
         )
-    ]
+    ].copy()
+
+    # ======================================
+    # DATA VALIDATION
+    # ======================================
 
     if len(train) < 300:
 
@@ -313,16 +365,15 @@ def run_window(
         return None
 
     # ======================================
-    # TRAIN
+    # TRAIN ENGINE
     # ======================================
 
-    train_engine = (
-        V5BacktestEngine(
-            starting_balance=(
-                STARTING_BALANCE
-            ),
-            **params,
-        )
+    train_engine = V5BacktestEngine(
+
+        starting_balance=
+            STARTING_BALANCE,
+
+        **params,
     )
 
     train_result = (
@@ -332,16 +383,15 @@ def run_window(
     )
 
     # ======================================
-    # OOS
+    # OOS ENGINE
     # ======================================
 
-    oos_engine = (
-        V5BacktestEngine(
-            starting_balance=(
-                STARTING_BALANCE
-            ),
-            **params,
-        )
+    oos_engine = V5BacktestEngine(
+
+        starting_balance=
+            STARTING_BALANCE,
+
+        **params,
     )
 
     oos_result = (
@@ -349,6 +399,10 @@ def run_window(
             oos
         )
     )
+
+    # ======================================
+    # RESULT
+    # ======================================
 
     return {
 
@@ -427,11 +481,19 @@ def run_window(
 
 def fmt_pf(value):
 
-    if math.isinf(value):
+    try:
 
-        return "inf"
+        if math.isinf(
+            float(value)
+        ):
 
-    return f"{value:.3f}"
+            return "inf"
+
+    except Exception:
+
+        pass
+
+    return f"{float(value):.3f}"
 
 
 # ==========================================
@@ -440,26 +502,46 @@ def fmt_pf(value):
 
 def summarize(rows):
 
+    if not rows:
+
+        return None
+
     df = pd.DataFrame(
         rows
     )
 
     if df.empty:
 
-        return {}
+        return None
+
+    # ======================================
+    # Numeric conversion
+    # ======================================
+
+    oos_returns = pd.to_numeric(
+        df["oos_return_pct"],
+        errors="coerce"
+    )
+
+    oos_pf = pd.to_numeric(
+        df["oos_pf"],
+        errors="coerce"
+    )
+
+    oos_pf_clean = (
+        oos_pf
+        .replace(
+            [float("inf"), float("-inf")],
+            pd.NA
+        )
+    )
 
     positive = (
-        df[
-            "oos_return_pct"
-        ]
-        > 0
+        oos_returns > 0
     ).sum()
 
     pf_above_1 = (
-        df[
-            "oos_pf"
-        ]
-        > 1
+        oos_pf > 1
     ).sum()
 
     return {
@@ -473,11 +555,13 @@ def summarize(rows):
             ),
 
         "positive_window_pct":
-            positive
-            /
-            len(df)
-            *
-            100,
+            (
+                positive
+                /
+                len(df)
+                *
+                100
+            ),
 
         "pf_gt_1_windows":
             int(
@@ -485,53 +569,42 @@ def summarize(rows):
             ),
 
         "pf_gt_1_pct":
-            pf_above_1
-            /
-            len(df)
-            *
-            100,
+            (
+                pf_above_1
+                /
+                len(df)
+                *
+                100
+            ),
 
         "avg_oos_return_pct":
-            df[
-                "oos_return_pct"
-            ].mean(),
+            oos_returns.mean(),
 
         "median_oos_return_pct":
-            df[
-                "oos_return_pct"
-            ].median(),
+            oos_returns.median(),
 
         "avg_oos_pf":
-            df[
-                "oos_pf"
-            ]
-            .replace(
-                float("inf"),
-                pd.NA
-            )
-            .mean(),
+            oos_pf_clean.mean(),
 
         "median_oos_pf":
-            df[
-                "oos_pf"
-            ]
-            .replace(
-                float("inf"),
-                pd.NA
-            )
-            .median(),
+            oos_pf_clean.median(),
 
         "total_oos_trades":
             int(
-                df[
-                    "oos_trades"
-                ].sum()
+                pd.to_numeric(
+                    df["oos_trades"],
+                    errors="coerce"
+                )
+                .fillna(0)
+                .sum()
             ),
 
         "worst_oos_dd_pct":
-            df[
-                "oos_dd_pct"
-            ].min(),
+            pd.to_numeric(
+                df["oos_dd_pct"],
+                errors="coerce"
+            ).min(),
+
     }
 
 
@@ -548,7 +621,6 @@ def main():
     )
 
     print()
-
     print(
         "=" * 78
     )
@@ -566,7 +638,7 @@ def main():
     )
 
     print(
-        "REGIME FILTER + 1% RISK"
+        "REGIME FILTER + RISK MANAGEMENT"
     )
 
     print(
@@ -574,30 +646,40 @@ def main():
     )
 
     # ======================================
-    # LOAD DATA
+    # LOAD
     # ======================================
 
     raw = load_eth_1h()
 
+    print()
     print(
         f"5m -> 1h candles: "
         f"{len(raw):,}"
     )
 
+    if raw.empty:
+
+        raise RuntimeError(
+            "ETH-Datensatz ist leer."
+        )
+
     # ======================================
-    # CALCULATE INDICATORS ON FULL DATA
+    # INDICATORS
+    #
+    # IMPORTANT:
+    # Full dataset first.
     # ======================================
 
+    print()
     print(
         "Calculating V5 indicators..."
     )
 
-    data = (
-        calculate_indicators(
-            raw
-        )
+    data = calculate_indicators(
+        raw
     )
 
+    print()
     print(
         f"Data range:"
         f" {data.index.min()}"
@@ -609,7 +691,14 @@ def main():
         f" {len(data):,}"
     )
 
+    # ======================================
+    # CONFIG
+    # ======================================
+
     print()
+    print(
+        "Starting balance: $20.00"
+    )
 
     print(
         "Risk per trade: 1.00%"
@@ -658,7 +747,108 @@ def main():
         f" {OOS_MONTHS} Monate"
     )
 
-    print()
+    # ======================================
+    # IMPORTANT:
+    # Too little historical data
+    # ======================================
+
+    if len(windows) == 0:
+
+        print()
+        print(
+            "=" * 78
+        )
+
+        print(
+            "⚠️ KEINE WALK-FORWARD-FENSTER"
+        )
+
+        print(
+            "=" * 78
+        )
+
+        print()
+        print(
+            "Der vorhandene ETH-Datensatz"
+        )
+
+        print(
+            "ist zu kurz für:"
+        )
+
+        print(
+            f"TRAIN = {TRAIN_MONTHS} Monate"
+        )
+
+        print(
+            f"OOS   = {OOS_MONTHS} Monate"
+        )
+
+        print()
+        print(
+            "Aktueller Zeitraum:"
+        )
+
+        print(
+            f"{data.index.min()}"
+            f" -> "
+            f"{data.index.max()}"
+        )
+
+        print()
+        print(
+            "V5 wird deshalb sauber beendet,"
+        )
+
+        print(
+            "ohne den gesamten GitHub-Workflow"
+        )
+
+        print(
+            "abzubrechen."
+        )
+
+        # ==================================
+        # Write empty result files
+        # ==================================
+
+        empty_results = pd.DataFrame()
+
+        empty_summary = pd.DataFrame()
+
+        empty_results.to_csv(
+            Path("logs")
+            /
+            "v5_walk_forward_results.csv",
+            index=False
+        )
+
+        empty_summary.to_csv(
+            Path("logs")
+            /
+            "v5_walk_forward_summary.csv",
+            index=False
+        )
+
+        print()
+        print(
+            "Leere V5-Ergebnisdateien wurden"
+        )
+
+        print(
+            "erzeugt."
+        )
+
+        print()
+        print(
+            "V5 CHECK COMPLETE"
+        )
+
+        return
+
+    # ======================================
+    # RESULTS
+    # ======================================
 
     all_rows = []
 
@@ -673,12 +863,13 @@ def main():
         params
     ) in VARIANTS.items():
 
+        print()
         print(
             "-" * 78
         )
 
         print(
-            f"{variant}"
+            variant
         )
 
         print(
@@ -692,10 +883,19 @@ def main():
         )
 
         print(
+            f"ATR Trail = "
+            f"{params['trailing_atr_multiplier']}"
+        )
+
+        print(
             "-" * 78
         )
 
         rows = []
+
+        # ==================================
+        # WINDOWS
+        # ==================================
 
         for number, (
             train_start,
@@ -707,16 +907,49 @@ def main():
             start=1
         ):
 
-            result = run_window(
-                data,
-                train_start,
-                train_end,
-                oos_start,
-                oos_end,
-                params
+            print(
+                f"W{number:02d} | "
+                f"OOS "
+                f"{oos_start.date()} "
+                f"-> "
+                f"{oos_end.date()}",
+                end=" "
             )
 
+            try:
+
+                result = run_window(
+
+                    data,
+
+                    train_start,
+
+                    train_end,
+
+                    oos_start,
+
+                    oos_end,
+
+                    params
+
+                )
+
+            except Exception as exc:
+
+                print()
+                print(
+                    f"❌ Fehler in W{number:02d}: "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                )
+
+                continue
+
             if result is None:
+
+                print(
+                    "| übersprungen"
+                )
 
                 continue
 
@@ -737,30 +970,41 @@ def main():
             )
 
             print(
-
-                f"W{number:02d} | "
-
-                f"OOS "
-                f"{oos_start.date()} "
-                f"-> "
-                f"{oos_end.date()} | "
-
-                f"Return "
-                f"{result['oos_return_pct']:+7.2f}% | "
-
-                f"PF "
-                f"{fmt_pf(result['oos_pf']):>5} | "
-
-                f"Trades "
-                f"{result['oos_trades']:>3} | "
-
-                f"DD "
+                f"| Return "
+                f"{result['oos_return_pct']:+7.2f}% "
+                f"| PF "
+                f"{fmt_pf(result['oos_pf']):>5} "
+                f"| Trades "
+                f"{result['oos_trades']:>3} "
+                f"| DD "
                 f"{result['oos_dd_pct']:+7.2f}%"
             )
+
+        # ==================================
+        # SUMMARY
+        # ==================================
 
         summary = summarize(
             rows
         )
+
+        # ==================================
+        # FIX:
+        # Only append a real summary.
+        # ==================================
+
+        if summary is None:
+
+            print()
+            print(
+                f"SUMMARY {variant}"
+            )
+
+            print(
+                "Keine gültigen Fenster."
+            )
+
+            continue
 
         summary[
             "variant"
@@ -770,65 +1014,64 @@ def main():
             summary
         )
 
-        if summary:
-
-            print()
-
-            print(
-                f"SUMMARY {variant}"
-            )
-
-            print(
-                f"Positive windows: "
-                f"{summary['positive_windows']}"
-                f"/"
-                f"{summary['windows']}"
-                f" "
-                f"("
-                f"{summary['positive_window_pct']:.1f}"
-                f"%)"
-            )
-
-            print(
-                f"PF > 1 windows: "
-                f"{summary['pf_gt_1_windows']}"
-                f"/"
-                f"{summary['windows']}"
-                f" "
-                f"("
-                f"{summary['pf_gt_1_pct']:.1f}"
-                f"%)"
-            )
-
-            print(
-                f"Average OOS return: "
-                f"{summary['avg_oos_return_pct']:+.2f}%"
-            )
-
-            print(
-                f"Median OOS return: "
-                f"{summary['median_oos_return_pct']:+.2f}%"
-            )
-
-            print(
-                f"Median OOS PF: "
-                f"{summary['median_oos_pf']:.3f}"
-            )
-
-            print(
-                f"OOS trades: "
-                f"{summary['total_oos_trades']}"
-            )
-
-            print(
-                f"Worst OOS DD: "
-                f"{summary['worst_oos_dd_pct']:.2f}%"
-            )
+        # ==================================
+        # PRINT SUMMARY
+        # ==================================
 
         print()
+        print(
+            f"SUMMARY {variant}"
+        )
+
+        print(
+            f"Positive windows: "
+            f"{summary['positive_windows']}"
+            f"/"
+            f"{summary['windows']}"
+            f" "
+            f"("
+            f"{summary['positive_window_pct']:.1f}"
+            f"%)"
+        )
+
+        print(
+            f"PF > 1 windows: "
+            f"{summary['pf_gt_1_windows']}"
+            f"/"
+            f"{summary['windows']}"
+            f" "
+            f"("
+            f"{summary['pf_gt_1_pct']:.1f}"
+            f"%)"
+        )
+
+        print(
+            f"Average OOS return: "
+            f"{summary['avg_oos_return_pct']:+.2f}%"
+        )
+
+        print(
+            f"Median OOS return: "
+            f"{summary['median_oos_return_pct']:+.2f}%"
+        )
+
+        print(
+            f"Median OOS PF: "
+            f"{summary['median_oos_pf']:.3f}"
+        )
+
+        print(
+            f"OOS trades: "
+            f"{summary['total_oos_trades']}"
+        )
+
+        print(
+            f"Worst OOS DD: "
+            f"{summary['worst_oos_dd_pct']:.2f}%"
+        )
 
     # ======================================
-    # SAVE RESULTS
+    # DATAFRAMES
     # ======================================
 
     results_df = pd.DataFrame(
@@ -838,6 +1081,10 @@ def main():
     summary_df = pd.DataFrame(
         summaries
     )
+
+    # ======================================
+    # FILE PATHS
+    # ======================================
 
     results_path = (
         Path("logs")
@@ -850,6 +1097,10 @@ def main():
         /
         "v5_walk_forward_summary.csv"
     )
+
+    # ======================================
+    # SAVE
+    # ======================================
 
     results_df.to_csv(
         results_path,
@@ -865,6 +1116,7 @@ def main():
     # FINAL SUMMARY
     # ======================================
 
+    print()
     print(
         "=" * 78
     )
@@ -877,7 +1129,13 @@ def main():
         "=" * 78
     )
 
-    if not summary_df.empty:
+    if summary_df.empty:
+
+        print(
+            "Keine gültigen V5-Ergebnisse."
+        )
+
+    else:
 
         columns = [
 
@@ -902,6 +1160,7 @@ def main():
             "total_oos_trades",
 
             "worst_oos_dd_pct",
+
         ]
 
         print(
@@ -916,8 +1175,11 @@ def main():
             )
         )
 
-    print()
+    # ======================================
+    # FILES
+    # ======================================
 
+    print()
     print(
         f"Results saved:"
         f" {results_path}"
@@ -929,17 +1191,14 @@ def main():
     )
 
     print()
-
     print(
-        "V5 is NOT validated merely"
-        " because one variant is profitable."
+        "V5 WALK-FORWARD COMPLETE"
     )
 
-    print(
-        "The important metric is robustness"
-        " across OOS windows."
-    )
 
+# ==========================================
+# ENTRY POINT
+# ==========================================
 
 if __name__ == "__main__":
 
