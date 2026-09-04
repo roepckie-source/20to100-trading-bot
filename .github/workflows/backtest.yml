@@ -45,14 +45,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-
           python -m pip install --upgrade pip
-
-          pip install \
-            pandas \
-            numpy \
-            requests \
-            ccxt
+          pip install pandas numpy requests ccxt
 
 
       # ==================================================
@@ -61,7 +55,6 @@ jobs:
 
       - name: Prepare directories
         run: |
-
           mkdir -p data
           mkdir -p logs
 
@@ -72,7 +65,6 @@ jobs:
 
       - name: Show repository data
         run: |
-
           echo "=================================================="
           echo "REPOSITORY"
           echo "=================================================="
@@ -100,7 +92,6 @@ jobs:
 
       - name: Download full historical data
         run: |
-
           echo "=================================================="
           echo "DOWNLOADING FULL HISTORICAL DATA"
           echo "=================================================="
@@ -132,32 +123,22 @@ jobs:
 
       - name: Verify historical data
         run: |
-
           echo "=================================================="
           echo "VERIFY HISTORICAL DATA"
           echo "=================================================="
 
           python - <<'PY'
-
           from pathlib import Path
           import pandas as pd
 
-
           files = [
-
               Path("data/BTC_USDT_5m.csv"),
-
               Path("data/ETH_USDT_5m.csv"),
-
               Path("data/SOL_USDT_5m.csv"),
-
           ]
 
-
           minimum = 500_000
-
           failed = False
-
 
           for path in files:
 
@@ -166,33 +147,24 @@ jobs:
               print(f"Checking: {path}")
               print("--------------------------------------------------")
 
-
               if not path.exists():
 
                   print(f"ERROR: {path} does not exist")
-
                   failed = True
-
                   continue
-
 
               try:
 
                   df = pd.read_csv(path)
-
                   rows = len(df)
 
               except Exception as exc:
 
                   print(f"ERROR reading {path}: {exc}")
-
                   failed = True
-
                   continue
 
-
               print(f"Rows: {rows:,}")
-
 
               if rows < minimum:
 
@@ -207,17 +179,14 @@ jobs:
 
                   print("OK")
 
-
           print()
           print("==================================================")
-
 
           if failed:
 
               raise SystemExit(
                   "Historical data verification failed."
               )
-
 
           print("All historical datasets are valid.")
 
@@ -231,7 +200,6 @@ jobs:
       - name: Run main baseline
         continue-on-error: true
         run: |
-
           echo "=================================================="
           echo "RUNNING BASELINE"
           echo "=================================================="
@@ -246,7 +214,6 @@ jobs:
       - name: Run V2 Backtest
         continue-on-error: true
         run: |
-
           echo "=================================================="
           echo "RUNNING V2.1"
           echo "DONCHIAN + EMA200 + ATR"
@@ -262,7 +229,6 @@ jobs:
       - name: Run V3 Backtest
         continue-on-error: true
         run: |
-
           echo "=================================================="
           echo "RUNNING V3"
           echo "TREND FOLLOWING"
@@ -278,7 +244,6 @@ jobs:
       - name: Run V4 Walk Forward
         continue-on-error: true
         run: |
-
           echo "=================================================="
           echo "RUNNING V4 WALK-FORWARD"
           echo "=================================================="
@@ -293,7 +258,6 @@ jobs:
       - name: Run V5 Walk Forward
         continue-on-error: true
         run: |
-
           echo "=================================================="
           echo "RUNNING V5 WALK-FORWARD"
           echo "=================================================="
@@ -308,7 +272,6 @@ jobs:
       - name: Run V6 Extended Multi Asset
         continue-on-error: true
         run: |
-
           echo "=================================================="
           echo "RUNNING V6 EXTENDED MULTI-ASSET"
           echo "=================================================="
@@ -339,11 +302,9 @@ jobs:
       - name: Show V6 Extended Results
         if: always()
         run: |
-
           echo "=================================================="
           echo "V6 EXTENDED MULTI-ASSET RESULTS"
           echo "=================================================="
-
 
           if [ -f logs/v6_extended_multi_asset_results.csv ]; then
 
@@ -404,7 +365,6 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-
           echo "=================================================="
           echo "RUNNING V6_C STRESS TEST"
           echo "=================================================="
@@ -444,41 +404,67 @@ jobs:
       - name: Show V6_C Stress Results
         if: always()
         run: |
-
           echo "=================================================="
           echo "V6_C STRESS TEST RESULTS"
           echo "=================================================="
 
-
           found=0
 
 
-          for file in \
+          if [ -f logs/v6_c_stress_test_results.csv ]; then
 
-            logs/v6_c_stress_test_results.csv \
+            found=1
 
-            logs/v6_c_stress_test_summary.csv \
+            echo
+            echo "=================================================="
+            echo "FILE: logs/v6_c_stress_test_results.csv"
+            echo "=================================================="
 
-            logs/v6_c_stress_results.csv \
+            cat logs/v6_c_stress_test_results.csv
 
-            logs/v6_c_stress_summary.csv
+          fi
 
-          do
 
-            if [ -f "$file" ]; then
+          if [ -f logs/v6_c_stress_test_summary.csv ]; then
 
-              found=1
+            found=1
 
-              echo
-              echo "=================================================="
-              echo "FILE: $file"
-              echo "=================================================="
+            echo
+            echo "=================================================="
+            echo "FILE: logs/v6_c_stress_test_summary.csv"
+            echo "=================================================="
 
-              cat "$file"
+            cat logs/v6_c_stress_test_summary.csv
 
-            fi
+          fi
 
-          done
+
+          if [ -f logs/v6_c_stress_results.csv ]; then
+
+            found=1
+
+            echo
+            echo "=================================================="
+            echo "FILE: logs/v6_c_stress_results.csv"
+            echo "=================================================="
+
+            cat logs/v6_c_stress_results.csv
+
+          fi
+
+
+          if [ -f logs/v6_c_stress_summary.csv ]; then
+
+            found=1
+
+            echo
+            echo "=================================================="
+            echo "FILE: logs/v6_c_stress_summary.csv"
+            echo "=================================================="
+
+            cat logs/v6_c_stress_summary.csv
+
+          fi
 
 
           if [ "$found" -eq 0 ]; then
@@ -497,7 +483,6 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-
           echo "=================================================="
           echo "RUNNING V6_C MONTE-CARLO VALIDATION"
           echo "=================================================="
@@ -535,39 +520,53 @@ jobs:
       - name: Show V6_C Monte Carlo Results
         if: always()
         run: |
-
           echo "=================================================="
           echo "V6_C MONTE-CARLO RESULTS"
           echo "=================================================="
 
-
           found=0
 
 
-          for file in \
+          if [ -f logs/v6_c_monte_carlo_summary.csv ]; then
 
-            logs/v6_c_monte_carlo_summary.csv \
+            found=1
 
-            logs/v6_c_monte_carlo_window_results.csv \
+            echo
+            echo "=================================================="
+            echo "FILE: logs/v6_c_monte_carlo_summary.csv"
+            echo "=================================================="
 
-            logs/v6_c_monte_carlo_trades.csv
+            cat logs/v6_c_monte_carlo_summary.csv
 
-          do
+          fi
 
-            if [ -f "$file" ]; then
 
-              found=1
+          if [ -f logs/v6_c_monte_carlo_window_results.csv ]; then
 
-              echo
-              echo "=================================================="
-              echo "FILE: $file"
-              echo "=================================================="
+            found=1
 
-              cat "$file"
+            echo
+            echo "=================================================="
+            echo "FILE: logs/v6_c_monte_carlo_window_results.csv"
+            echo "=================================================="
 
-            fi
+            cat logs/v6_c_monte_carlo_window_results.csv
 
-          done
+          fi
+
+
+          if [ -f logs/v6_c_monte_carlo_trades.csv ]; then
+
+            found=1
+
+            echo
+            echo "=================================================="
+            echo "FILE: logs/v6_c_monte_carlo_trades.csv"
+            echo "=================================================="
+
+            cat logs/v6_c_monte_carlo_trades.csv
+
+          fi
 
 
           if [ "$found" -eq 0 ]; then
@@ -585,20 +584,12 @@ jobs:
       - name: Final data report
         if: always()
         run: |
-
           echo "=================================================="
           echo "FINAL DATA REPORT"
           echo "=================================================="
 
 
-          for file in \
-
-            data/BTC_USDT_5m.csv \
-
-            data/ETH_USDT_5m.csv \
-
-            data/SOL_USDT_5m.csv
-
+          for file in data/BTC_USDT_5m.csv data/ETH_USDT_5m.csv data/SOL_USDT_5m.csv
           do
 
             echo
@@ -635,7 +626,6 @@ jobs:
       - name: Show log directory
         if: always()
         run: |
-
           echo "=================================================="
           echo "LOG DIRECTORY"
           echo "=================================================="
@@ -651,11 +641,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-
           name: 20to100-backtest-logs
-
           path: |
-
             logs/
-
           if-no-files-found: warn
