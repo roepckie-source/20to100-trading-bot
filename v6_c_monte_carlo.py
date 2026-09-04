@@ -1,23 +1,54 @@
 from pathlib import Path
 
-code = """from pathlib import Path
-from dataclasses import asdict
+code = r'''# ============================================================
+# 20to100 Trading Bot
+# V6_C Monte-Carlo Validation
+#
+# Frozen strategy:
+#   V6_C
+#
+# Assets:
+#   BTC/USDT
+#   ETH/USDT
+#   SOL/USDT
+#
+# Walk Forward:
+#   12 months TRAIN
+#   3 months OOS
+#   3 months rolling step
+#
+# Monte Carlo:
+#   10,000 random permutations per OOS window
+#
+# IMPORTANT:
+# This test randomizes the ORDER of the actually realized
+# V6_C R-multiples. It tests sequence/path dependency.
+# It does NOT create new hypothetical trade outcomes.
+# ============================================================
+
+from pathlib import Path
+import math
 import numpy as np
 import pandas as pd
 
 from strategy.strategy_v6 import calculate_indicators
 from backtest.v6_engine import V6BacktestEngine
 
-SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
-VARIANT = "V6_C"
+
+# ============================================================
+# SETTINGS
+# ============================================================
 
 STARTING_BALANCE = 20.0
 RISK_PER_TRADE = 0.01
+
 FEE_RATE = 0.001
 SLIPPAGE_RATE = 0.0005
+
 ATR_STOP_MULTIPLIER = 3.0
 TRAILING_ATR_MULTIPLIER = 3.0
 ADX_MIN = 20.0
+
 MAX_DAILY_LOSS = 0.05
 MAX_CONSECUTIVE_LOSSES = 3
 LOSS_COOLDOWN_BARS = 24
@@ -26,86 +57,241 @@ GLOBAL_MAX_DRAWDOWN = 0.20
 TRAIN_MONTHS = 12
 OOS_MONTHS = 3
 STEP_MONTHS = 3
+
 SIMULATIONS = 10_000
-RANDOM_SEED = 20260904
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-LOG_DIR = BASE_DIR / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+ASSETS = {
+    "BTC/USDT": Path("data/BTC_USDT_5m.csv"),
+    "ETH/USDT": Path("data/ETH_USDT_5m.csv"),
+    "SOL/USDT": Path("data/SOL_USDT_5m.csv"),
+}
 
-DETAIL_FILE = LOG_DIR / "v6_c_monte_carlo_window_results.csv"
-SUMMARY_FILE = LOG_DIR / "v6_c_monte_carlo_summary.csv"
-TRADE_FILE = LOG_DIR / "v6_c_monte_carlo_trades.csv"
+OUTPUT_DIR = Path("logs")
 
 
-def normalize_columns(df):
-    df = df.copy()
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    aliases = {
-        "time": "timestamp", "datetime": "timestamp", "date": "timestamp",
-        "open_time": "timestamp", "vol": "volume"
-    }
-    df = df.rename(columns={k: v for k, v in aliases.items() if k in df.columns})
-    required = ["timestamp", "open", "high", "low", "close", "volume"]
+# ============================================================
+# LOAD + RESAMPLE
+# ============================================================
+
+def load_asset(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"Missing data file: {path}")
+
+    df = pd.read_csv(path)
+
+    if "timestamp" not in df.columns:
+        raise ValueError(f"{path} has no timestamp column.")
+
+    required = ["open", "high", "low", "close", "volume"]
+
     missing = [c for c in required if c not in df.columns]
     if missing:
-        raise ValueError(f"Fehlende Spalten: {missing}")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-    for c in ["open", "high", "low", "close", "volume"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=required).sort_values("timestamp")
-    df = df.drop_duplicates("timestamp", keep="last").set_index("timestamp")
-    return df
+        raise ValueError(
+            f"{path} is missing columns: {missing}"
+        )
 
+    df["timestamp"] = pd.to_datetime(
+        df["timestamp"],
+        utc=True
+    )
 
-def load_symbol(symbol):
-    path = DATA_DIR / (symbol.replace("/", "_") + "_5m.csv")
-    if not path.exists():
-        raise FileNotFoundError(f"Keine CSV-Datei für {symbol}: {path}")
-    print(f"\\nLOADING {symbol}\\nFile: {path}")
-    df = normalize_columns(pd.read_csv(path))
-    print(f"5m Candles : {len(df):,}")
-    hourly = df.resample("1h").agg({
-        "open": "first", "high": "max", "low": "min",
-        "close": "last", "volume": "sum"
-    }).dropna(subset=["open", "high", "low", "close"])
-    print(f"1h Candles  : {len(hourly):,}")
+    df = (
+        df.set_index("timestamp")
+        .sort_index()
+    )
+
+    hourly = (
+        df.resample("1h")
+        .agg(
+            {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }
+        )
+        .dropna()
+    )
+
     return hourly
 
 
-def month_start(ts):
+# ============================================================
+# WALK-FORWARD WINDOWS
+# ============================================================
+
+def month_start(ts) -> pd.Timestamp:
     ts = pd.Timestamp(ts)
-    ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
-    return ts.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+
+    return pd.Timestamp(
+        year=ts.year,
+        month=ts.month,
+        day=1,
+        tz="UTC"
+    )
 
 
-def add_months(ts, months):
-    return month_start(ts) + pd.DateOffset(months=months)
+def month_windows(index):
+    index = pd.DatetimeIndex(index)
 
+    if index.tz is None:
+        index = index.tz_localize("UTC")
+    else:
+        index = index.tz_convert("UTC")
 
-def create_windows(data):
-    start = month_start(data.index[0])
-    end = month_start(data.index[-1])
+    start = month_start(index.min())
+    end = month_start(index.max())
+
     windows = []
+
     train_start = start
+
     while True:
-        train_end = add_months(train_start, TRAIN_MONTHS)
-        oos_end = add_months(train_end, OOS_MONTHS)
-        if oos_end > end:
+        train_end = train_start + pd.DateOffset(
+            months=TRAIN_MONTHS
+        )
+
+        oos_end = train_end + pd.DateOffset(
+            months=OOS_MONTHS
+        )
+
+        if oos_end > end + pd.Timedelta(hours=1):
             break
-        windows.append({
-            "train_start": train_start, "train_end": train_end,
-            "oos_start": train_end, "oos_end": oos_end
-        })
-        train_start = add_months(train_start, STEP_MONTHS)
+
+        windows.append(
+            {
+                "train_start": train_start,
+                "train_end": train_end,
+                "oos_start": train_end,
+                "oos_end": oos_end,
+            }
+        )
+
+        train_start = train_start + pd.DateOffset(
+            months=STEP_MONTHS
+        )
+
     return windows
 
 
-def run_real_window(data, window):
-    oos = data[(data.index >= window["oos_start"]) &
-               (data.index < window["oos_end"])].copy()
-    if len(oos) < 300:
+# ============================================================
+# MONTE CARLO SIMULATION
+# ============================================================
+
+def simulate_sequence(
+    r_multiples,
+    rng,
+):
+    """
+    Compound the sequence at RISK_PER_TRADE per trade.
+
+    Example:
+        R = +2.0
+        risk = 1%
+        balance multiplier = 1 + 0.01 * 2 = 1.02
+
+    Returns:
+        final_balance
+        return_pct
+        max_drawdown_pct
+        worst_loss_streak
+    """
+
+    if len(r_multiples) == 0:
+        return (
+            STARTING_BALANCE,
+            0.0,
+            0.0,
+            0,
+        )
+
+    sequence = np.asarray(
+        r_multiples,
+        dtype=float
+    ).copy()
+
+    rng.shuffle(sequence)
+
+    balance = STARTING_BALANCE
+    peak = balance
+    max_drawdown = 0.0
+
+    current_loss_streak = 0
+    worst_loss_streak = 0
+
+    for r in sequence:
+
+        balance *= (
+            1.0
+            + RISK_PER_TRADE * r
+        )
+
+        # Numerical safety
+        if not np.isfinite(balance):
+            balance = 0.0
+
+        balance = max(
+            0.0,
+            balance
+        )
+
+        peak = max(
+            peak,
+            balance
+        )
+
+        if peak > 0:
+            drawdown = (
+                (balance / peak)
+                - 1.0
+            ) * 100.0
+
+            max_drawdown = min(
+                max_drawdown,
+                drawdown
+            )
+
+        if r < 0:
+            current_loss_streak += 1
+            worst_loss_streak = max(
+                worst_loss_streak,
+                current_loss_streak
+            )
+        else:
+            current_loss_streak = 0
+
+    return (
+        balance,
+        (
+            (balance / STARTING_BALANCE)
+            - 1.0
+        ) * 100.0,
+        max_drawdown,
+        worst_loss_streak,
+    )
+
+
+# ============================================================
+# RUN REAL V6_C OOS WINDOW
+# ============================================================
+
+def run_oos_window(
+    symbol,
+    full_df,
+    window,
+):
+    oos = full_df[
+        (full_df.index >= window["oos_start"])
+        & (full_df.index < window["oos_end"])
+    ].copy()
+
+    if len(oos) < 10:
         return None
 
     engine = V6BacktestEngine(
@@ -120,174 +306,631 @@ def run_real_window(data, window):
         max_consecutive_losses=MAX_CONSECUTIVE_LOSSES,
         loss_cooldown_bars=LOSS_COOLDOWN_BARS,
         global_max_drawdown=GLOBAL_MAX_DRAWDOWN,
-        variant=VARIANT,
+        variant="V6_C",
     )
+
     result = engine.run(oos)
-    return result, list(engine.trades)
 
+    r_values = []
 
-def simulate_sequence(r_values, rng):
-    balance = STARTING_BALANCE
-    peak = balance
-    max_dd = 0.0
-    streak = longest = 0
+    for trade in getattr(
+        engine,
+        "trades",
+        []
+    ):
+        r = getattr(
+            trade,
+            "r_multiple",
+            None
+        )
 
-    for r in rng.permutation(r_values):
-        balance += balance * RISK_PER_TRADE * float(r)
-        balance = max(balance, 0.0)
+        if r is None:
+            continue
 
-        if r < 0:
-            streak += 1
-            longest = max(longest, streak)
-        elif r > 0:
-            streak = 0
+        try:
+            r = float(r)
+        except (TypeError, ValueError):
+            continue
 
-        peak = max(peak, balance)
-        dd = ((balance - peak) / peak * 100.0) if peak else -100.0
-        max_dd = min(max_dd, dd)
+        if not np.isfinite(r):
+            continue
 
-    return {
-        "final_balance": balance,
-        "return_pct": (balance / STARTING_BALANCE - 1.0) * 100.0,
-        "max_drawdown_pct": max_dd,
-        "longest_loss_streak": longest,
-    }
-
-
-def monte_carlo(r_values, rng):
-    finals = np.empty(SIMULATIONS)
-    returns = np.empty(SIMULATIONS)
-    dds = np.empty(SIMULATIONS)
-    streaks = np.empty(SIMULATIONS)
-
-    for i in range(SIMULATIONS):
-        x = simulate_sequence(r_values, rng)
-        finals[i] = x["final_balance"]
-        returns[i] = x["return_pct"]
-        dds[i] = x["max_drawdown_pct"]
-        streaks[i] = x["longest_loss_streak"]
+        r_values.append(r)
 
     return {
-        "simulations": SIMULATIONS,
+        "symbol": symbol,
+        "train_start": window["train_start"],
+        "train_end": window["train_end"],
+        "oos_start": window["oos_start"],
+        "oos_end": window["oos_end"],
         "trades": len(r_values),
-        "median_final_balance": np.median(finals),
-        "mean_final_balance": np.mean(finals),
-        "p05_final_balance": np.percentile(finals, 5),
-        "p95_final_balance": np.percentile(finals, 95),
-        "median_return_pct": np.median(returns),
-        "mean_return_pct": np.mean(returns),
-        "p05_return_pct": np.percentile(returns, 5),
-        "p95_return_pct": np.percentile(returns, 95),
-        "median_drawdown_pct": np.median(dds),
-        "worst_drawdown_pct": np.min(dds),
-        "median_longest_loss_streak": np.median(streaks),
-        "max_longest_loss_streak": np.max(streaks),
-        "probability_hit_100_pct": np.mean(finals >= 100.0) * 100.0,
-        "probability_below_10_pct": np.mean(finals < 10.0) * 100.0,
+        "engine_result": result,
+        "r_multiples": r_values,
     }
 
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
-    print("=" * 90)
+    OUTPUT_DIR.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    print("=" * 70)
     print("V6_C MONTE-CARLO VALIDATION")
-    print("=" * 90)
-    print(f"Assets       : {', '.join(SYMBOLS)}")
-    print(f"Risk/Trade   : {RISK_PER_TRADE * 100:.2f}%")
-    print(f"Fee          : {FEE_RATE * 100:.2f}%")
-    print(f"Slippage     : {SLIPPAGE_RATE * 100:.2f}%")
-    print(f"Simulations  : {SIMULATIONS:,}")
-    print(f"Seed         : {RANDOM_SEED}")
+    print("=" * 70)
+    print()
+    print("Strategy: V6_C")
+    print("Assets: BTC + ETH + SOL")
+    print(f"Simulations per OOS window: {SIMULATIONS:,}")
+    print("Risk per trade: 1.00%")
+    print("Walk Forward: 12m TRAIN / 3m OOS / 3m step")
+    print("=" * 70)
 
-    rng = np.random.default_rng(RANDOM_SEED)
-    rows, trade_rows = [], []
+    rng = np.random.default_rng(
+        20260904
+    )
 
-    for symbol in SYMBOLS:
-        data = calculate_indicators(load_symbol(symbol))
-        windows = create_windows(data)
-        print(f"{symbol}: {len(windows)} Walk-Forward Fenster")
+    window_rows = []
+    trade_rows = []
 
-        for n, window in enumerate(windows, 1):
-            print(f"  Fenster {n}/{len(windows)}: {window['oos_start'].date()} -> {window['oos_end'].date()}")
-            out = run_real_window(data, window)
-            if out is None:
-                continue
+    total_windows = 0
 
-            real, trades = out
-            r = np.array([float(t.r_multiple) for t in trades], dtype=float)
-            r = r[np.isfinite(r)]
-            if len(r) == 0:
-                continue
+    for symbol, path in ASSETS.items():
 
-            mc = monte_carlo(r, rng)
-            real_return = float(real.get("return_pct", 0.0))
-            real_dd = float(real.get("max_drawdown_pct", 0.0))
+        print()
+        print("=" * 70)
+        print(f"LOADING {symbol}")
+        print("=" * 70)
 
-            print(f"    Trades={len(r)} | Real={real_return:+.3f}% | MC Median={mc['median_return_pct']:+.3f}% | P($100)={mc['probability_hit_100_pct']:.2f}%")
+        hourly = load_asset(path)
 
-            rows.append({
-                "symbol": symbol, "window": n,
-                "oos_start": window["oos_start"],
-                "oos_end": window["oos_end"],
-                "real_return_pct": real_return,
-                "real_max_drawdown_pct": real_dd,
-                **mc
-            })
+        print(
+            f"5m file: {path}"
+        )
+        print(
+            f"1h candles: {len(hourly):,}"
+        )
+        print(
+            f"Range: {hourly.index.min()} -> "
+            f"{hourly.index.max()}"
+        )
 
-            for j, t in enumerate(trades, 1):
-                trade_rows.append({
-                    "symbol": symbol, "window": n, "trade_number": j,
-                    **asdict(t)
-                })
+        # CRITICAL:
+        # Calculate indicators BEFORE the walk-forward split.
+        # This preserves indicator warm-up at the OOS boundary.
+        print("Calculating V6 indicators on full dataset...")
 
-    if not rows:
-        raise RuntimeError("Keine V6_C Monte-Carlo-Ergebnisse erzeugt.")
+        hourly = calculate_indicators(
+            hourly
+        )
 
-    details = pd.DataFrame(rows)
-    trades_df = pd.DataFrame(trade_rows)
-    details.to_csv(DETAIL_FILE, index=False)
-    trades_df.to_csv(TRADE_FILE, index=False)
+        windows = month_windows(
+            hourly.index
+        )
 
-    summary = pd.DataFrame([{
-        "variant": VARIANT,
-        "assets": details["symbol"].nunique(),
-        "windows": len(details),
-        "simulations_per_window": SIMULATIONS,
-        "total_real_trades": int(details["trades"].sum()),
-        "positive_real_window_pct": (details["real_return_pct"] > 0).mean() * 100.0,
-        "real_median_return_pct": details["real_return_pct"].median(),
-        "mc_median_final_balance": details["median_final_balance"].median(),
-        "mc_p05_final_balance": details["p05_final_balance"].median(),
-        "mc_p95_final_balance": details["p95_final_balance"].median(),
-        "mc_median_return_pct": details["median_return_pct"].median(),
-        "mc_p05_return_pct": details["p05_return_pct"].median(),
-        "mc_p95_return_pct": details["p95_return_pct"].median(),
-        "mc_median_drawdown_pct": details["median_drawdown_pct"].median(),
-        "mc_worst_drawdown_pct": details["worst_drawdown_pct"].min(),
-        "median_probability_hit_100_pct": details["probability_hit_100_pct"].median(),
-        "median_probability_below_10_pct": details["probability_below_10_pct"].median(),
-        "median_longest_loss_streak": details["median_longest_loss_streak"].median(),
-        "max_longest_loss_streak": details["max_longest_loss_streak"].max(),
-    }])
-    summary.to_csv(SUMMARY_FILE, index=False)
+        print(
+            f"Walk-forward windows: {len(windows)}"
+        )
+
+        if not windows:
+            print(
+                f"WARNING: no windows for {symbol}"
+            )
+            continue
+
+        for window_number, window in enumerate(
+            windows,
+            start=1
+        ):
+
+            print()
+            print(
+                f"{symbol} | V6_C | "
+                f"W{window_number:02d}/{len(windows)}"
+            )
+            print(
+                f"OOS: "
+                f"{window['oos_start'].date()} -> "
+                f"{window['oos_end'].date()}"
+            )
+
+            try:
+                result = run_oos_window(
+                    symbol,
+                    hourly,
+                    window
+                )
+
+                if result is None:
+                    print(
+                        "Skipped: insufficient OOS data."
+                    )
+                    continue
+
+                r_values = result[
+                    "r_multiples"
+                ]
+
+                if len(r_values) == 0:
+                    print(
+                        "No valid R-multiples."
+                    )
+                    continue
+
+                total_windows += 1
+
+                # Store actual trades
+                for trade_number, r in enumerate(
+                    r_values,
+                    start=1
+                ):
+                    trade_rows.append(
+                        {
+                            "symbol": symbol,
+                            "window": window_number,
+                            "trade": trade_number,
+                            "r_multiple": r,
+                        }
+                    )
+
+                finals = []
+                returns = []
+                drawdowns = []
+                loss_streaks = []
+
+                hits_100 = 0
+                below_10 = 0
+
+                for _ in range(
+                    SIMULATIONS
+                ):
+
+                    (
+                        final_balance,
+                        return_pct,
+                        max_dd,
+                        worst_streak,
+                    ) = simulate_sequence(
+                        r_values,
+                        rng
+                    )
+
+                    finals.append(
+                        final_balance
+                    )
+
+                    returns.append(
+                        return_pct
+                    )
+
+                    drawdowns.append(
+                        max_dd
+                    )
+
+                    loss_streaks.append(
+                        worst_streak
+                    )
+
+                    if final_balance >= 100.0:
+                        hits_100 += 1
+
+                    if final_balance < 10.0:
+                        below_10 += 1
+
+                finals = np.asarray(
+                    finals
+                )
+
+                returns = np.asarray(
+                    returns
+                )
+
+                drawdowns = np.asarray(
+                    drawdowns
+                )
+
+                loss_streaks = np.asarray(
+                    loss_streaks
+                )
+
+                actual_result = result[
+                    "engine_result"
+                ]
+
+                row = {
+                    "symbol": symbol,
+                    "window": window_number,
+                    "train_start": window[
+                        "train_start"
+                    ],
+                    "train_end": window[
+                        "train_end"
+                    ],
+                    "oos_start": window[
+                        "oos_start"
+                    ],
+                    "oos_end": window[
+                        "oos_end"
+                    ],
+                    "actual_trades": len(
+                        r_values
+                    ),
+                    "actual_final_balance": (
+                        actual_result.get(
+                            "final_balance",
+                            np.nan
+                        )
+                    ),
+                    "actual_return_pct": (
+                        actual_result.get(
+                            "return_pct",
+                            np.nan
+                        )
+                    ),
+                    "actual_profit_factor": (
+                        actual_result.get(
+                            "profit_factor",
+                            np.nan
+                        )
+                    ),
+                    "actual_max_drawdown_pct": (
+                        actual_result.get(
+                            "max_drawdown_pct",
+                            np.nan
+                        )
+                    ),
+                    "median_final_balance": (
+                        float(
+                            np.median(
+                                finals
+                            )
+                        )
+                    ),
+                    "p05_final_balance": (
+                        float(
+                            np.percentile(
+                                finals,
+                                5
+                            )
+                        )
+                    ),
+                    "p95_final_balance": (
+                        float(
+                            np.percentile(
+                                finals,
+                                95
+                            )
+                        )
+                    ),
+                    "median_return_pct": (
+                        float(
+                            np.median(
+                                returns
+                            )
+                        )
+                    ),
+                    "p05_return_pct": (
+                        float(
+                            np.percentile(
+                                returns,
+                                5
+                            )
+                        )
+                    ),
+                    "p95_return_pct": (
+                        float(
+                            np.percentile(
+                                returns,
+                                95
+                            )
+                        )
+                    ),
+                    "median_max_drawdown_pct": (
+                        float(
+                            np.median(
+                                drawdowns
+                            )
+                        )
+                    ),
+                    "worst_max_drawdown_pct": (
+                        float(
+                            np.min(
+                                drawdowns
+                            )
+                        )
+                    ),
+                    "median_worst_loss_streak": (
+                        float(
+                            np.median(
+                                loss_streaks
+                            )
+                        )
+                    ),
+                    "worst_loss_streak": (
+                        int(
+                            np.max(
+                                loss_streaks
+                            )
+                        )
+                    ),
+                    "probability_reach_100_pct": (
+                        hits_100
+                        / SIMULATIONS
+                        * 100.0
+                    ),
+                    "probability_below_10_pct": (
+                        below_10
+                        / SIMULATIONS
+                        * 100.0
+                    ),
+                }
+
+                window_rows.append(
+                    row
+                )
+
+                print(
+                    f"Trades: {len(r_values)}"
+                )
+                print(
+                    f"Actual return: "
+                    f"{row['actual_return_pct']:.2f}%"
+                )
+                print(
+                    f"MC median final: "
+                    f"${row['median_final_balance']:.2f}"
+                )
+                print(
+                    f"MC P05/P95 final: "
+                    f"${row['p05_final_balance']:.2f} / "
+                    f"${row['p95_final_balance']:.2f}"
+                )
+                print(
+                    f"MC median DD: "
+                    f"{row['median_max_drawdown_pct']:.2f}%"
+                )
+                print(
+                    f"MC worst DD: "
+                    f"{row['worst_max_drawdown_pct']:.2f}%"
+                )
+                print(
+                    f"Chance >= $100: "
+                    f"{row['probability_reach_100_pct']:.2f}%"
+                )
+                print(
+                    f"Chance < $10: "
+                    f"{row['probability_below_10_pct']:.2f}%"
+                )
+
+            except Exception as exc:
+                print(
+                    f"ERROR in {symbol} "
+                    f"W{window_number}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+    # ========================================================
+    # SAVE WINDOW RESULTS
+    # ========================================================
+
+    window_path = (
+        OUTPUT_DIR
+        / "v6_c_monte_carlo_window_results.csv"
+    )
+
+    trades_path = (
+        OUTPUT_DIR
+        / "v6_c_monte_carlo_trades.csv"
+    )
+
+    summary_path = (
+        OUTPUT_DIR
+        / "v6_c_monte_carlo_summary.csv"
+    )
+
+    window_df = pd.DataFrame(
+        window_rows
+    )
+
+    trades_df = pd.DataFrame(
+        trade_rows
+    )
+
+    window_df.to_csv(
+        window_path,
+        index=False
+    )
+
+    trades_df.to_csv(
+        trades_path,
+        index=False
+    )
+
+    # ========================================================
+    # GLOBAL SUMMARY
+    # ========================================================
+
+    summary_rows = []
+
+    if not window_df.empty:
+
+        for symbol in sorted(
+            window_df["symbol"].unique()
+        ):
+
+            subset = window_df[
+                window_df["symbol"] == symbol
+            ]
+
+            summary_rows.append(
+                {
+                    "symbol": symbol,
+                    "windows": len(subset),
+                    "total_actual_trades": int(
+                        subset[
+                            "actual_trades"
+                        ].sum()
+                    ),
+                    "median_mc_final_balance": (
+                        subset[
+                            "median_final_balance"
+                        ].median()
+                    ),
+                    "p05_mc_final_balance": (
+                        subset[
+                            "p05_final_balance"
+                        ].median()
+                    ),
+                    "p95_mc_final_balance": (
+                        subset[
+                            "p95_final_balance"
+                        ].median()
+                    ),
+                    "median_mc_return_pct": (
+                        subset[
+                            "median_return_pct"
+                        ].median()
+                    ),
+                    "median_mc_drawdown_pct": (
+                        subset[
+                            "median_max_drawdown_pct"
+                        ].median()
+                    ),
+                    "worst_mc_drawdown_pct": (
+                        subset[
+                            "worst_max_drawdown_pct"
+                        ].min()
+                    ),
+                    "median_probability_reach_100_pct": (
+                        subset[
+                            "probability_reach_100_pct"
+                        ].median()
+                    ),
+                    "median_probability_below_10_pct": (
+                        subset[
+                            "probability_below_10_pct"
+                        ].median()
+                    ),
+                }
+            )
+
+        # Overall row
+        summary_rows.append(
+            {
+                "symbol": "ALL",
+                "windows": len(window_df),
+                "total_actual_trades": int(
+                    window_df[
+                        "actual_trades"
+                    ].sum()
+                ),
+                "median_mc_final_balance": (
+                    window_df[
+                        "median_final_balance"
+                    ].median()
+                ),
+                "p05_mc_final_balance": (
+                    window_df[
+                        "p05_final_balance"
+                    ].median()
+                ),
+                "p95_mc_final_balance": (
+                    window_df[
+                        "p95_final_balance"
+                    ].median()
+                ),
+                "median_mc_return_pct": (
+                    window_df[
+                        "median_return_pct"
+                    ].median()
+                ),
+                "median_mc_drawdown_pct": (
+                    window_df[
+                        "median_max_drawdown_pct"
+                    ].median()
+                ),
+                "worst_mc_drawdown_pct": (
+                    window_df[
+                        "worst_max_drawdown_pct"
+                    ].min()
+                ),
+                "median_probability_reach_100_pct": (
+                    window_df[
+                        "probability_reach_100_pct"
+                    ].median()
+                ),
+                "median_probability_below_10_pct": (
+                    window_df[
+                        "probability_below_10_pct"
+                    ].median()
+                ),
+            }
+        )
+
+    summary_df = pd.DataFrame(
+        summary_rows
+    )
+
+    summary_df.to_csv(
+        summary_path,
+        index=False
+    )
+
+    # ========================================================
+    # FINAL OUTPUT
+    # ========================================================
 
     print()
-    print("=" * 90)
-    print("V6_C MONTE-CARLO SUMMARY")
-    print("=" * 90)
-    for k, v in summary.iloc[0].items():
-        print(f"{k:32}: {v}")
-    print("=" * 90)
-    print(f"Details : {DETAIL_FILE}")
-    print(f"Trades  : {TRADE_FILE}")
-    print(f"Summary : {SUMMARY_FILE}")
-    print("V6_C Monte-Carlo abgeschlossen.")
+    print("=" * 70)
+    print("V6_C MONTE-CARLO COMPLETE")
+    print("=" * 70)
+    print(
+        f"Valid OOS windows: {total_windows}"
+    )
+    print(
+        f"Simulations per window: {SIMULATIONS:,}"
+    )
+    print()
+    print(
+        f"Window results: {window_path}"
+    )
+    print(
+        f"Trade R-multiples: {trades_path}"
+    )
+    print(
+        f"Summary: {summary_path}"
+    )
+
+    if not summary_df.empty:
+        print()
+        print("=" * 70)
+        print("GLOBAL MONTE-CARLO SUMMARY")
+        print("=" * 70)
+        print(
+            summary_df.to_string(
+                index=False
+            )
+        )
+    else:
+        print()
+        print(
+            "WARNING: No Monte-Carlo results generated."
+        )
 
 
 if __name__ == "__main__":
     main()
-"""
+'''
 
 path = Path("/mnt/data/v6_c_monte_carlo.py")
 path.write_text(code, encoding="utf-8")
-print(f"Erstellt: {path}")
 
+# Syntax check
+compile(code, str(path), "exec")
+
+print(f"Datei erstellt: {path}")
+print("Syntaxprüfung: OK")
