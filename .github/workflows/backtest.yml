@@ -38,7 +38,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy requests
+
+          pip install \
+            pandas \
+            numpy \
+            requests \
+            ccxt
 
 
       # ==================================================
@@ -126,7 +131,7 @@ jobs:
       # ==================================================
       # V5
       #
-      # V5 darf den Workflow nicht mehr stoppen,
+      # V5 darf den Workflow nicht stoppen,
       # falls keine gültigen Walk-Forward-Fenster
       # vorhanden sind.
       # ==================================================
@@ -174,22 +179,27 @@ jobs:
 
           echo ""
           echo "DETAILED RESULTS:"
+
           if [ -f logs/v6_extended_multi_asset_results.csv ]; then
             cat logs/v6_extended_multi_asset_results.csv
           else
             echo "No detailed V6 result file found."
           fi
 
+
           echo ""
           echo "ASSET SUMMARY:"
+
           if [ -f logs/v6_extended_asset_summary.csv ]; then
             cat logs/v6_extended_asset_summary.csv
           else
             echo "No V6 asset summary found."
           fi
 
+
           echo ""
           echo "GLOBAL VARIANT SUMMARY:"
+
           if [ -f logs/v6_extended_multi_asset_summary.csv ]; then
             cat logs/v6_extended_multi_asset_summary.csv
           else
@@ -200,7 +210,7 @@ jobs:
       # ==================================================
       # V6_C STRESS TEST
       #
-      # Wird erst ausgeführt, wenn das Stress-Test-Skript
+      # Wird nur ausgeführt, wenn die Datei bereits
       # im Repository vorhanden ist.
       # ==================================================
 
@@ -212,22 +222,29 @@ jobs:
           echo "=================================================="
 
           echo ""
-          echo "BTC + ETH + SOL"
+          echo "ASSETS:"
+          echo "  BTC/USDT"
+          echo "  ETH/USDT"
+          echo "  SOL/USDT"
+
           echo ""
-          echo "Fees:"
+          echo "FEES:"
           echo "  0.10%"
           echo "  0.15%"
           echo "  0.20%"
+
           echo ""
-          echo "Slippage:"
+          echo "SLIPPAGE:"
           echo "  0.05%"
           echo "  0.10%"
           echo "  0.20%"
+
           echo ""
-          echo "Risk per trade:"
+          echo "RISK PER TRADE:"
           echo "  0.50%"
           echo "  1.00%"
           echo "  1.50%"
+
           echo ""
 
           python v6_c_stress_test.py
@@ -246,28 +263,42 @@ jobs:
           echo "=================================================="
 
           if [ -d logs ]; then
+
             echo ""
-            echo "LOG FILES:"
+            echo "ALL LOG FILES:"
             find logs -maxdepth 1 -type f -print | sort
 
             echo ""
             echo "STRESS TEST CSV FILES:"
-            find logs -maxdepth 1 -type f -name "*stress*" -print | sort
+
+            find logs \
+              -maxdepth 1 \
+              -type f \
+              -name "*stress*.csv" \
+              -print \
+              | sort
+
 
             for file in logs/*stress*.csv; do
+
               if [ -f "$file" ]; then
+
                 echo ""
                 echo "--------------------------------------------------"
                 echo "$file"
                 echo "--------------------------------------------------"
+
                 cat "$file"
+
               fi
+
             done
+
           fi
 
 
       # ==================================================
-      # UPLOAD ALL BACKTEST RESULTS
+      # UPLOAD BACKTEST RESULTS
       # ==================================================
 
       - name: Upload Backtest Results
@@ -275,7 +306,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backtest-results
+
           path: |
             logs/
-            data/*.csv
+
           if-no-files-found: warn
