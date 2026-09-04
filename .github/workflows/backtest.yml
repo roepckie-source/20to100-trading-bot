@@ -1,10 +1,14 @@
-name: Trading Bot Backtests
+name: 20to100 Backtest
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   backtest:
+
     runs-on: ubuntu-latest
 
     steps:
@@ -28,69 +32,86 @@ jobs:
 
 
       # ==================================================
-      # DEPENDENCIES
+      # INSTALL DEPENDENCIES
       # ==================================================
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy ccxt
+          pip install pandas numpy requests
 
 
       # ==================================================
-      # SHOW FILES
+      # CREATE DIRECTORIES
       # ==================================================
 
-      - name: Show repository structure
+      - name: Prepare directories
+        run: |
+          mkdir -p data
+          mkdir -p logs
+
+
+      # ==================================================
+      # CHECK DATA
+      # ==================================================
+
+      - name: Check cached market data
         run: |
           echo "=================================================="
-          echo "REPOSITORY STRUCTURE"
+          echo "CHECKING MARKET DATA"
           echo "=================================================="
 
-          find . -maxdepth 3 -type f | sort
+          echo ""
+          echo "DATA DIRECTORY:"
+          ls -lah data || true
+
+          echo ""
+          echo "CSV FILES:"
+          find data -maxdepth 1 -type f -name "*.csv" -print || true
 
 
       # ==================================================
-      # V1 / A-B-C BACKTEST
+      # ORIGINAL A/B/C
       # ==================================================
 
-      - name: Run A B C Backtest
+      - name: Run Original A B C Backtest
         run: |
           echo "=================================================="
-          echo "RUNNING A/B/C BACKTEST"
+          echo "RUNNING ORIGINAL A/B/C BACKTEST"
           echo "=================================================="
 
           python main.py
 
 
       # ==================================================
-      # V2 BACKTEST
+      # V2.1
       # ==================================================
 
-      - name: Run V2 Backtest
+      - name: Run V2.1 Backtest
         run: |
           echo "=================================================="
-          echo "RUNNING V2 BACKTEST"
+          echo "RUNNING V2.1"
+          echo "DONCHIAN + EMA200 + ATR"
           echo "=================================================="
 
           python v2_backtest.py
 
 
       # ==================================================
-      # V3 BACKTEST
+      # V3
       # ==================================================
 
-      - name: Run V3 Backtest
+      - name: Run V3 Walk Forward
         run: |
           echo "=================================================="
-          echo "RUNNING V3 BACKTEST"
+          echo "RUNNING V3 WALK-FORWARD"
           echo "=================================================="
 
           python v3_backtest.py
 
 
       # ==================================================
-      # V4 WALK FORWARD
+      # V4
       # ==================================================
 
       - name: Run V4 Walk Forward
@@ -103,10 +124,15 @@ jobs:
 
 
       # ==================================================
-      # V5 WALK FORWARD
+      # V5
+      #
+      # V5 darf den Workflow nicht mehr stoppen,
+      # falls keine gültigen Walk-Forward-Fenster
+      # vorhanden sind.
       # ==================================================
 
       - name: Run V5 Walk Forward
+        continue-on-error: true
         run: |
           echo "=================================================="
           echo "RUNNING V5 WALK-FORWARD"
@@ -116,56 +142,22 @@ jobs:
 
 
       # ==================================================
-      # V6 EXTENDED MULTI ASSET
+      # V6 EXTENDED MULTI-ASSET
       #
       # BTC + ETH + SOL
+      # 16 Walk-Forward-Fenster
       # V6_A + V6_B + V6_C
-      # 16 WALK-FORWARD WINDOWS
       # ==================================================
 
       - name: Run V6 Extended Multi Asset
         run: |
           echo "=================================================="
-          echo "RUNNING V6 EXTENDED MULTI-ASSET BACKTEST"
+          echo "RUNNING V6 EXTENDED MULTI-ASSET"
+          echo "BTC + ETH + SOL"
+          echo "V6_A + V6_B + V6_C"
           echo "=================================================="
 
           python v6_extended_multi_asset_backtest.py
-
-
-      # ==================================================
-      # V6_C STRESS TEST
-      #
-      # FIXED V6_C
-      #
-      # Fees:
-      # 0.10%
-      # 0.15%
-      # 0.20%
-      #
-      # Slippage:
-      # 0.05%
-      # 0.10%
-      # 0.20%
-      #
-      # Risk:
-      # 0.50%
-      # 1.00%
-      # 1.50%
-      #
-      # BTC + ETH + SOL
-      # 16 OOS WINDOWS
-      #
-      # 27 COMBINATIONS
-      # 1296 BACKTESTS
-      # ==================================================
-
-      - name: Run V6 C Stress Test
-        run: |
-          echo "=================================================="
-          echo "RUNNING V6_C STRESS TEST"
-          echo "=================================================="
-
-          python v6_c_stress_test.py
 
 
       # ==================================================
@@ -173,99 +165,117 @@ jobs:
       # ==================================================
 
       - name: Show V6 Extended Results
+        if: always()
         run: |
+          echo ""
           echo "=================================================="
           echo "V6 EXTENDED RESULTS"
           echo "=================================================="
 
+          echo ""
+          echo "DETAILED RESULTS:"
           if [ -f logs/v6_extended_multi_asset_results.csv ]; then
             cat logs/v6_extended_multi_asset_results.csv
           else
-            echo "No detailed V6 extended results found."
+            echo "No detailed V6 result file found."
           fi
 
           echo ""
-          echo "=================================================="
-          echo "V6 EXTENDED ASSET SUMMARY"
-          echo "=================================================="
-
+          echo "ASSET SUMMARY:"
           if [ -f logs/v6_extended_asset_summary.csv ]; then
             cat logs/v6_extended_asset_summary.csv
           else
-            echo "No V6 extended asset summary found."
+            echo "No V6 asset summary found."
           fi
 
           echo ""
-          echo "=================================================="
-          echo "V6 EXTENDED GLOBAL SUMMARY"
-          echo "=================================================="
-
+          echo "GLOBAL VARIANT SUMMARY:"
           if [ -f logs/v6_extended_multi_asset_summary.csv ]; then
             cat logs/v6_extended_multi_asset_summary.csv
           else
-            echo "No V6 extended global summary found."
+            echo "No V6 global summary found."
           fi
 
 
       # ==================================================
-      # SHOW V6_C STRESS TEST RESULTS
+      # V6_C STRESS TEST
+      #
+      # Wird erst ausgeführt, wenn das Stress-Test-Skript
+      # im Repository vorhanden ist.
       # ==================================================
 
-      - name: Show V6 C Stress Test Results
+      - name: Run V6 C Stress Test
+        if: ${{ hashFiles('v6_c_stress_test.py') != '' }}
         run: |
+          echo "=================================================="
+          echo "RUNNING V6_C STRESS TEST"
+          echo "=================================================="
+
+          echo ""
+          echo "BTC + ETH + SOL"
+          echo ""
+          echo "Fees:"
+          echo "  0.10%"
+          echo "  0.15%"
+          echo "  0.20%"
+          echo ""
+          echo "Slippage:"
+          echo "  0.05%"
+          echo "  0.10%"
+          echo "  0.20%"
+          echo ""
+          echo "Risk per trade:"
+          echo "  0.50%"
+          echo "  1.00%"
+          echo "  1.50%"
+          echo ""
+
+          python v6_c_stress_test.py
+
+
+      # ==================================================
+      # SHOW STRESS TEST RESULTS
+      # ==================================================
+
+      - name: Show Stress Test Results
+        if: always()
+        run: |
+          echo ""
           echo "=================================================="
           echo "V6_C STRESS TEST RESULTS"
           echo "=================================================="
 
-          if [ -f logs/v6_c_stress_test_results.csv ]; then
-            cat logs/v6_c_stress_test_results.csv
-          else
-            echo "No V6_C stress test detailed results found."
-          fi
+          if [ -d logs ]; then
+            echo ""
+            echo "LOG FILES:"
+            find logs -maxdepth 1 -type f -print | sort
 
-          echo ""
-          echo "=================================================="
-          echo "V6_C STRESS TEST ASSET SUMMARY"
-          echo "=================================================="
+            echo ""
+            echo "STRESS TEST CSV FILES:"
+            find logs -maxdepth 1 -type f -name "*stress*" -print | sort
 
-          if [ -f logs/v6_c_stress_test_asset_summary.csv ]; then
-            cat logs/v6_c_stress_test_asset_summary.csv
-          else
-            echo "No V6_C stress test asset summary found."
-          fi
-
-          echo ""
-          echo "=================================================="
-          echo "V6_C STRESS TEST GLOBAL SUMMARY"
-          echo "=================================================="
-
-          if [ -f logs/v6_c_stress_test_summary.csv ]; then
-            cat logs/v6_c_stress_test_summary.csv
-          else
-            echo "No V6_C stress test global summary found."
-          fi
-
-          echo ""
-          echo "=================================================="
-          echo "V6_C STRESS TEST RANKING"
-          echo "=================================================="
-
-          if [ -f logs/v6_c_stress_test_ranking.csv ]; then
-            cat logs/v6_c_stress_test_ranking.csv
-          else
-            echo "No V6_C stress test ranking found."
+            for file in logs/*stress*.csv; do
+              if [ -f "$file" ]; then
+                echo ""
+                echo "--------------------------------------------------"
+                echo "$file"
+                echo "--------------------------------------------------"
+                cat "$file"
+              fi
+            done
           fi
 
 
       # ==================================================
-      # UPLOAD BACKTEST RESULTS
+      # UPLOAD ALL BACKTEST RESULTS
       # ==================================================
 
       - name: Upload Backtest Results
-        uses: actions/upload-artifact@v4
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: trading-bot-backtest-results
+          name: backtest-results
           path: |
-            logs/*.csv
+            logs/
+            data/*.csv
           if-no-files-found: warn
