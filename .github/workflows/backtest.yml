@@ -21,368 +21,451 @@ jobs:
 
     steps:
 
-      # ==================================================
+      # =====================================================
       # CHECKOUT
-      # ==================================================
+      # =====================================================
 
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # ==================================================
+      # =====================================================
       # PYTHON
-      # ==================================================
+      # =====================================================
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
 
-      # ==================================================
-      # DEPENDENCIES
-      # ==================================================
+      # =====================================================
+      # INSTALL DEPENDENCIES
+      # =====================================================
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy requests ccxt
+
+          pip install \
+            pandas \
+            numpy \
+            requests \
+            ccxt
 
 
-      # ==================================================
-      # DIRECTORIES
-      # ==================================================
+      # =====================================================
+      # DATA DIRECTORY
+      # =====================================================
 
-      - name: Prepare directories
+      - name: Create data directory
         run: |
           mkdir -p data
-          mkdir -p logs
 
 
-      # ==================================================
-      # SHOW REPOSITORY
-      # ==================================================
+      # =====================================================
+      # DOWNLOAD BTC
+      # =====================================================
 
-      - name: Show repository data
+      - name: Download BTC 5m data
         run: |
-          echo "=================================================="
-          echo "REPOSITORY"
-          echo "=================================================="
-
-          echo
-          echo "Current directory:"
-          pwd
-
-          echo
-          echo "Repository files:"
-          ls -lah
-
-          echo
-          echo "Data directory:"
-          ls -lah data || true
-
-          echo
-          echo "Workflow directory:"
-          ls -lah .github/workflows || true
-
-
-      # ==================================================
-      # DOWNLOAD FULL HISTORICAL DATA
-      # ==================================================
-
-      - name: Download full historical data
-        run: |
-          echo "=================================================="
-          echo "DOWNLOADING FULL HISTORICAL DATA"
-          echo "=================================================="
-
-          echo
-          echo "Assets:"
-          echo "BTC + ETH + SOL"
-
-          echo
-          echo "Timeframe:"
-          echo "5m"
-
-          echo
-          echo "History:"
-          echo "approximately 5 years"
-
-          echo
-          echo "Expected:"
-          echo "approximately 525,600 candles per asset"
-
-          echo "=================================================="
-
-          python download_data.py
-
-
-      # ==================================================
-      # VERIFY HISTORICAL DATA
-      # ==================================================
-
-      - name: Verify historical data
-        run: |
-          echo "=================================================="
-          echo "VERIFY HISTORICAL DATA"
-          echo "=================================================="
-
           python - <<'PY'
-          from pathlib import Path
+          import ccxt
           import pandas as pd
+          import time
+          from pathlib import Path
 
-          files = [
-              Path("data/BTC_USDT_5m.csv"),
-              Path("data/ETH_USDT_5m.csv"),
-              Path("data/SOL_USDT_5m.csv"),
-          ]
+          exchange = ccxt.binance()
 
-          minimum = 500_000
-          failed = False
+          symbol = "BTC/USDT"
 
-          for path in files:
+          timeframe = "5m"
 
-              print()
-              print("--------------------------------------------------")
-              print(f"Checking: {path}")
-              print("--------------------------------------------------")
+          since = exchange.parse8601(
+              "2021-01-01T00:00:00Z"
+          )
 
-              if not path.exists():
+          end = exchange.milliseconds()
 
-                  print(f"ERROR: {path} does not exist")
-                  failed = True
-                  continue
+          all_rows = []
+
+          print("Downloading BTC/USDT 5m data...")
+
+          while since < end:
 
               try:
 
-                  df = pd.read_csv(path)
-                  rows = len(df)
+                  rows = exchange.fetch_ohlcv(
+                      symbol,
+                      timeframe=timeframe,
+                      since=since,
+                      limit=1000
+                  )
 
               except Exception as exc:
 
-                  print(f"ERROR reading {path}: {exc}")
-                  failed = True
-                  continue
-
-              print(f"Rows: {rows:,}")
-
-              if rows < minimum:
-
                   print(
-                      f"ERROR: only {rows:,} rows "
-                      f"(minimum {minimum:,})"
+                      f"Download error: {exc}"
                   )
 
-                  failed = True
+                  time.sleep(5)
 
-              else:
+                  continue
 
-                  print("OK")
+              if not rows:
+                  break
 
-          print()
-          print("==================================================")
+              all_rows.extend(rows)
 
-          if failed:
+              since = rows[-1][0] + 5 * 60 * 1000
 
-              raise SystemExit(
-                  "Historical data verification failed."
+              print(
+                  f"BTC rows: {len(all_rows):,}"
               )
 
-          print("All historical datasets are valid.")
+              time.sleep(
+                  exchange.rateLimit / 1000
+              )
 
+          df = pd.DataFrame(
+              all_rows,
+              columns=[
+                  "timestamp",
+                  "open",
+                  "high",
+                  "low",
+                  "close",
+                  "volume"
+              ]
+          )
+
+          df["timestamp"] = pd.to_datetime(
+              df["timestamp"],
+              unit="ms",
+              utc=True
+          )
+
+          df = df.drop_duplicates(
+              subset=["timestamp"]
+          )
+
+          df = df.sort_values(
+              "timestamp"
+          )
+
+          path = Path(
+              "data/BTC_USDT_5m.csv"
+          )
+
+          df.to_csv(
+              path,
+              index=False
+          )
+
+          print(
+              f"Saved BTC: {len(df):,} rows"
+          )
+
+          print(
+              f"File: {path}"
+          )
           PY
 
 
-      # ==================================================
-      # BASELINE
-      # ==================================================
+      # =====================================================
+      # DOWNLOAD ETH
+      # =====================================================
 
-      - name: Run main baseline
-        continue-on-error: true
+      - name: Download ETH 5m data
+        run: |
+          python - <<'PY'
+          import ccxt
+          import pandas as pd
+          import time
+          from pathlib import Path
+
+          exchange = ccxt.binance()
+
+          symbol = "ETH/USDT"
+
+          timeframe = "5m"
+
+          since = exchange.parse8601(
+              "2021-01-01T00:00:00Z"
+          )
+
+          end = exchange.milliseconds()
+
+          all_rows = []
+
+          print("Downloading ETH/USDT 5m data...")
+
+          while since < end:
+
+              try:
+
+                  rows = exchange.fetch_ohlcv(
+                      symbol,
+                      timeframe=timeframe,
+                      since=since,
+                      limit=1000
+                  )
+
+              except Exception as exc:
+
+                  print(
+                      f"Download error: {exc}"
+                  )
+
+                  time.sleep(5)
+
+                  continue
+
+              if not rows:
+                  break
+
+              all_rows.extend(rows)
+
+              since = rows[-1][0] + 5 * 60 * 1000
+
+              print(
+                  f"ETH rows: {len(all_rows):,}"
+              )
+
+              time.sleep(
+                  exchange.rateLimit / 1000
+              )
+
+          df = pd.DataFrame(
+              all_rows,
+              columns=[
+                  "timestamp",
+                  "open",
+                  "high",
+                  "low",
+                  "close",
+                  "volume"
+              ]
+          )
+
+          df["timestamp"] = pd.to_datetime(
+              df["timestamp"],
+              unit="ms",
+              utc=True
+          )
+
+          df = df.drop_duplicates(
+              subset=["timestamp"]
+          )
+
+          df = df.sort_values(
+              "timestamp"
+          )
+
+          path = Path(
+              "data/ETH_USDT_5m.csv"
+          )
+
+          df.to_csv(
+              path,
+              index=False
+          )
+
+          print(
+              f"Saved ETH: {len(df):,} rows"
+          )
+
+          print(
+              f"File: {path}"
+          )
+          PY
+
+
+      # =====================================================
+      # DOWNLOAD SOL
+      # =====================================================
+
+      - name: Download SOL 5m data
+        run: |
+          python - <<'PY'
+          import ccxt
+          import pandas as pd
+          import time
+          from pathlib import Path
+
+          exchange = ccxt.binance()
+
+          symbol = "SOL/USDT"
+
+          timeframe = "5m"
+
+          since = exchange.parse8601(
+              "2021-01-01T00:00:00Z"
+          )
+
+          end = exchange.milliseconds()
+
+          all_rows = []
+
+          print("Downloading SOL/USDT 5m data...")
+
+          while since < end:
+
+              try:
+
+                  rows = exchange.fetch_ohlcv(
+                      symbol,
+                      timeframe=timeframe,
+                      since=since,
+                      limit=1000
+                  )
+
+              except Exception as exc:
+
+                  print(
+                      f"Download error: {exc}"
+                  )
+
+                  time.sleep(5)
+
+                  continue
+
+              if not rows:
+                  break
+
+              all_rows.extend(rows)
+
+              since = rows[-1][0] + 5 * 60 * 1000
+
+              print(
+                  f"SOL rows: {len(all_rows):,}"
+              )
+
+              time.sleep(
+                  exchange.rateLimit / 1000
+              )
+
+          df = pd.DataFrame(
+              all_rows,
+              columns=[
+                  "timestamp",
+                  "open",
+                  "high",
+                  "low",
+                  "close",
+                  "volume"
+              ]
+          )
+
+          df["timestamp"] = pd.to_datetime(
+              df["timestamp"],
+              unit="ms",
+              utc=True
+          )
+
+          df = df.drop_duplicates(
+              subset=["timestamp"]
+          )
+
+          df = df.sort_values(
+              "timestamp"
+          )
+
+          path = Path(
+              "data/SOL_USDT_5m.csv"
+          )
+
+          df.to_csv(
+              path,
+              index=False
+          )
+
+          print(
+              f"Saved SOL: {len(df):,} rows"
+          )
+
+          print(
+              f"File: {path}"
+          )
+          PY
+
+
+      # =====================================================
+      # FINAL DATA REPORT
+      # =====================================================
+
+      - name: Final data report
         run: |
           echo "=================================================="
-          echo "RUNNING BASELINE"
+          echo "FINAL DATA REPORT"
           echo "=================================================="
 
-          python main.py
-
-
-      # ==================================================
-      # V2
-      # ==================================================
-
-      - name: Run V2 Backtest
-        continue-on-error: true
-        run: |
-          echo "=================================================="
-          echo "RUNNING V2.1"
-          echo "DONCHIAN + EMA200 + ATR"
-          echo "=================================================="
-
-          python v2_backtest.py
-
-
-      # ==================================================
-      # V3
-      # ==================================================
-
-      - name: Run V3 Backtest
-        continue-on-error: true
-        run: |
-          echo "=================================================="
-          echo "RUNNING V3"
-          echo "TREND FOLLOWING"
-          echo "=================================================="
-
-          python v3_backtest.py
-
-
-      # ==================================================
-      # V4
-      # ==================================================
-
-      - name: Run V4 Walk Forward
-        continue-on-error: true
-        run: |
-          echo "=================================================="
-          echo "RUNNING V4 WALK-FORWARD"
-          echo "=================================================="
-
-          python v4_backtest.py
-
-
-      # ==================================================
-      # V5
-      # ==================================================
-
-      - name: Run V5 Walk Forward
-        continue-on-error: true
-        run: |
-          echo "=================================================="
-          echo "RUNNING V5 WALK-FORWARD"
-          echo "=================================================="
-
-          python v5_backtest.py
-
-
-      # ==================================================
-      # V6 EXTENDED MULTI-ASSET
-      # ==================================================
-
-      - name: Run V6 Extended Multi Asset
-        continue-on-error: true
-        run: |
-          echo "=================================================="
-          echo "RUNNING V6 EXTENDED MULTI-ASSET"
-          echo "=================================================="
-
-          echo
-          echo "Assets:"
-          echo "BTC + ETH + SOL"
-
-          echo
-          echo "Variants:"
-          echo "V6_A + V6_B + V6_C"
-
-          echo
-          echo "Walk Forward:"
-          echo "12 months TRAIN"
-          echo "3 months OOS"
-          echo "3 months rolling step"
-
-          echo "=================================================="
-
-          python v6_extended_multi_asset_backtest.py
-
-
-      # ==================================================
-      # SHOW V6 EXTENDED RESULTS
-      # ==================================================
-
-      - name: Show V6 Extended Results
-        if: always()
-        run: |
-          echo "=================================================="
-          echo "V6 EXTENDED MULTI-ASSET RESULTS"
-          echo "=================================================="
-
-          if [ -f logs/v6_extended_multi_asset_results.csv ]; then
+          for file in \
+            data/BTC_USDT_5m.csv \
+            data/ETH_USDT_5m.csv \
+            data/SOL_USDT_5m.csv
+          do
 
             echo
-            echo "=================================================="
-            echo "DETAILED RESULTS"
-            echo "=================================================="
+            echo "FILE: $file"
 
-            cat logs/v6_extended_multi_asset_results.csv
+            if [ -f "$file" ]; then
+
+              lines=$(wc -l < "$file")
+
+              echo "Lines: $lines"
+
+              if [ "$lines" -lt 500001 ]; then
+
+                echo "ERROR: insufficient data"
+
+                exit 1
+
+              fi
+
+            else
+
+              echo "ERROR: file missing"
+
+              exit 1
+
+            fi
+
+          done
+
+          echo
+          echo "ALL DATASETS VALID"
+
+
+      # =====================================================
+      # V6 BACKTEST
+      # =====================================================
+
+      - name: Run V6 Backtest
+        run: |
+          echo "=================================================="
+          echo "RUNNING V6 BACKTEST"
+          echo "=================================================="
+
+          if [ -f v6_multi_asset_backtest.py ]; then
+
+            python v6_multi_asset_backtest.py
 
           else
 
-            echo
-            echo "No detailed V6 results file found."
+            echo "V6 runner not found - skipping"
 
           fi
 
 
-          if [ -f logs/v6_extended_asset_summary.csv ]; then
+      # =====================================================
+      # V6-C STRESS
+      # =====================================================
 
-            echo
-            echo "=================================================="
-            echo "ASSET SUMMARY"
-            echo "=================================================="
-
-            cat logs/v6_extended_asset_summary.csv
-
-          else
-
-            echo
-            echo "No V6 asset summary found."
-
-          fi
-
-
-          if [ -f logs/v6_extended_multi_asset_summary.csv ]; then
-
-            echo
-            echo "=================================================="
-            echo "GLOBAL VARIANT SUMMARY"
-            echo "=================================================="
-
-            cat logs/v6_extended_multi_asset_summary.csv
-
-          else
-
-            echo
-            echo "No V6 global summary found."
-
-          fi
-
-
-      # ==================================================
-      # V6_C STRESS TEST
-      # ==================================================
-
-      - name: Run V6_C Stress Test
-        if: always()
-        continue-on-error: true
+      - name: Run V6-C Stress Test
         run: |
           echo "=================================================="
-          echo "RUNNING V6_C STRESS TEST"
-          echo "=================================================="
-
-          echo
-          echo "Frozen strategy:"
-          echo "V6_C"
-
-          echo
-          echo "Assets:"
-          echo "BTC + ETH + SOL"
-
-          echo
-          echo "Stress dimensions:"
-          echo "Fees"
-          echo "Slippage"
-          echo "Risk per trade"
-
+          echo "RUNNING V6-C STRESS TEST"
           echo "=================================================="
 
           if [ -f v6_c_stress_test.py ]; then
@@ -391,113 +474,19 @@ jobs:
 
           else
 
-            echo "v6_c_stress_test.py not found - skipped."
+            echo "V6-C stress runner not found - skipping"
 
           fi
 
 
-      # ==================================================
-      # SHOW STRESS TEST RESULTS
-      # ==================================================
+      # =====================================================
+      # V6-C MONTE CARLO
+      # =====================================================
 
-      - name: Show V6_C Stress Results
-        if: always()
+      - name: Run V6-C Monte Carlo
         run: |
           echo "=================================================="
-          echo "V6_C STRESS TEST RESULTS"
-          echo "=================================================="
-
-          found=0
-
-
-          if [ -f logs/v6_c_stress_test_results.csv ]; then
-
-            found=1
-
-            echo
-            echo "=================================================="
-            echo "FILE: logs/v6_c_stress_test_results.csv"
-            echo "=================================================="
-
-            cat logs/v6_c_stress_test_results.csv
-
-          fi
-
-
-          if [ -f logs/v6_c_stress_test_summary.csv ]; then
-
-            found=1
-
-            echo
-            echo "=================================================="
-            echo "FILE: logs/v6_c_stress_test_summary.csv"
-            echo "=================================================="
-
-            cat logs/v6_c_stress_test_summary.csv
-
-          fi
-
-
-          if [ -f logs/v6_c_stress_results.csv ]; then
-
-            found=1
-
-            echo
-            echo "=================================================="
-            echo "FILE: logs/v6_c_stress_results.csv"
-            echo "=================================================="
-
-            cat logs/v6_c_stress_results.csv
-
-          fi
-
-
-          if [ -f logs/v6_c_stress_summary.csv ]; then
-
-            found=1
-
-            echo
-            echo "=================================================="
-            echo "FILE: logs/v6_c_stress_summary.csv"
-            echo "=================================================="
-
-            cat logs/v6_c_stress_summary.csv
-
-          fi
-
-
-          if [ "$found" -eq 0 ]; then
-
-            echo
-            echo "No V6_C stress-test result files found."
-
-          fi
-
-
-      # ==================================================
-      # V6_C MONTE CARLO
-      # ==================================================
-
-      - name: Run V6_C Monte Carlo
-        if: always()
-        continue-on-error: true
-        run: |
-          echo "=================================================="
-          echo "RUNNING V6_C MONTE-CARLO VALIDATION"
-          echo "=================================================="
-
-          echo
-          echo "Strategy:"
-          echo "V6_C"
-
-          echo
-          echo "Assets:"
-          echo "BTC + ETH + SOL"
-
-          echo
-          echo "Simulations:"
-          echo "10,000 per OOS window"
-
+          echo "RUNNING V6-C MONTE CARLO"
           echo "=================================================="
 
           if [ -f v6_c_monte_carlo.py ]; then
@@ -506,82 +495,16 @@ jobs:
 
           else
 
-            echo "v6_c_monte_carlo.py not found - skipped."
+            echo "V6-C Monte Carlo runner not found - skipping"
 
           fi
 
 
-      # ==================================================
-      # SHOW MONTE CARLO RESULTS
-      # ==================================================
+      # =====================================================
+      # V7-S0
+      # =====================================================
 
-      - name: Show V6_C Monte Carlo Results
-        if: always()
-        run: |
-          echo "=================================================="
-          echo "V6_C MONTE-CARLO RESULTS"
-          echo "=================================================="
-
-          found=0
-
-
-          if [ -f logs/v6_c_monte_carlo_summary.csv ]; then
-
-            found=1
-
-            echo
-            echo "=================================================="
-            echo "FILE: logs/v6_c_monte_carlo_summary.csv"
-            echo "=================================================="
-
-            cat logs/v6_c_monte_carlo_summary.csv
-
-          fi
-
-
-          if [ -f logs/v6_c_monte_carlo_window_results.csv ]; then
-
-            found=1
-
-            echo
-            echo "=================================================="
-            echo "FILE: logs/v6_c_monte_carlo_window_results.csv"
-            echo "=================================================="
-
-            cat logs/v6_c_monte_carlo_window_results.csv
-
-          fi
-
-
-          if [ -f logs/v6_c_monte_carlo_trades.csv ]; then
-
-            found=1
-
-            echo
-            echo "=================================================="
-            echo "FILE: logs/v6_c_monte_carlo_trades.csv"
-            echo "=================================================="
-
-            cat logs/v6_c_monte_carlo_trades.csv
-
-          fi
-
-
-          if [ "$found" -eq 0 ]; then
-
-            echo
-            echo "No V6_C Monte-Carlo result files found."
-
-          fi
-
-
-      # ==================================================
-      # V7 SURVIVAL S0
-      # ==================================================
-
-      - name: Run V7 Survival Backtest
-        if: always()
-        continue-on-error: true
+      - name: Run V7-S0 Survival Backtest
         run: |
           echo "=================================================="
           echo "RUNNING V7 SURVIVAL BACKTEST"
@@ -598,162 +521,169 @@ jobs:
           echo
           echo "Survival Layer:"
           echo "Dynamic risk reduction"
-          echo "Daily loss protection"
-          echo "Consecutive-loss protection"
-          echo "Cooldown"
-          echo "Global drawdown protection"
 
           echo
-          echo "Assets:"
-          echo "BTC + ETH + SOL"
+          echo "Starting V7-S0..."
+          echo
+
+          python v7_survival_backtest.py
 
           echo
-          echo "Capital:"
-          echo "20 USDT"
-          echo "50 USDT"
-          echo "100 USDT"
-          echo "250 USDT"
-
-          echo
-          echo "Walk Forward:"
-          echo "12 months TRAIN"
-          echo "3 months OOS"
-          echo "3 months rolling step"
-
+          echo "=================================================="
+          echo "V7-S0 COMPLETE"
           echo "=================================================="
 
 
-          if [ -f v7_survival_backtest.py ]; then
+      # =====================================================
+      # V7-S0 RESULTS
+      # =====================================================
 
-            python v7_survival_backtest.py
+      - name: Show V7-S0 Results
+        if: always()
+        run: |
+          echo "=================================================="
+          echo "V7-S0 RESULT FILES"
+          echo "=================================================="
+
+          if [ -f v7_survival_results.csv ]; then
+
+            echo
+            echo "v7_survival_results.csv:"
+
+            cat v7_survival_results.csv
 
           else
 
             echo
-            echo "ERROR: v7_survival_backtest.py NOT FOUND"
+            echo "v7_survival_results.csv NOT FOUND"
 
           fi
 
-
-      # ==================================================
-      # SHOW V7 SURVIVAL RESULTS
-      # ==================================================
-
-      - name: Show V7 Survival Results
-        if: always()
-        run: |
-          echo "=================================================="
-          echo "V7 SURVIVAL RESULTS"
-          echo "=================================================="
-
-
-          echo
-          echo "=================================================="
-          echo "V7 SURVIVAL SUMMARY"
-          echo "=================================================="
-
-
           if [ -f v7_survival_summary.csv ]; then
+
+            echo
+            echo "v7_survival_summary.csv:"
 
             cat v7_survival_summary.csv
 
           else
 
+            echo
             echo "v7_survival_summary.csv NOT FOUND"
 
           fi
 
 
+      # =====================================================
+      # V7-S1
+      # =====================================================
+
+      - name: Run V7-S1 Survival Backtest
+        run: |
+          echo "=================================================="
+          echo "RUNNING V7-S1 SURVIVAL BACKTEST"
+          echo "=================================================="
+
+          echo
+          echo "Version:"
+          echo "V7-S1"
+
+          echo
+          echo "Entry Engine:"
+          echo "V6-C + Breakout Quality Filter"
+
+          echo
+          echo "S1 Filter:"
+          echo "Breakout >= 0.10 ATR"
+
+          echo
+          echo "Survival Layer:"
+          echo "Dynamic risk reduction"
+
+          echo
+          echo "Starting V7-S1..."
+          echo
+
+          python v7_s1_backtest.py
+
           echo
           echo "=================================================="
-          echo "V7 SURVIVAL DETAILS"
+          echo "V7-S1 COMPLETE"
           echo "=================================================="
 
 
-          if [ -f v7_survival_results.csv ]; then
+      # =====================================================
+      # V7-S1 RESULTS
+      # =====================================================
 
-            echo "Showing first 100 rows:"
+      - name: Show V7-S1 Results
+        if: always()
+        run: |
+          echo "=================================================="
+          echo "V7-S1 RESULT FILES"
+          echo "=================================================="
 
-            head -100 v7_survival_results.csv
+          if [ -f v7_s1_results.csv ]; then
+
+            echo
+            echo "v7_s1_results.csv:"
+
+            cat v7_s1_results.csv
 
           else
 
-            echo "v7_survival_results.csv NOT FOUND"
+            echo
+            echo "v7_s1_results.csv NOT FOUND"
+
+          fi
+
+          if [ -f v7_s1_summary.csv ]; then
+
+            echo
+            echo "v7_s1_summary.csv:"
+
+            cat v7_s1_summary.csv
+
+          else
+
+            echo
+            echo "v7_s1_summary.csv NOT FOUND"
 
           fi
 
 
-      # ==================================================
-      # FINAL DATA REPORT
-      # ==================================================
-
-      - name: Final data report
-        if: always()
-        run: |
-          echo "=================================================="
-          echo "FINAL DATA REPORT"
-          echo "=================================================="
-
-
-          for file in \
-            data/BTC_USDT_5m.csv \
-            data/ETH_USDT_5m.csv \
-            data/SOL_USDT_5m.csv
-
-          do
-
-            echo
-            echo "--------------------------------------------------"
-            echo "$file"
-            echo "--------------------------------------------------"
-
-
-            if [ -f "$file" ]; then
-
-              echo
-              echo "Lines:"
-
-              wc -l "$file"
-
-              echo
-              echo "File size:"
-
-              ls -lh "$file"
-
-            else
-
-              echo "MISSING: $file"
-
-            fi
-
-          done
-
-
-      # ==================================================
+      # =====================================================
       # SHOW LOG DIRECTORY
-      # ==================================================
+      # =====================================================
 
       - name: Show log directory
         if: always()
         run: |
           echo "=================================================="
-          echo "LOG DIRECTORY"
+          echo "WORKSPACE FILES"
           echo "=================================================="
 
-          ls -lah logs || true
+          echo
+          echo "Repository:"
+          find . -maxdepth 2 -type f | sort
+
+          echo
+          echo "CSV RESULTS:"
+          find . -type f -name "*.csv" | sort
 
 
-      # ==================================================
-      # UPLOAD LOGS + V7 RESULTS
-      # ==================================================
+      # =====================================================
+      # UPLOAD RESULTS
+      # =====================================================
 
-      - name: Upload backtest logs
+      - name: Upload V7 results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: 20to100-backtest-logs
+          name: v7-backtest-results
           path: |
-            logs/
             v7_survival_results.csv
             v7_survival_summary.csv
+            v7_s1_results.csv
+            v7_s1_summary.csv
           if-no-files-found: warn
