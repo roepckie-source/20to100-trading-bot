@@ -1,0 +1,1056 @@
+# ============================================================
+# 20to100 Trading Bot
+# V7-S1 BACKTEST
+#
+# V7-S0 = eingefrorener Kontrolltest
+#
+# V7-S1:
+# V6-C Entry Logic
+# +
+# Signal Quality Filter:
+# Breakout >= 0.10 ATR über Donchian High
+#
+# Assets:
+# BTC / ETH / SOL
+#
+# Capital:
+# 20 / 50 / 100 / 250 USDT
+#
+# Walk Forward:
+# 12 Monate Train
+# 3 Monate OOS
+# 3 Monate Schrittweite
+#
+# Ziel:
+# SURVIVE FIRST
+# GROW SECOND
+# ============================================================
+
+from pathlib import Path
+import math
+
+import numpy as np
+import pandas as pd
+
+from strategy.strategy_v6 import calculate_indicators
+from backtest.v7_s1_engine import V7SurvivalEngine
+
+
+# ============================================================
+# PATHS
+# ============================================================
+
+ROOT = Path(__file__).resolve().parent
+
+DATA_DIR = ROOT / "data"
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+ASSETS = [
+    "BTC_USDT",
+    "ETH_USDT",
+    "SOL_USDT",
+]
+
+CAPITALS = [
+    20.0,
+    50.0,
+    100.0,
+    250.0,
+]
+
+
+# ============================================================
+# V7 SURVIVAL SETTINGS
+# ============================================================
+
+RISK_PER_TRADE = 0.01
+
+FEE_RATE = 0.001
+
+SLIPPAGE_RATE = 0.0005
+
+ATR_STOP_MULTIPLIER = 3.0
+
+TRAILING_ATR_MULTIPLIER = 3.0
+
+ADX_MIN = 20.0
+
+MAX_DAILY_LOSS_PCT = 5.0
+
+MAX_CONSECUTIVE_LOSSES = 3
+
+COOLDOWN_BARS = 24
+
+GLOBAL_MAX_DRAWDOWN_PCT = 20.0
+
+VARIANT = "V7_S1"
+
+
+# ============================================================
+# WALK FORWARD
+# ============================================================
+
+TRAIN_MONTHS = 12
+
+OOS_MONTHS = 3
+
+STEP_MONTHS = 3
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def safe_float(value):
+    """
+    Konvertiert Werte sicher nach float.
+    """
+
+    try:
+
+        value = float(value)
+
+        if math.isnan(value):
+
+            return 0.0
+
+        if math.isinf(value):
+
+            return value
+
+        return value
+
+    except Exception:
+
+        return 0.0
+
+
+def load_data(asset):
+    """
+    Lädt historische 5m-Daten.
+    """
+
+    path = DATA_DIR / f"{asset}_5m.csv"
+
+    if not path.exists():
+
+        raise FileNotFoundError(
+            f"Datensatz nicht gefunden: {path}"
+        )
+
+    print()
+    print("=" * 70)
+    print(f"LOADING {asset}")
+    print("=" * 70)
+
+    df = pd.read_csv(path)
+
+    if "timestamp" in df.columns:
+
+        df["timestamp"] = pd.to_datetime(
+            df["timestamp"],
+            utc=True
+        )
+
+        df = df.sort_values(
+            "timestamp"
+        )
+
+        df = df.drop_duplicates(
+            subset=["timestamp"]
+        )
+
+        df = df.set_index(
+            "timestamp"
+        )
+
+    else:
+
+        if not isinstance(
+            df.index,
+            pd.DatetimeIndex
+        ):
+
+            raise ValueError(
+                f"{asset}: keine timestamp-Spalte gefunden."
+            )
+
+    # --------------------------------------------------------
+    # OHLC
+    # --------------------------------------------------------
+
+    required = [
+        "open",
+        "high",
+        "low",
+        "close",
+    ]
+
+    missing = [
+        column
+        for column in required
+        if column not in df.columns
+    ]
+
+    if missing:
+
+        raise ValueError(
+            f"{asset}: fehlende Spalten: {missing}"
+        )
+
+    for column in required:
+
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce"
+        )
+
+    df = df.dropna(
+        subset=required
+    )
+
+    print(
+        f"{asset}: {len(df):,} rows"
+    )
+
+    print(
+        f"{asset}: "
+        f"{df.index.min()} -> "
+        f"{df.index.max()}"
+    )
+
+    return df
+
+
+# ============================================================
+# INDICATORS
+# ============================================================
+
+def prepare_data(df):
+    """
+    Berechnet die exakt benötigten V6-C-Indikatoren.
+
+    V7-S1 verwendet dieselbe Datenbasis wie V6-C.
+    """
+
+    data = df.copy()
+
+    data = calculate_indicators(
+        data
+    )
+
+    return data
+
+
+# ============================================================
+# WALK-FORWARD WINDOWS
+# ============================================================
+
+def create_oos_windows(df):
+    """
+    Erzeugt Rolling OOS-Fenster.
+
+    12 Monate Historie
+    +
+    3 Monate OOS
+
+    Danach:
+    +3 Monate verschieben.
+    """
+
+    start = df.index.min()
+
+    end = df.index.max()
+
+    windows = []
+
+    train_delta = pd.DateOffset(
+        months=TRAIN_MONTHS
+    )
+
+    oos_delta = pd.DateOffset(
+        months=OOS_MONTHS
+    )
+
+    step_delta = pd.DateOffset(
+        months=STEP_MONTHS
+    )
+
+    current = start
+
+    window_id = 0
+
+    while True:
+
+        train_start = current
+
+        train_end = (
+            train_start
+            +
+            train_delta
+        )
+
+        oos_start = train_end
+
+        oos_end = (
+            oos_start
+            +
+            oos_delta
+        )
+
+        if oos_end > end:
+
+            break
+
+        oos = df.loc[
+            (df.index >= oos_start)
+            &
+            (df.index < oos_end)
+        ]
+
+        if len(oos) > 0:
+
+            windows.append(
+                {
+                    "window":
+                        window_id,
+
+                    "train_start":
+                        train_start,
+
+                    "train_end":
+                        train_end,
+
+                    "oos_start":
+                        oos_start,
+
+                    "oos_end":
+                        oos_end,
+
+                    "oos_rows":
+                        len(oos),
+                }
+            )
+
+        current = (
+            current
+            +
+            step_delta
+        )
+
+        window_id += 1
+
+    return windows
+
+
+# ============================================================
+# RUN SINGLE TEST
+# ============================================================
+
+def run_single(
+    data,
+    asset,
+    capital,
+    window
+):
+    """
+    Führt einen einzelnen V7-S1 OOS-Test aus.
+    """
+
+    oos_start = window[
+        "oos_start"
+    ]
+
+    oos_end = window[
+        "oos_end"
+    ]
+
+    oos = data.loc[
+        (data.index >= oos_start)
+        &
+        (data.index < oos_end)
+    ].copy()
+
+    if len(oos) < 300:
+
+        return None
+
+    # --------------------------------------------------------
+    # ENGINE
+    # --------------------------------------------------------
+
+    engine = V7SurvivalEngine(
+
+        starting_balance=capital,
+
+        base_risk_per_trade=
+            RISK_PER_TRADE,
+
+        fee_rate=
+            FEE_RATE,
+
+        slippage_rate=
+            SLIPPAGE_RATE,
+
+        atr_stop_multiplier=
+            ATR_STOP_MULTIPLIER,
+
+        trailing_atr_multiplier=
+            TRAILING_ATR_MULTIPLIER,
+
+        adx_min=
+            ADX_MIN,
+
+        max_daily_loss=
+            MAX_DAILY_LOSS_PCT / 100.0,
+
+        max_consecutive_losses=
+            MAX_CONSECUTIVE_LOSSES,
+
+        loss_cooldown_bars=
+            COOLDOWN_BARS,
+
+        global_max_drawdown=
+            GLOBAL_MAX_DRAWDOWN_PCT / 100.0,
+
+        variant=
+            VARIANT,
+    )
+
+    # --------------------------------------------------------
+    # RUN
+    # --------------------------------------------------------
+
+    result = engine.run(
+        oos
+    )
+
+    # --------------------------------------------------------
+    # RESULT
+    # --------------------------------------------------------
+
+    return {
+
+        "asset":
+            asset,
+
+        "capital":
+            capital,
+
+        "window":
+            window["window"],
+
+        "train_start":
+            window["train_start"],
+
+        "train_end":
+            window["train_end"],
+
+        "oos_start":
+            oos_start,
+
+        "oos_end":
+            oos_end,
+
+        "oos_rows":
+            len(oos),
+
+        "strategy":
+            result.get(
+                "strategy"
+            ),
+
+        "variant":
+            result.get(
+                "variant"
+            ),
+
+        "starting_balance":
+            safe_float(
+                result.get(
+                    "starting_balance"
+                )
+            ),
+
+        "final_balance":
+            safe_float(
+                result.get(
+                    "final_balance"
+                )
+            ),
+
+        "profit":
+            safe_float(
+                result.get(
+                    "profit"
+                )
+            ),
+
+        "return_pct":
+            safe_float(
+                result.get(
+                    "return_pct"
+                )
+            ),
+
+        "trades":
+            int(
+                result.get(
+                    "trades",
+                    0
+                )
+            ),
+
+        "wins":
+            int(
+                result.get(
+                    "wins",
+                    0
+                )
+            ),
+
+        "losses":
+            int(
+                result.get(
+                    "losses",
+                    0
+                )
+            ),
+
+        "win_rate_pct":
+            safe_float(
+                result.get(
+                    "win_rate"
+                )
+            ),
+
+        "profit_factor":
+            safe_float(
+                result.get(
+                    "profit_factor"
+                )
+            ),
+
+        "expectancy":
+            safe_float(
+                result.get(
+                    "expectancy"
+                )
+            ),
+
+        "max_drawdown_pct":
+            safe_float(
+                result.get(
+                    "max_drawdown_pct"
+                )
+            ),
+
+        "fees":
+            safe_float(
+                result.get(
+                    "fees"
+                )
+            ),
+
+        "slippage_cost":
+            safe_float(
+                result.get(
+                    "slippage_cost"
+                )
+            ),
+
+        "normal_risk_trades":
+            int(
+                result.get(
+                    "normal_risk_trades",
+                    0
+                )
+            ),
+
+        "defensive_risk_trades":
+            int(
+                result.get(
+                    "defensive_risk_trades",
+                    0
+                )
+            ),
+
+        "survival_risk_trades":
+            int(
+                result.get(
+                    "survival_risk_trades",
+                    0
+                )
+            ),
+
+        "critical_risk_trades":
+            int(
+                result.get(
+                    "critical_risk_trades",
+                    0
+                )
+            ),
+
+        "kill_switch":
+            bool(
+                result.get(
+                    "kill_switch",
+                    False
+                )
+            ),
+    }
+
+
+# ============================================================
+# SUMMARY
+# ============================================================
+
+def build_summary(results):
+    """
+    Erstellt Asset-/Window-Zusammenfassung.
+    """
+
+    if not results:
+
+        return pd.DataFrame()
+
+    df = pd.DataFrame(
+        results
+    )
+
+    grouped = []
+
+    # --------------------------------------------------------
+    # Asset summary
+    # --------------------------------------------------------
+
+    for asset, group in df.groupby(
+        "asset"
+    ):
+
+        grouped.append(
+            {
+                "asset":
+                    asset,
+
+                "capital":
+                    "ALL",
+
+                "assets_tested":
+                    1,
+
+                "windows":
+                    group[
+                        "window"
+                    ].nunique(),
+
+                "avg_return_pct":
+                    group[
+                        "return_pct"
+                    ].mean(),
+
+                "median_return_pct":
+                    group[
+                        "return_pct"
+                    ].median(),
+
+                "avg_profit_factor":
+                    group[
+                        "profit_factor"
+                    ].replace(
+                        [np.inf, -np.inf],
+                        np.nan
+                    ).mean(),
+
+                "median_profit_factor":
+                    group[
+                        "profit_factor"
+                    ].replace(
+                        [np.inf, -np.inf],
+                        np.nan
+                    ).median(),
+
+                "positive_window_pct":
+                    (
+                        group[
+                            "return_pct"
+                        ]
+                        > 0
+                    ).mean()
+                    * 100,
+
+                "pf_gt_1_pct":
+                    (
+                        group[
+                            "profit_factor"
+                        ]
+                        > 1
+                    ).mean()
+                    * 100,
+
+                "avg_expectancy":
+                    group[
+                        "expectancy"
+                    ].mean(),
+
+                "total_trades":
+                    group[
+                        "trades"
+                    ].sum(),
+
+                "worst_return_pct":
+                    group[
+                        "return_pct"
+                    ].min(),
+
+                "best_return_pct":
+                    group[
+                        "return_pct"
+                    ].max(),
+
+                "avg_drawdown_pct":
+                    group[
+                        "max_drawdown_pct"
+                    ].mean(),
+
+                "worst_drawdown_pct":
+                    group[
+                        "max_drawdown_pct"
+                    ].min(),
+
+                "assets_positive_pct":
+                    100.0
+                    if group[
+                        "return_pct"
+                    ].mean() > 0
+                    else 0.0,
+            }
+        )
+
+    return pd.DataFrame(
+        grouped
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    print()
+    print("=" * 70)
+    print("RUNNING V7-S1 SURVIVAL BACKTEST")
+    print("=" * 70)
+
+    print()
+
+    print(
+        "Entry Engine:"
+    )
+
+    print(
+        "V6-C + S1 Breakout Quality Filter"
+    )
+
+    print()
+
+    print(
+        "S1 Filter:"
+    )
+
+    print(
+        "Breakout >= 0.10 ATR"
+    )
+
+    print()
+
+    print(
+        "Survival Layer:"
+    )
+
+    print(
+        "Dynamic risk reduction"
+    )
+
+    print(
+        "Daily loss protection"
+    )
+
+    print(
+        "Loss streak cooldown"
+    )
+
+    print(
+        "Global drawdown kill switch"
+    )
+
+    print()
+
+    print(
+        "Assets:"
+    )
+
+    print(
+        ", ".join(
+            ASSETS
+        )
+    )
+
+    print()
+
+    print(
+        "Capitals:"
+    )
+
+    print(
+        ", ".join(
+            f"{x:.0f} USDT"
+            for x in CAPITALS
+        )
+    )
+
+    all_results = []
+
+    # ========================================================
+    # ASSETS
+    # ========================================================
+
+    for asset in ASSETS:
+
+        try:
+
+            raw = load_data(
+                asset
+            )
+
+            print(
+                f"{asset}: calculating indicators..."
+            )
+
+            data = prepare_data(
+                raw
+            )
+
+            print(
+                f"{asset}: creating OOS windows..."
+            )
+
+            windows = create_oos_windows(
+                data
+            )
+
+            print(
+                f"{asset}: "
+                f"{len(windows)} OOS windows"
+            )
+
+            # ------------------------------------------------
+            # WINDOWS
+            # ------------------------------------------------
+
+            for window in windows:
+
+                print()
+
+                print(
+                    "-" * 70
+                )
+
+                print(
+                    f"{asset} | "
+                    f"WINDOW "
+                    f"{window['window']}"
+                )
+
+                print(
+                    f"OOS: "
+                    f"{window['oos_start']} "
+                    f"-> "
+                    f"{window['oos_end']}"
+                )
+
+                # --------------------------------------------
+                # CAPITALS
+                # --------------------------------------------
+
+                for capital in CAPITALS:
+
+                    print(
+                        f"Testing "
+                        f"{capital:.0f} USDT..."
+                    )
+
+                    try:
+
+                        result = run_single(
+                            data,
+                            asset,
+                            capital,
+                            window
+                        )
+
+                        if result is not None:
+
+                            all_results.append(
+                                result
+                            )
+
+                            print(
+                                f"  Return: "
+                                f"{result['return_pct']:.3f}%"
+                            )
+
+                            print(
+                                f"  PF: "
+                                f"{result['profit_factor']:.3f}"
+                            )
+
+                            print(
+                                f"  Trades: "
+                                f"{result['trades']}"
+                            )
+
+                            print(
+                                f"  DD: "
+                                f"{result['max_drawdown_pct']:.3f}%"
+                            )
+
+                        else:
+
+                            print(
+                                "  SKIPPED: "
+                                "insufficient OOS data"
+                            )
+
+                    except Exception as exc:
+
+                        print(
+                            f"  ERROR: {exc}"
+                        )
+
+        except Exception as exc:
+
+            print()
+
+            print(
+                f"FATAL ERROR {asset}: "
+                f"{exc}"
+            )
+
+    # ========================================================
+    # OUTPUT
+    # ========================================================
+
+    print()
+
+    print("=" * 70)
+
+    print(
+        "SAVING V7-S1 RESULTS"
+    )
+
+    print("=" * 70)
+
+    if not all_results:
+
+        print()
+
+        print(
+            "NO RESULTS GENERATED."
+        )
+
+        return
+
+    results_df = pd.DataFrame(
+        all_results
+    )
+
+    results_path = (
+        ROOT
+        /
+        "v7_s1_results.csv"
+    )
+
+    results_df.to_csv(
+        results_path,
+        index=False
+    )
+
+    print(
+        f"Saved: "
+        f"{results_path}"
+    )
+
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
+
+    summary_df = build_summary(
+        all_results
+    )
+
+    summary_path = (
+        ROOT
+        /
+        "v7_s1_summary.csv"
+    )
+
+    summary_df.to_csv(
+        summary_path,
+        index=False
+    )
+
+    print(
+        f"Saved: "
+        f"{summary_path}"
+    )
+
+    # ========================================================
+    # FINAL REPORT
+    # ========================================================
+
+    print()
+
+    print("=" * 70)
+
+    print(
+        "V7-S1 FINAL SUMMARY"
+    )
+
+    print("=" * 70)
+
+    print()
+
+    print(
+        summary_df.to_string(
+            index=False
+        )
+    )
+
+    print()
+
+    print(
+        "=" * 70
+    )
+
+    print(
+        "V7-S1 BACKTEST COMPLETE"
+    )
+
+    print(
+        "=" * 70
+    )
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+
+    main()
