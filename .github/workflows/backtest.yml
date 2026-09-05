@@ -12,6 +12,7 @@ on:
 
 
 jobs:
+
   backtest:
 
     runs-on: ubuntu-latest
@@ -578,18 +579,133 @@ jobs:
 
 
       # ==================================================
+      # V7 SURVIVAL S0
+      # ==================================================
+
+      - name: Run V7 Survival Backtest
+        if: always()
+        continue-on-error: true
+        run: |
+
+          echo "=================================================="
+          echo "RUNNING V7 SURVIVAL BACKTEST"
+          echo "=================================================="
+
+          echo
+          echo "Version:"
+          echo "V7-S0"
+
+          echo
+          echo "Entry Engine:"
+          echo "V6-C"
+
+          echo
+          echo "Survival Layer:"
+          echo "Dynamic risk reduction"
+          echo "Daily loss protection"
+          echo "Consecutive-loss protection"
+          echo "Cooldown"
+          echo "Global drawdown protection"
+
+          echo
+          echo "Assets:"
+          echo "BTC + ETH + SOL"
+
+          echo
+          echo "Capital:"
+          echo "20 USDT"
+          echo "50 USDT"
+          echo "100 USDT"
+          echo "250 USDT"
+
+          echo
+          echo "Walk Forward:"
+          echo "12 months TRAIN"
+          echo "3 months OOS"
+          echo "3 months rolling step"
+
+          echo "=================================================="
+
+
+          if [ -f v7_survival_backtest.py ]; then
+
+            python v7_survival_backtest.py
+
+          else
+
+            echo
+            echo "ERROR: v7_survival_backtest.py NOT FOUND"
+
+          fi
+
+
+      # ==================================================
+      # SHOW V7 SURVIVAL RESULTS
+      # ==================================================
+
+      - name: Show V7 Survival Results
+        if: always()
+        run: |
+
+          echo "=================================================="
+          echo "V7 SURVIVAL RESULTS"
+          echo "=================================================="
+
+
+          echo
+          echo "=================================================="
+          echo "V7 SURVIVAL SUMMARY"
+          echo "=================================================="
+
+
+          if [ -f v7_survival_summary.csv ]; then
+
+            cat v7_survival_summary.csv
+
+          else
+
+            echo "v7_survival_summary.csv NOT FOUND"
+
+          fi
+
+
+          echo
+          echo "=================================================="
+          echo "V7 SURVIVAL DETAILS"
+          echo "=================================================="
+
+
+          if [ -f v7_survival_results.csv ]; then
+
+            echo "Showing first 100 rows:"
+
+            head -100 v7_survival_results.csv
+
+          else
+
+            echo "v7_survival_results.csv NOT FOUND"
+
+          fi
+
+
+      # ==================================================
       # FINAL DATA REPORT
       # ==================================================
 
       - name: Final data report
         if: always()
         run: |
+
           echo "=================================================="
           echo "FINAL DATA REPORT"
           echo "=================================================="
 
 
-          for file in data/BTC_USDT_5m.csv data/ETH_USDT_5m.csv data/SOL_USDT_5m.csv
+          for file in \
+            data/BTC_USDT_5m.csv \
+            data/ETH_USDT_5m.csv \
+            data/SOL_USDT_5m.csv
+
           do
 
             echo
@@ -624,8 +740,9 @@ jobs:
       # ==================================================
 
       - name: Show log directory
-        if: always()
-        run: |
+      if: always()
+      run: |
+
           echo "=================================================="
           echo "LOG DIRECTORY"
           echo "=================================================="
@@ -634,14 +751,20 @@ jobs:
 
 
       # ==================================================
-      # UPLOAD LOGS
+      # UPLOAD LOGS + V7 RESULTS
       # ==================================================
 
       - name: Upload backtest logs
         if: always()
         uses: actions/upload-artifact@v4
+
         with:
+
           name: 20to100-backtest-logs
+
           path: |
             logs/
+            v7_survival_results.csv
+            v7_survival_summary.csv
+
           if-no-files-found: warn
