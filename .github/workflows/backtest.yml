@@ -19,7 +19,6 @@ jobs:
 
     timeout-minutes: 90
 
-
     steps:
 
       # ==================================================
@@ -386,7 +385,6 @@ jobs:
 
           echo "=================================================="
 
-
           if [ -f v6_c_stress_test.py ]; then
 
             python v6_c_stress_test.py
@@ -502,7 +500,6 @@ jobs:
 
           echo "=================================================="
 
-
           if [ -f v6_c_monte_carlo.py ]; then
 
             python v6_c_monte_carlo.py
@@ -586,7 +583,6 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-
           echo "=================================================="
           echo "RUNNING V7 SURVIVAL BACKTEST"
           echo "=================================================="
@@ -646,7 +642,6 @@ jobs:
       - name: Show V7 Survival Results
         if: always()
         run: |
-
           echo "=================================================="
           echo "V7 SURVIVAL RESULTS"
           echo "=================================================="
@@ -695,7 +690,6 @@ jobs:
       - name: Final data report
         if: always()
         run: |
-
           echo "=================================================="
           echo "FINAL DATA REPORT"
           echo "=================================================="
@@ -740,9 +734,8 @@ jobs:
       # ==================================================
 
       - name: Show log directory
-      if: always()
-      run: |
-
+        if: always()
+        run: |
           echo "=================================================="
           echo "LOG DIRECTORY"
           echo "=================================================="
@@ -757,14 +750,10 @@ jobs:
       - name: Upload backtest logs
         if: always()
         uses: actions/upload-artifact@v4
-
         with:
-
           name: 20to100-backtest-logs
-
           path: |
             logs/
             v7_survival_results.csv
             v7_survival_summary.csv
-
           if-no-files-found: warn
