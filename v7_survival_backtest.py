@@ -2,35 +2,27 @@
 # V7 SURVIVAL BACKTEST
 # ============================================================
 #
-# V7-S0
+# V7-S0 = V6-C ENTRY ENGINE + SURVIVAL RISK MANAGEMENT
 #
-# Entry:
-#   V6-C
-#
-# Survival layer:
-#   V7SurvivalEngine
+# Philosophy:
+#   SURVIVE FIRST. GROW SECOND.
 #
 # Assets:
-#   BTC/USDT
-#   ETH/USDT
-#   SOL/USDT
+#   BTC / ETH / SOL
 #
-# Capital scenarios:
+# Capitals:
 #   20 / 50 / 100 / 250 USDT
 #
-# Method:
-#   Rolling OOS
-#   12 months training period
-#   3 months OOS period
-#
-# IMPORTANT:
-#   V6 strategy remains unchanged.
-#   V6 engine remains unchanged.
+# Walk Forward:
+#   12 months train
+#   3 months OOS
+#   3 months rolling step
 #
 # ============================================================
 
 from pathlib import Path
 import sys
+
 import numpy as np
 import pandas as pd
 
@@ -49,48 +41,74 @@ if str(ROOT) not in sys.path:
 # IMPORTS
 # ============================================================
 
-from strategy.strategy_v6 import calculate_indicators
+try:
+    from strategy.strategy_v6 import calculate_indicators
+except ImportError as exc:
+    print("ERROR: Could not import calculate_indicators")
+    print(exc)
+    raise
 
-from backtest.v7_survival_engine import (
-    V7SurvivalEngine,
-)
+
+try:
+    from backtest.v7_survival_engine import V7SurvivalEngine
+except ImportError as exc:
+    print("ERROR: Could not import V7SurvivalEngine")
+    print(exc)
+    raise
 
 
 # ============================================================
-# CONFIG
+# CONFIGURATION
 # ============================================================
 
 DATA_DIR = ROOT / "data"
 
 ASSETS = [
-    "BTC_USDT_5m",
-    "ETH_USDT_5m",
-    "SOL_USDT_5m",
+    "BTC",
+    "ETH",
+    "SOL",
 ]
 
-CAPITALS = [
+TIMEFRAME = "5m"
+
+DATA_FILES = {
+    "BTC": DATA_DIR / "BTC_USDT_5m.csv",
+    "ETH": DATA_DIR / "ETH_USDT_5m.csv",
+    "SOL": DATA_DIR / "SOL_USDT_5m.csv",
+}
+
+
+# ============================================================
+# V7 CONFIG
+# ============================================================
+
+STARTING_CAPITALS = [
     20.0,
     50.0,
     100.0,
     250.0,
 ]
 
-VARIANT = "V6_C"
-
-TRAIN_MONTHS = 12
-OOS_MONTHS = 3
 
 RISK_PER_TRADE = 0.01
 
 FEE_RATE = 0.001
+
 SLIPPAGE_RATE = 0.0005
 
 ATR_STOP_MULTIPLIER = 3.0
+
 TRAILING_ATR_MULTIPLIER = 3.0
 
 ADX_MIN = 20.0
 
+
+# ============================================================
+# SURVIVAL CONFIG
+# ============================================================
+
 MAX_DAILY_LOSS_PCT = 5.0
+
 MAX_CONSECUTIVE_LOSSES = 3
 
 COOLDOWN_BARS = 24
@@ -99,83 +117,222 @@ GLOBAL_MAX_DRAWDOWN_PCT = 20.0
 
 
 # ============================================================
-# OUTPUT FILES
+# STRATEGY
+# ============================================================
+
+VARIANT = "V6_C"
+
+
+# ============================================================
+# WALK-FORWARD CONFIG
+# ============================================================
+
+TRAIN_MONTHS = 12
+
+OOS_MONTHS = 3
+
+STEP_MONTHS = 3
+
+
+# ============================================================
+# OUTPUT
 # ============================================================
 
 RESULTS_FILE = ROOT / "v7_survival_results.csv"
+
 SUMMARY_FILE = ROOT / "v7_survival_summary.csv"
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def safe_float(value, default=np.nan):
+    """
+    Safely convert a value to float.
+    """
+
+    try:
+
+        if value is None:
+            return default
+
+        if isinstance(value, str):
+
+            if value.strip().lower() in {
+                "",
+                "nan",
+                "none",
+                "n/a",
+                "na",
+            }:
+                return default
+
+        result = float(value)
+
+        if not np.isfinite(result):
+            return default
+
+        return result
+
+    except Exception:
+
+        return default
 
 
 # ============================================================
 # LOAD DATA
 # ============================================================
 
-def load_data(asset_name: str) -> pd.DataFrame:
+def load_data(asset):
+    """
+    Load historical 5m OHLCV data.
+    """
 
-    path = DATA_DIR / f"{asset_name}.csv"
+    file_path = DATA_FILES[asset]
 
-    if not path.exists():
+    print()
+    print("=" * 70)
+    print(f"LOADING {asset}")
+    print("=" * 70)
+
+    if not file_path.exists():
+
         raise FileNotFoundError(
-            f"Dataset not found: {path}"
+            f"Data file not found: {file_path}"
         )
 
-    print(f"\nLoading {path}")
+    df = pd.read_csv(file_path)
 
-    df = pd.read_csv(path)
+    print(
+        f"{asset}: loaded {len(df):,} rows"
+    )
 
-    if "timestamp" not in df.columns:
+    # --------------------------------------------------------
+    # Normalize column names
+    # --------------------------------------------------------
+
+    df.columns = [
+        str(col).strip().lower()
+        for col in df.columns
+    ]
+
+    # --------------------------------------------------------
+    # Detect timestamp column
+    # --------------------------------------------------------
+
+    timestamp_candidates = [
+        "timestamp",
+        "datetime",
+        "date",
+        "time",
+        "open_time",
+    ]
+
+    timestamp_column = None
+
+    for candidate in timestamp_candidates:
+
+        if candidate in df.columns:
+
+            timestamp_column = candidate
+            break
+
+    if timestamp_column is None:
+
         raise ValueError(
-            f"{asset_name}: missing timestamp column"
+            f"{asset}: No timestamp column found. "
+            f"Columns: {list(df.columns)}"
         )
+
+    # --------------------------------------------------------
+    # Parse timestamp
+    # --------------------------------------------------------
 
     df["timestamp"] = pd.to_datetime(
-        df["timestamp"],
+        df[timestamp_column],
         errors="coerce",
         utc=True,
     )
 
     df = df.dropna(
         subset=["timestamp"]
-    ).copy()
+    )
 
-    required = [
+    # --------------------------------------------------------
+    # Required OHLC columns
+    # --------------------------------------------------------
+
+    required_columns = [
         "open",
         "high",
         "low",
         "close",
     ]
 
-    for column in required:
+    missing = [
+        column
+        for column in required_columns
+        if column not in df.columns
+    ]
 
-        if column not in df.columns:
-            raise ValueError(
-                f"{asset_name}: missing column {column}"
-            )
+    if missing:
+
+        raise ValueError(
+            f"{asset}: Missing columns: {missing}"
+        )
+
+    # --------------------------------------------------------
+    # Numeric conversion
+    # --------------------------------------------------------
+
+    for column in required_columns:
 
         df[column] = pd.to_numeric(
             df[column],
             errors="coerce",
         )
 
+    if "volume" in df.columns:
+
+        df["volume"] = pd.to_numeric(
+            df["volume"],
+            errors="coerce",
+        )
+
+    # --------------------------------------------------------
+    # Remove invalid rows
+    # --------------------------------------------------------
+
     df = df.dropna(
-        subset=required
-    ).copy()
-
-    df = df.sort_values(
-        "timestamp"
+        subset=required_columns
     )
 
-    df = df.drop_duplicates(
-        subset=["timestamp"]
+    # --------------------------------------------------------
+    # Sort
+    # --------------------------------------------------------
+
+    df = (
+        df
+        .sort_values("timestamp")
+        .drop_duplicates(
+            subset=["timestamp"],
+            keep="first",
+        )
+        .reset_index(drop=True)
     )
 
-    df = df.set_index(
-        "timestamp"
+    print(
+        f"{asset}: cleaned {len(df):,} rows"
     )
 
-    df = df[
-        required
-    ].copy()
+    if len(df) > 0:
+
+        print(
+            f"{asset}: "
+            f"{df['timestamp'].iloc[0]} -> "
+            f"{df['timestamp'].iloc[-1]}"
+        )
 
     return df
 
@@ -184,193 +341,280 @@ def load_data(asset_name: str) -> pd.DataFrame:
 # RESAMPLE 5m -> 1h
 # ============================================================
 
-def resample_to_1h(
-    df: pd.DataFrame,
-) -> pd.DataFrame:
+def resample_to_1h(df):
+    """
+    Convert 5m OHLCV data to 1h candles.
+    """
 
-    hourly = df.resample(
-        "1h"
-    ).agg(
-        {
-            "open": "first",
-            "high": "max",
-            "low": "min",
-            "close": "last",
-        }
+    data = df.copy()
+
+    data = data.set_index(
+        "timestamp"
     )
 
-    hourly = hourly.dropna()
+    aggregation = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+    }
+
+    if "volume" in data.columns:
+
+        aggregation["volume"] = "sum"
+
+    hourly = (
+        data
+        .resample("1h")
+        .agg(aggregation)
+        .dropna(
+            subset=[
+                "open",
+                "high",
+                "low",
+                "close",
+            ]
+        )
+        .reset_index()
+    )
 
     return hourly
 
 
 # ============================================================
-# PREPARE STRATEGY DATA
+# PREPARE DATA
 # ============================================================
 
-def prepare_data(
-    df: pd.DataFrame,
-) -> pd.DataFrame:
+def prepare_data(asset):
+    """
+    Load 5m data, convert to 1h and calculate V6 indicators.
+    """
 
-    hourly = resample_to_1h(
-        df
+    df_5m = load_data(asset)
+
+    print(
+        f"{asset}: resampling 5m -> 1h..."
     )
 
-    if len(hourly) < 1000:
+    df_1h = resample_to_1h(
+        df_5m
+    )
+
+    print(
+        f"{asset}: {len(df_1h):,} hourly candles"
+    )
+
+    if len(df_1h) < 500:
+
         raise ValueError(
-            "Not enough hourly data."
+            f"{asset}: Not enough hourly data."
         )
 
-    hourly = calculate_indicators(
-        hourly.copy()
+    print(
+        f"{asset}: calculating V6 indicators..."
     )
 
-    return hourly
+    df_1h = calculate_indicators(
+        df_1h
+    )
+
+    # --------------------------------------------------------
+    # Clean indicator rows
+    # --------------------------------------------------------
+
+    df_1h = (
+        df_1h
+        .replace(
+            [np.inf, -np.inf],
+            np.nan,
+        )
+        .reset_index(drop=True)
+    )
+
+    print(
+        f"{asset}: final prepared rows "
+        f"{len(df_1h):,}"
+    )
+
+    return df_1h
 
 
 # ============================================================
-# CREATE ROLLING WINDOWS
+# CREATE WALK-FORWARD WINDOWS
 # ============================================================
 
-def create_windows(
-    df: pd.DataFrame,
-):
+def create_windows(df):
+    """
+    Create rolling:
 
-    train_delta = pd.DateOffset(
-        months=TRAIN_MONTHS
-    )
+        12 month TRAIN
+        3 month OOS
+        3 month STEP
+    """
 
-    oos_delta = pd.DateOffset(
-        months=OOS_MONTHS
-    )
+    if df.empty:
 
-    start = df.index.min()
+        return []
 
-    end = df.index.max()
+    timestamps = df["timestamp"]
 
-    current_train_start = start
+    start_date = timestamps.iloc[0]
+
+    end_date = timestamps.iloc[-1]
 
     windows = []
+
+    train_start = start_date
+
+    window_id = 0
 
     while True:
 
         train_end = (
-            current_train_start
-            + train_delta
+            train_start
+            + pd.DateOffset(
+                months=TRAIN_MONTHS
+            )
         )
 
         oos_end = (
             train_end
-            + oos_delta
+            + pd.DateOffset(
+                months=OOS_MONTHS
+            )
         )
 
-        if oos_end > end:
+        if oos_end > end_date:
+
             break
 
-        train_data = df[
-            (df.index >= current_train_start)
-            & (df.index < train_end)
+        train_mask = (
+            (timestamps >= train_start)
+            &
+            (timestamps < train_end)
+        )
+
+        oos_mask = (
+            (timestamps >= train_end)
+            &
+            (timestamps < oos_end)
+        )
+
+        train_df = df.loc[
+            train_mask
         ].copy()
 
-        oos_data = df[
-            (df.index >= train_end)
-            & (df.index < oos_end)
+        oos_df = df.loc[
+            oos_mask
         ].copy()
 
-        if (
-            len(train_data) > 0
-            and len(oos_data) > 0
-        ):
+        if len(train_df) > 0 and len(oos_df) > 0:
 
             windows.append(
                 {
-                    "train_start": current_train_start,
+                    "window_id": window_id,
+                    "train_start": train_start,
                     "train_end": train_end,
                     "oos_start": train_end,
                     "oos_end": oos_end,
-                    "train": train_data,
-                    "oos": oos_data,
+                    "train_df": train_df,
+                    "oos_df": oos_df,
                 }
             )
 
-        current_train_start = (
-            current_train_start
-            + oos_delta
+            window_id += 1
+
+        train_start = (
+            train_start
+            + pd.DateOffset(
+                months=STEP_MONTHS
+            )
         )
 
     return windows
 
 
 # ============================================================
-# SAFE NUMBER
-# ============================================================
-
-def safe_float(
-    value,
-    default=np.nan,
-):
-
-    try:
-
-        value = float(value)
-
-        if np.isfinite(value):
-            return value
-
-    except Exception:
-        pass
-
-    return default
-
-
-# ============================================================
-# RUN ONE BACKTEST
+# RUN SINGLE BACKTEST
 # ============================================================
 
 def run_single_backtest(
-    oos_data: pd.DataFrame,
-    starting_balance: float,
+    asset,
+    capital,
+    oos_df,
+    window_id,
 ):
+    """
+    Run one V7-S0 OOS backtest.
+
+    IMPORTANT:
+    The parameter names here must exactly match
+    V7SurvivalEngine.__init__().
+    """
+
+    # --------------------------------------------------------
+    # IMPORTANT PARAMETER MAPPING
+    # --------------------------------------------------------
+    #
+    # Runner:
+    #
+    #   RISK_PER_TRADE
+    #   MAX_DAILY_LOSS_PCT
+    #   COOLDOWN_BARS
+    #   GLOBAL_MAX_DRAWDOWN_PCT
+    #
+    # Engine:
+    #
+    #   base_risk_per_trade
+    #   max_daily_loss
+    #   loss_cooldown_bars
+    #   global_max_drawdown
+    #
+    # Percent values from runner are converted to fractions
+    # where required by the engine.
+    # --------------------------------------------------------
 
     engine = V7SurvivalEngine(
 
-        starting_balance=starting_balance,
+        starting_balance=capital,
 
-        risk_per_trade=RISK_PER_TRADE,
+        base_risk_per_trade=RISK_PER_TRADE,
 
         fee_rate=FEE_RATE,
 
         slippage_rate=SLIPPAGE_RATE,
 
-        atr_stop_multiplier=(
-            ATR_STOP_MULTIPLIER
-        ),
+        atr_stop_multiplier=ATR_STOP_MULTIPLIER,
 
-        trailing_atr_multiplier=(
-            TRAILING_ATR_MULTIPLIER
-        ),
+        trailing_atr_multiplier=TRAILING_ATR_MULTIPLIER,
 
         adx_min=ADX_MIN,
 
-        max_daily_loss_pct=(
-            MAX_DAILY_LOSS_PCT
+        variant=VARIANT,
+
+        max_daily_loss=(
+            MAX_DAILY_LOSS_PCT / 100.0
         ),
 
         max_consecutive_losses=(
             MAX_CONSECUTIVE_LOSSES
         ),
 
-        cooldown_bars=COOLDOWN_BARS,
-
-        global_max_drawdown_pct=(
-            GLOBAL_MAX_DRAWDOWN_PCT
+        loss_cooldown_bars=(
+            COOLDOWN_BARS
         ),
 
-        variant=VARIANT,
+        global_max_drawdown=(
+            GLOBAL_MAX_DRAWDOWN_PCT / 100.0
+        ),
     )
 
+    # --------------------------------------------------------
+    # RUN
+    # --------------------------------------------------------
+
     result = engine.run(
-        oos_data
+        oos_df
     )
 
     return result
@@ -381,15 +625,14 @@ def run_single_backtest(
 # ============================================================
 
 def extract_result(
+    asset,
+    capital,
+    window,
     result,
-    asset: str,
-    capital: float,
-    window_number: int,
-    window: dict,
 ):
-
-    if result is None:
-        result = {}
+    """
+    Convert engine result into one flat CSV row.
+    """
 
     return {
 
@@ -399,27 +642,30 @@ def extract_result(
 
         "variant": VARIANT,
 
-        "window": window_number,
-
-        "train_start": (
-            window["train_start"]
+        "strategy": result.get(
+            "strategy",
+            "V7_S0",
         ),
 
-        "train_end": (
-            window["train_end"]
-        ),
+        "window_id": window[
+            "window_id"
+        ],
 
-        "oos_start": (
-            window["oos_start"]
-        ),
+        "train_start": window[
+            "train_start"
+        ],
 
-        "oos_end": (
-            window["oos_end"]
-        ),
+        "train_end": window[
+            "train_end"
+        ],
 
-        "starting_balance": (
-            capital
-        ),
+        "oos_start": window[
+            "oos_start"
+        ],
+
+        "oos_end": window[
+            "oos_end"
+        ],
 
         "final_balance": safe_float(
             result.get(
@@ -460,9 +706,15 @@ def extract_result(
             0,
         ),
 
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # Engine returns "win_rate",
+        # not "win_rate_pct".
+        # ----------------------------------------------------
+
         "win_rate_pct": safe_float(
             result.get(
-                "win_rate_pct"
+                "win_rate"
             )
         ),
 
@@ -495,6 +747,39 @@ def extract_result(
                 "slippage_cost"
             )
         ),
+
+        "normal_trades": safe_float(
+            result.get(
+                "normal_trades"
+            ),
+            0,
+        ),
+
+        "defensive_trades": safe_float(
+            result.get(
+                "defensive_trades"
+            ),
+            0,
+        ),
+
+        "survival_trades": safe_float(
+            result.get(
+                "survival_trades"
+            ),
+            0,
+        ),
+
+        "critical_trades": safe_float(
+            result.get(
+                "critical_trades"
+            ),
+            0,
+        ),
+
+        "kill_switch_triggered": result.get(
+            "kill_switch_triggered",
+            False,
+        ),
     }
 
 
@@ -502,20 +787,23 @@ def extract_result(
 # SUMMARY
 # ============================================================
 
-def build_summary(
-    results: pd.DataFrame,
-) -> pd.DataFrame:
+def build_summary(results_df):
+    """
+    Build capital-level summary.
+    """
 
-    if results.empty:
+    if results_df.empty:
+
         return pd.DataFrame()
 
-    rows = []
+    summaries = []
 
-    grouped = results.groupby(
+    grouped = results_df.groupby(
         [
             "capital",
             "variant",
-        ]
+        ],
+        dropna=False,
     )
 
     for (
@@ -527,49 +815,86 @@ def build_summary(
             "return_pct"
         ].dropna()
 
-        pf = group[
+        profit_factors = group[
             "profit_factor"
         ].dropna()
 
-        dd = group[
-            "max_drawdown_pct"
+        expectancies = group[
+            "expectancy"
         ].dropna()
 
-        expectancy = group[
-            "expectancy"
+        drawdowns = group[
+            "max_drawdown_pct"
         ].dropna()
 
         trades = group[
             "trades"
         ].fillna(0)
 
+        # ----------------------------------------------------
+        # Positive windows
+        # ----------------------------------------------------
+
         positive_windows = (
-            returns > 0
+            group[
+                "return_pct"
+            ] > 0
         ).sum()
 
-        pf_gt_1 = (
-            pf > 1
-        ).sum()
+        total_windows = len(group)
 
-        total_windows = len(
-            group
+        positive_window_pct = (
+            positive_windows
+            / total_windows
+            * 100.0
+            if total_windows > 0
+            else np.nan
         )
 
-        rows.append(
-            {
+        # ----------------------------------------------------
+        # PF > 1
+        # ----------------------------------------------------
 
-                "variant": variant,
+        pf_gt_one = (
+            group[
+                "profit_factor"
+            ] > 1.0
+        ).sum()
+
+        pf_gt_one_pct = (
+            pf_gt_one
+            / total_windows
+            * 100.0
+            if total_windows > 0
+            else np.nan
+        )
+
+        # ----------------------------------------------------
+        # Positive assets/windows
+        # ----------------------------------------------------
+
+        assets_positive = (
+            group[
+                "return_pct"
+            ] > 0
+        ).sum()
+
+        assets_positive_pct = (
+            assets_positive
+            / total_windows
+            * 100.0
+            if total_windows > 0
+            else np.nan
+        )
+
+        summaries.append(
+            {
 
                 "capital": capital,
 
-                "assets_tested": (
-                    group["asset"]
-                    .nunique()
-                ),
+                "variant": variant,
 
-                "windows_tested": (
-                    total_windows
-                ),
+                "windows": total_windows,
 
                 "avg_return_pct": (
                     returns.mean()
@@ -584,45 +909,39 @@ def build_summary(
                 ),
 
                 "avg_profit_factor": (
-                    pf.mean()
-                    if len(pf)
+                    profit_factors.mean()
+                    if len(profit_factors)
                     else np.nan
                 ),
 
                 "median_profit_factor": (
-                    pf.median()
-                    if len(pf)
-                    else np.nan
-                ),
-
-                "positive_window_pct": (
-                    positive_windows
-                    / total_windows
-                    * 100
-                    if total_windows
-                    else np.nan
-                ),
-
-                "pf_gt_1_pct": (
-                    pf_gt_1
-                    / total_windows
-                    * 100
-                    if total_windows
+                    profit_factors.median()
+                    if len(profit_factors)
                     else np.nan
                 ),
 
                 "avg_expectancy": (
-                    expectancy.mean()
-                    if len(expectancy)
+                    expectancies.mean()
+                    if len(expectancies)
                     else np.nan
                 ),
 
-                "avg_trades": (
-                    trades.mean()
+                "avg_positive_window_pct": (
+                    positive_window_pct
+                ),
+
+                "avg_pf_gt_1_pct": (
+                    pf_gt_one_pct
                 ),
 
                 "total_trades": (
                     trades.sum()
+                ),
+
+                "avg_trades_per_window": (
+                    trades.mean()
+                    if len(trades)
+                    else np.nan
                 ),
 
                 "worst_return_pct": (
@@ -638,31 +957,25 @@ def build_summary(
                 ),
 
                 "avg_drawdown_pct": (
-                    dd.mean()
-                    if len(dd)
+                    drawdowns.mean()
+                    if len(drawdowns)
                     else np.nan
                 ),
 
                 "worst_drawdown_pct": (
-                    dd.min()
-                    if len(dd)
+                    drawdowns.max()
+                    if len(drawdowns)
                     else np.nan
                 ),
 
                 "assets_positive_pct": (
-                    group.groupby(
-                        "asset"
-                    )["return_pct"]
-                    .mean()
-                    .gt(0)
-                    .mean()
-                    * 100
+                    assets_positive_pct
                 ),
             }
         )
 
     return pd.DataFrame(
-        rows
+        summaries
     )
 
 
@@ -674,109 +987,163 @@ def main():
 
     print()
     print("=" * 70)
+    print("V7 SURVIVAL BACKTEST")
+    print("=" * 70)
+    print()
+    print("V7-S0 = V6-C + SURVIVAL RISK MANAGEMENT")
+    print()
+    print("Assets:")
+    print("  BTC")
+    print("  ETH")
+    print("  SOL")
+    print()
+    print("Capital:")
     print(
-        "V7 SURVIVAL BACKTEST"
+        "  "
+        + ", ".join(
+            f"{x:g}"
+            for x in STARTING_CAPITALS
+        )
+        + " USDT"
     )
+    print()
+    print("Risk per trade:")
+    print(
+        f"  {RISK_PER_TRADE * 100:.2f}%"
+    )
+    print()
+    print("Daily loss limit:")
+    print(
+        f"  {MAX_DAILY_LOSS_PCT:.2f}%"
+    )
+    print()
+    print("Max consecutive losses:")
+    print(
+        f"  {MAX_CONSECUTIVE_LOSSES}"
+    )
+    print()
+    print("Cooldown:")
+    print(
+        f"  {COOLDOWN_BARS} bars"
+    )
+    print()
+    print("Global max drawdown:")
+    print(
+        f"  {GLOBAL_MAX_DRAWDOWN_PCT:.2f}%"
+    )
+    print()
     print("=" * 70)
 
-    print(
-        "Strategy: V6-C"
-    )
+    # ========================================================
+    # PREPARE ALL ASSETS
+    # ========================================================
 
-    print(
-        "Survival Layer: V7-S0"
-    )
+    prepared_data = {}
 
-    print(
-        "Assets: BTC + ETH + SOL"
-    )
+    for asset in ASSETS:
 
-    print(
-        "Capital: 20 / 50 / 100 / 250"
-    )
+        try:
 
-    print(
-        "Rolling OOS: 12M train / 3M OOS"
-    )
+            prepared_data[
+                asset
+            ] = prepare_data(
+                asset
+            )
 
-    print("=" * 70)
+        except Exception as exc:
+
+            print()
+            print(
+                f"ERROR preparing {asset}:"
+            )
+            print(exc)
+
+            raise
+
+    # ========================================================
+    # RUN BACKTESTS
+    # ========================================================
 
     all_results = []
 
     for asset in ASSETS:
 
+        df = prepared_data[
+            asset
+        ]
+
         print()
-        print("-" * 70)
+        print("=" * 70)
         print(
-            f"PROCESSING {asset}"
+            f"CREATING WALK-FORWARD WINDOWS: {asset}"
         )
-        print("-" * 70)
+        print("=" * 70)
 
-        try:
+        windows = create_windows(
+            df
+        )
 
-            raw = load_data(
-                asset
-            )
+        print(
+            f"{asset}: "
+            f"{len(windows)} OOS windows"
+        )
 
-            print(
-                f"5m rows: {len(raw):,}"
-            )
-
-            data = prepare_data(
-                raw
-            )
+        if not windows:
 
             print(
-                f"1h rows: {len(data):,}"
-            )
-
-            windows = create_windows(
-                data
-            )
-
-            print(
-                f"OOS windows: {len(windows)}"
-            )
-
-        except Exception as exc:
-
-            print(
-                f"ERROR loading {asset}: {exc}"
+                f"WARNING: No windows for {asset}"
             )
 
             continue
 
-        for capital in CAPITALS:
+        # ====================================================
+        # CAPITAL LOOP
+        # ====================================================
+
+        for capital in STARTING_CAPITALS:
 
             print()
+            print("-" * 70)
             print(
-                f"Capital: {capital:.2f} USDT"
+                f"{asset} | CAPITAL {capital:g} USDT"
             )
+            print("-" * 70)
 
-            for window_number, window in enumerate(
-                windows,
-                start=1,
-            ):
+            for window in windows:
+
+                window_id = window[
+                    "window_id"
+                ]
+
+                oos_df = window[
+                    "oos_df"
+                ]
 
                 print(
-                    f"  Window {window_number:02d}: "
-                    f"{window['oos_start']} -> "
-                    f"{window['oos_end']}"
+                    f"{asset} | "
+                    f"${capital:g} | "
+                    f"Window {window_id:02d} | "
+                    f"OOS "
+                    f"{window['oos_start'].date()} "
+                    f"-> "
+                    f"{window['oos_end'].date()} | "
+                    f"{len(oos_df):,} bars"
                 )
 
                 try:
 
                     result = run_single_backtest(
-                        window["oos"],
-                        capital,
+                        asset=asset,
+                        capital=capital,
+                        oos_df=oos_df,
+                        window_id=window_id,
                     )
 
                     row = extract_result(
-                        result=result,
                         asset=asset,
                         capital=capital,
-                        window_number=window_number,
                         window=window,
+                        result=result,
                     )
 
                     all_results.append(
@@ -784,83 +1151,198 @@ def main():
                     )
 
                     print(
-                        f"     Return: "
-                        f"{row['return_pct']:.3f}% | "
+                        "   "
+                        f"Return: "
+                        f"{row['return_pct']:.4f}% | "
                         f"PF: "
-                        f"{row['profit_factor']:.3f} | "
+                        f"{row['profit_factor']:.4f} | "
                         f"Trades: "
-                        f"{int(row['trades'])}"
+                        f"{int(row['trades'])} | "
+                        f"DD: "
+                        f"{row['max_drawdown_pct']:.4f}%"
                     )
 
                 except Exception as exc:
 
+                    print()
                     print(
-                        f"     ERROR: {exc}"
+                        f"   ERROR "
+                        f"{asset} | "
+                        f"${capital:g} | "
+                        f"Window {window_id}:"
                     )
 
+                    print(
+                        f"   {type(exc).__name__}: "
+                        f"{exc}"
+                    )
+
+                    continue
+
     # ========================================================
-    # SAVE RESULTS
+    # CHECK RESULTS
     # ========================================================
+
+    print()
+    print("=" * 70)
+    print("BUILDING RESULTS")
+    print("=" * 70)
 
     if not all_results:
 
         print()
         print(
-            "NO RESULTS GENERATED."
+            "ERROR: NO RESULTS WERE GENERATED."
+        )
+
+        print()
+        print(
+            "v7_survival_results.csv NOT FOUND"
+        )
+
+        print(
+            "v7_survival_summary.csv NOT FOUND"
         )
 
         return
+
+    # ========================================================
+    # RESULTS DATAFRAME
+    # ========================================================
 
     results_df = pd.DataFrame(
         all_results
     )
 
-    summary_df = build_summary(
-        results_df
-    )
+    # --------------------------------------------------------
+    # Sort
+    # --------------------------------------------------------
+
+    sort_columns = [
+        "asset",
+        "capital",
+        "window_id",
+    ]
+
+    existing_sort_columns = [
+        column
+        for column in sort_columns
+        if column in results_df.columns
+    ]
+
+    if existing_sort_columns:
+
+        results_df = (
+            results_df
+            .sort_values(
+                existing_sort_columns
+            )
+            .reset_index(drop=True)
+        )
+
+    # ========================================================
+    # SAVE RESULTS
+    # ========================================================
 
     results_df.to_csv(
         RESULTS_FILE,
         index=False,
     )
 
+    print()
+    print(
+        f"Saved results:"
+    )
+
+    print(
+        f"  {RESULTS_FILE}"
+    )
+
+    print(
+        f"  Rows: {len(results_df):,}"
+    )
+
+    # ========================================================
+    # BUILD SUMMARY
+    # ========================================================
+
+    summary_df = build_summary(
+        results_df
+    )
+
+    # ========================================================
+    # SAVE SUMMARY
+    # ========================================================
+
     summary_df.to_csv(
         SUMMARY_FILE,
         index=False,
     )
 
+    print()
+    print(
+        "Saved summary:"
+    )
+
+    print(
+        f"  {SUMMARY_FILE}"
+    )
+
     # ========================================================
-    # FINAL REPORT
+    # PRINT SUMMARY
     # ========================================================
 
     print()
     print("=" * 70)
-    print(
-        "V7 SURVIVAL SUMMARY"
-    )
+    print("V7-S0 SURVIVAL SUMMARY")
     print("=" * 70)
 
-    if not summary_df.empty:
+    if summary_df.empty:
+
+        print(
+            "SUMMARY IS EMPTY"
+        )
+
+    else:
 
         display_columns = [
-            "variant",
+
             "capital",
-            "assets_tested",
-            "windows_tested",
+
+            "variant",
+
+            "windows",
+
             "avg_return_pct",
+
             "median_return_pct",
+
             "avg_profit_factor",
+
             "median_profit_factor",
-            "positive_window_pct",
-            "pf_gt_1_pct",
-            "avg_expectancy",
+
+            "avg_positive_window_pct",
+
+            "avg_pf_gt_1_pct",
+
             "total_trades",
+
             "worst_return_pct",
+
             "best_return_pct",
+
             "avg_drawdown_pct",
+
             "worst_drawdown_pct",
-            "assets_positive_pct",
         ]
+
+        display_columns = [
+            column
+            for column in display_columns
+            if column in summary_df.columns
+        ]
+
+        print()
 
         print(
             summary_df[
@@ -870,23 +1352,32 @@ def main():
             )
         )
 
-    print()
-    print(
-        f"Results saved to: "
-        f"{RESULTS_FILE}"
-    )
-
-    print(
-        f"Summary saved to: "
-        f"{SUMMARY_FILE}"
-    )
+    # ========================================================
+    # FINAL STATUS
+    # ========================================================
 
     print()
     print("=" * 70)
-    print(
-        "V7 SURVIVAL BACKTEST COMPLETE"
-    )
+    print("V7-S0 COMPLETE")
     print("=" * 70)
+
+    print()
+    print(
+        f"Result rows: "
+        f"{len(results_df):,}"
+    )
+
+    print(
+        f"Summary rows: "
+        f"{len(summary_df):,}"
+    )
+
+    print()
+    print(
+        "SURVIVE FIRST. GROW SECOND."
+    )
+
+    print()
 
 
 # ============================================================
@@ -894,4 +1385,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
