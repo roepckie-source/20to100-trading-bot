@@ -21,30 +21,31 @@ jobs:
 
     steps:
 
-      # =====================================================
+      # ==========================================================
       # CHECKOUT
-      # =====================================================
+      # ==========================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # =====================================================
+      # ==========================================================
       # PYTHON
-      # =====================================================
+      # ==========================================================
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
 
-      # =====================================================
-      # INSTALL DEPENDENCIES
-      # =====================================================
+      # ==========================================================
+      # DEPENDENCIES
+      # ==========================================================
 
       - name: Install dependencies
         run: |
+
           python -m pip install --upgrade pip
 
           pip install \
@@ -54,416 +55,677 @@ jobs:
             ccxt
 
 
-      # =====================================================
-      # DATA DIRECTORY
-      # =====================================================
+      # ==========================================================
+      # DIRECTORIES
+      # ==========================================================
 
       - name: Create data directory
         run: |
+
           mkdir -p data
+          mkdir -p logs
 
-
-      # =====================================================
-      # DOWNLOAD BTC
-      # =====================================================
-
-      - name: Download BTC 5m data
-        run: |
-          python - <<'PY'
-          import ccxt
-          import pandas as pd
-          import time
-          from pathlib import Path
-
-          exchange = ccxt.binance()
-
-          symbol = "BTC/USDT"
-
-          timeframe = "5m"
-
-          since = exchange.parse8601(
-              "2021-01-01T00:00:00Z"
-          )
-
-          end = exchange.milliseconds()
-
-          all_rows = []
-
-          print("Downloading BTC/USDT 5m data...")
-
-          while since < end:
-
-              try:
-
-                  rows = exchange.fetch_ohlcv(
-                      symbol,
-                      timeframe=timeframe,
-                      since=since,
-                      limit=1000
-                  )
-
-              except Exception as exc:
-
-                  print(
-                      f"Download error: {exc}"
-                  )
-
-                  time.sleep(5)
-
-                  continue
-
-              if not rows:
-                  break
-
-              all_rows.extend(rows)
-
-              since = rows[-1][0] + 5 * 60 * 1000
-
-              print(
-                  f"BTC rows: {len(all_rows):,}"
-              )
-
-              time.sleep(
-                  exchange.rateLimit / 1000
-              )
-
-          df = pd.DataFrame(
-              all_rows,
-              columns=[
-                  "timestamp",
-                  "open",
-                  "high",
-                  "low",
-                  "close",
-                  "volume"
-              ]
-          )
-
-          df["timestamp"] = pd.to_datetime(
-              df["timestamp"],
-              unit="ms",
-              utc=True
-          )
-
-          df = df.drop_duplicates(
-              subset=["timestamp"]
-          )
-
-          df = df.sort_values(
-              "timestamp"
-          )
-
-          path = Path(
-              "data/BTC_USDT_5m.csv"
-          )
-
-          df.to_csv(
-              path,
-              index=False
-          )
-
-          print(
-              f"Saved BTC: {len(df):,} rows"
-          )
-
-          print(
-              f"File: {path}"
-          )
-          PY
-
-
-      # =====================================================
-      # DOWNLOAD ETH
-      # =====================================================
-
-      - name: Download ETH 5m data
-        run: |
-          python - <<'PY'
-          import ccxt
-          import pandas as pd
-          import time
-          from pathlib import Path
-
-          exchange = ccxt.binance()
-
-          symbol = "ETH/USDT"
-
-          timeframe = "5m"
-
-          since = exchange.parse8601(
-              "2021-01-01T00:00:00Z"
-          )
-
-          end = exchange.milliseconds()
-
-          all_rows = []
-
-          print("Downloading ETH/USDT 5m data...")
-
-          while since < end:
-
-              try:
-
-                  rows = exchange.fetch_ohlcv(
-                      symbol,
-                      timeframe=timeframe,
-                      since=since,
-                      limit=1000
-                  )
-
-              except Exception as exc:
-
-                  print(
-                      f"Download error: {exc}"
-                  )
-
-                  time.sleep(5)
-
-                  continue
-
-              if not rows:
-                  break
-
-              all_rows.extend(rows)
-
-              since = rows[-1][0] + 5 * 60 * 1000
-
-              print(
-                  f"ETH rows: {len(all_rows):,}"
-              )
-
-              time.sleep(
-                  exchange.rateLimit / 1000
-              )
-
-          df = pd.DataFrame(
-              all_rows,
-              columns=[
-                  "timestamp",
-                  "open",
-                  "high",
-                  "low",
-                  "close",
-                  "volume"
-              ]
-          )
-
-          df["timestamp"] = pd.to_datetime(
-              df["timestamp"],
-              unit="ms",
-              utc=True
-          )
-
-          df = df.drop_duplicates(
-              subset=["timestamp"]
-          )
-
-          df = df.sort_values(
-              "timestamp"
-          )
-
-          path = Path(
-              "data/ETH_USDT_5m.csv"
-          )
-
-          df.to_csv(
-              path,
-              index=False
-          )
-
-          print(
-              f"Saved ETH: {len(df):,} rows"
-          )
-
-          print(
-              f"File: {path}"
-          )
-          PY
-
-
-      # =====================================================
-      # DOWNLOAD SOL
-      # =====================================================
-
-      - name: Download SOL 5m data
-        run: |
-          python - <<'PY'
-          import ccxt
-          import pandas as pd
-          import time
-          from pathlib import Path
-
-          exchange = ccxt.binance()
-
-          symbol = "SOL/USDT"
-
-          timeframe = "5m"
-
-          since = exchange.parse8601(
-              "2021-01-01T00:00:00Z"
-          )
-
-          end = exchange.milliseconds()
-
-          all_rows = []
-
-          print("Downloading SOL/USDT 5m data...")
-
-          while since < end:
-
-              try:
-
-                  rows = exchange.fetch_ohlcv(
-                      symbol,
-                      timeframe=timeframe,
-                      since=since,
-                      limit=1000
-                  )
-
-              except Exception as exc:
-
-                  print(
-                      f"Download error: {exc}"
-                  )
-
-                  time.sleep(5)
-
-                  continue
-
-              if not rows:
-                  break
-
-              all_rows.extend(rows)
-
-              since = rows[-1][0] + 5 * 60 * 1000
-
-              print(
-                  f"SOL rows: {len(all_rows):,}"
-              )
-
-              time.sleep(
-                  exchange.rateLimit / 1000
-              )
-
-          df = pd.DataFrame(
-              all_rows,
-              columns=[
-                  "timestamp",
-                  "open",
-                  "high",
-                  "low",
-                  "close",
-                  "volume"
-              ]
-          )
-
-          df["timestamp"] = pd.to_datetime(
-              df["timestamp"],
-              unit="ms",
-              utc=True
-          )
-
-          df = df.drop_duplicates(
-              subset=["timestamp"]
-          )
-
-          df = df.sort_values(
-              "timestamp"
-          )
-
-          path = Path(
-              "data/SOL_USDT_5m.csv"
-          )
-
-          df.to_csv(
-              path,
-              index=False
-          )
-
-          print(
-              f"Saved SOL: {len(df):,} rows"
-          )
-
-          print(
-              f"File: {path}"
-          )
-          PY
-
-
-      # =====================================================
-      # FINAL DATA REPORT
-      # =====================================================
-
-      - name: Final data report
-        run: |
           echo "=================================================="
-          echo "FINAL DATA REPORT"
+          echo "DIRECTORIES READY"
           echo "=================================================="
 
-          for file in \
-            data/BTC_USDT_5m.csv \
-            data/ETH_USDT_5m.csv \
-            data/SOL_USDT_5m.csv
-          do
-
-            echo
-            echo "FILE: $file"
-
-            if [ -f "$file" ]; then
-
-              lines=$(wc -l < "$file")
-
-              echo "Lines: $lines"
-
-              if [ "$lines" -lt 500001 ]; then
-
-                echo "ERROR: insufficient data"
-
-                exit 1
-
-              fi
-
-            else
-
-              echo "ERROR: file missing"
-
-              exit 1
-
-            fi
-
-          done
-
-          echo
-          echo "ALL DATASETS VALID"
+          ls -lah
 
 
-      # =====================================================
-      # V6 BACKTEST
-      # =====================================================
+      # ==========================================================
+      # DATA DOWNLOAD
+      #
+      # FAST MODE
+      #
+      # 3 YEARS
+      # BTC + ETH + SOL
+      # 5 MINUTES
+      #
+      # PARALLEL DOWNLOAD
+      # ==========================================================
+
+      - name: Download BTC ETH SOL 5m data
+        timeout-minutes: 20
+        run: |
+
+          echo "=================================================="
+          echo "DOWNLOADING HISTORICAL DATA"
+          echo "=================================================="
+          echo "BTC + ETH + SOL"
+          echo "5m candles"
+          echo "3 years"
+          echo "PARALLEL DOWNLOAD"
+          echo "=================================================="
+
+          python - <<'PY'
+
+          import requests
+          import pandas as pd
+
+          from pathlib import Path
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from datetime import datetime, timezone, timedelta
+
+          # ======================================================
+          # CONFIG
+          # ======================================================
+
+          DATA_DIR = Path("data")
+
+          DATA_DIR.mkdir(
+              exist_ok=True
+          )
+
+          SYMBOLS = {
+              "BTCUSDT": "BTC_USDT_5m.csv",
+              "ETHUSDT": "ETH_USDT_5m.csv",
+              "SOLUSDT": "SOL_USDT_5m.csv",
+          }
+
+          INTERVAL = "5m"
+
+          LIMIT = 1000
+
+          BINANCE_URL = (
+              "https://api.binance.com/api/v3/klines"
+          )
+
+          # 3 YEARS
+          now = datetime.now(
+              timezone.utc
+          )
+
+          start_date = now - timedelta(
+              days=3 * 365
+          )
+
+          START_MS = int(
+              start_date.timestamp() * 1000
+          )
+
+          END_MS = int(
+              now.timestamp() * 1000
+          )
+
+          # Binance columns
+          COLUMNS = [
+              "timestamp",
+              "open",
+              "high",
+              "low",
+              "close",
+              "volume",
+              "close_time",
+              "quote_volume",
+              "trades",
+              "taker_buy_base",
+              "taker_buy_quote",
+              "ignore",
+          ]
+
+
+          # ======================================================
+          # DOWNLOAD ONE SYMBOL
+          # ======================================================
+
+          def download_symbol(
+              symbol,
+              filename
+          ):
+
+              output = DATA_DIR / filename
+
+              print()
+              print("=" * 60)
+              print(f"START {symbol}")
+              print("=" * 60)
+
+              rows = []
+
+              current_start = START_MS
+
+              request_count = 0
+
+              while current_start < END_MS:
+
+                  params = {
+                      "symbol": symbol,
+                      "interval": INTERVAL,
+                      "limit": LIMIT,
+                      "startTime": current_start,
+                      "endTime": END_MS,
+                  }
+
+                  success = False
+
+                  for attempt in range(8):
+
+                      try:
+
+                          response = requests.get(
+                              BINANCE_URL,
+                              params=params,
+                              timeout=30
+                          )
+
+                          # --------------------------------------
+                          # SUCCESS
+                          # --------------------------------------
+
+                          if response.status_code == 200:
+
+                              data = response.json()
+
+                              if not data:
+
+                                  current_start = END_MS
+
+                                  success = True
+
+                                  break
+
+                              rows.extend(
+                                  data
+                              )
+
+                              request_count += 1
+
+                              last_timestamp = data[-1][0]
+
+                              next_start = (
+                                  last_timestamp
+                                  + 5 * 60 * 1000
+                              )
+
+                              if next_start <= current_start:
+
+                                  raise RuntimeError(
+                                      "Timestamp did not advance."
+                                  )
+
+                              current_start = next_start
+
+                              success = True
+
+                              if request_count % 25 == 0:
+
+                                  print(
+                                      f"{symbol}: "
+                                      f"{len(rows):,} candles"
+                                  )
+
+                              break
+
+
+                          # --------------------------------------
+                          # RATE LIMIT
+                          # --------------------------------------
+
+                          elif response.status_code == 429:
+
+                              wait_seconds = min(
+                                  60,
+                                  5 * (attempt + 1)
+                              )
+
+                              print(
+                                  f"{symbol}: "
+                                  f"RATE LIMIT -> "
+                                  f"waiting "
+                                  f"{wait_seconds}s"
+                              )
+
+                              import time
+
+                              time.sleep(
+                                  wait_seconds
+                              )
+
+
+                          # --------------------------------------
+                          # SERVER ERROR
+                          # --------------------------------------
+
+                          elif response.status_code >= 500:
+
+                              wait_seconds = min(
+                                  30,
+                                  2 ** attempt
+                              )
+
+                              print(
+                                  f"{symbol}: "
+                                  f"SERVER ERROR "
+                                  f"{response.status_code} "
+                                  f"-> retry "
+                                  f"{wait_seconds}s"
+                              )
+
+                              import time
+
+                              time.sleep(
+                                  wait_seconds
+                              )
+
+
+                          # --------------------------------------
+                          # OTHER ERROR
+                          # --------------------------------------
+
+                          else:
+
+                              raise RuntimeError(
+                                  f"HTTP "
+                                  f"{response.status_code}: "
+                                  f"{response.text[:300]}"
+                              )
+
+
+                      except Exception as exc:
+
+                          if attempt == 7:
+
+                              raise
+
+                          wait_seconds = min(
+                              30,
+                              2 ** attempt
+                          )
+
+                          print(
+                              f"{symbol}: "
+                              f"ERROR: {exc} "
+                              f"-> retry "
+                              f"{wait_seconds}s"
+                          )
+
+                          import time
+
+                          time.sleep(
+                              wait_seconds
+                          )
+
+
+                  if not success:
+
+                      raise RuntimeError(
+                          f"{symbol}: "
+                          f"Download failed."
+                      )
+
+
+              # ==================================================
+              # DATAFRAME
+              # ==================================================
+
+              df = pd.DataFrame(
+                  rows,
+                  columns=COLUMNS
+              )
+
+              if df.empty:
+
+                  raise RuntimeError(
+                      f"{symbol}: NO DATA"
+                  )
+
+
+              # ==================================================
+              # ONLY REQUIRED COLUMNS
+              # ==================================================
+
+              df = df[
+                  [
+                      "timestamp",
+                      "open",
+                      "high",
+                      "low",
+                      "close",
+                      "volume",
+                  ]
+              ].copy()
+
+
+              # ==================================================
+              # TIMESTAMP
+              # ==================================================
+
+              df["timestamp"] = pd.to_datetime(
+                  df["timestamp"],
+                  unit="ms",
+                  utc=True
+              )
+
+
+              # ==================================================
+              # NUMERIC
+              # ==================================================
+
+              numeric_columns = [
+                  "open",
+                  "high",
+                  "low",
+                  "close",
+                  "volume",
+              ]
+
+              for column in numeric_columns:
+
+                  df[column] = pd.to_numeric(
+                      df[column],
+                      errors="coerce"
+                  )
+
+
+              # ==================================================
+              # CLEAN
+              # ==================================================
+
+              df = df.dropna()
+
+              df = df.drop_duplicates(
+                  subset=["timestamp"]
+              )
+
+              df = df.sort_values(
+                  "timestamp"
+              )
+
+
+              # ==================================================
+              # SAVE
+              # ==================================================
+
+              df.to_csv(
+                  output,
+                  index=False
+              )
+
+
+              # ==================================================
+              # REPORT
+              # ==================================================
+
+              print()
+              print("=" * 60)
+              print(f"{symbol} COMPLETE")
+              print("=" * 60)
+
+              print(
+                  f"Rows: "
+                  f"{len(df):,}"
+              )
+
+              print(
+                  f"File: "
+                  f"{output}"
+              )
+
+              print(
+                  f"From: "
+                  f"{df['timestamp'].iloc[0]}"
+              )
+
+              print(
+                  f"To: "
+                  f"{df['timestamp'].iloc[-1]}"
+              )
+
+              print(
+                  f"Size: "
+                  f"{output.stat().st_size / 1024 / 1024:.1f} MB"
+              )
+
+
+              # ==================================================
+              # SAFETY CHECK
+              #
+              # 3 years of 5m data should be around 315k rows.
+              # ==================================================
+
+              if len(df) < 250_000:
+
+                  raise RuntimeError(
+                      f"{symbol}: "
+                      f"only {len(df):,} rows. "
+                      f"Expected at least 250,000."
+                  )
+
+
+              return (
+                  symbol,
+                  len(df)
+              )
+
+
+          # ======================================================
+          # PARALLEL DOWNLOAD
+          # ======================================================
+
+          results = []
+
+
+          with ThreadPoolExecutor(
+              max_workers=3
+          ) as executor:
+
+              futures = [
+
+                  executor.submit(
+                      download_symbol,
+                      symbol,
+                      filename
+                  )
+
+                  for symbol, filename
+                  in SYMBOLS.items()
+              ]
+
+
+              for future in as_completed(
+                  futures
+              ):
+
+                  symbol, rows_count = (
+                      future.result()
+                  )
+
+                  results.append(
+                      (
+                          symbol,
+                          rows_count
+                      )
+                  )
+
+
+          # ======================================================
+          # FINAL DOWNLOAD REPORT
+          # ======================================================
+
+          print()
+          print("=" * 60)
+          print("DOWNLOAD COMPLETE")
+          print("=" * 60)
+
+          for symbol, rows_count in sorted(
+              results
+          ):
+
+              print(
+                  f"{symbol}: "
+                  f"{rows_count:,} rows"
+              )
+
+          print("=" * 60)
+
+          PY
+
+
+      # ==========================================================
+      # VERIFY DATA
+      # ==========================================================
+
+      - name: Verify historical data
+        run: |
+
+          echo "=================================================="
+          echo "VERIFY HISTORICAL DATA"
+          echo "=================================================="
+
+          python - <<'PY'
+
+          from pathlib import Path
+          import pandas as pd
+
+          files = [
+
+              Path(
+                  "data/BTC_USDT_5m.csv"
+              ),
+
+              Path(
+                  "data/ETH_USDT_5m.csv"
+              ),
+
+              Path(
+                  "data/SOL_USDT_5m.csv"
+              ),
+
+          ]
+
+          minimum = 250_000
+
+          failed = False
+
+
+          for path in files:
+
+              print()
+              print(
+                  f"Checking: {path}"
+              )
+
+              if not path.exists():
+
+                  print(
+                      f"ERROR: "
+                      f"{path} does not exist"
+                  )
+
+                  failed = True
+
+                  continue
+
+
+              df = pd.read_csv(
+                  path
+              )
+
+              rows = len(df)
+
+              print(
+                  f"Rows: "
+                  f"{rows:,}"
+              )
+
+              print(
+                  f"Columns: "
+                  f"{list(df.columns)}"
+              )
+
+
+              if rows < minimum:
+
+                  print(
+                      f"ERROR: "
+                      f"only {rows:,} rows "
+                      f"(minimum "
+                      f"{minimum:,})"
+                  )
+
+                  failed = True
+
+              else:
+
+                  print(
+                      "OK"
+                  )
+
+
+          if failed:
+
+              raise SystemExit(
+                  "Historical data verification failed."
+              )
+
+
+          print()
+          print(
+              "ALL DATA FILES VALID"
+          )
+
+          PY
+
+
+      # ==========================================================
+      # V6
+      # ==========================================================
 
       - name: Run V6 Backtest
+        if: always()
+        continue-on-error: true
         run: |
+
           echo "=================================================="
           echo "RUNNING V6 BACKTEST"
           echo "=================================================="
 
-          if [ -f v6_multi_asset_backtest.py ]; then
+          if [ -f v6_extended_multi_asset_backtest.py ]; then
 
-            python v6_multi_asset_backtest.py
+            python v6_extended_multi_asset_backtest.py
+
+          elif [ -f v6_backtest.py ]; then
+
+            python v6_backtest.py
 
           else
 
-            echo "V6 runner not found - skipping"
+            echo "No V6 backtest script found."
+            echo "V6 skipped."
 
           fi
 
 
-      # =====================================================
-      # V6-C STRESS
-      # =====================================================
+      # ==========================================================
+      # SHOW V6
+      # ==========================================================
+
+      - name: Show V6 Results
+        if: always()
+        run: |
+
+          echo "=================================================="
+          echo "V6 RESULTS"
+          echo "=================================================="
+
+          find logs \
+            -maxdepth 1 \
+            -type f \
+            -iname "*v6*" \
+            -print \
+            2>/dev/null \
+            || true
+
+
+      # ==========================================================
+      # V6-C STRESS TEST
+      # ==========================================================
 
       - name: Run V6-C Stress Test
+        if: always()
+        continue-on-error: true
         run: |
+
           echo "=================================================="
           echo "RUNNING V6-C STRESS TEST"
           echo "=================================================="
@@ -474,17 +736,21 @@ jobs:
 
           else
 
-            echo "V6-C stress runner not found - skipping"
+            echo "v6_c_stress_test.py not found."
+            echo "Stress test skipped."
 
           fi
 
 
-      # =====================================================
+      # ==========================================================
       # V6-C MONTE CARLO
-      # =====================================================
+      # ==========================================================
 
       - name: Run V6-C Monte Carlo
+        if: always()
+        continue-on-error: true
         run: |
+
           echo "=================================================="
           echo "RUNNING V6-C MONTE CARLO"
           echo "=================================================="
@@ -495,62 +761,68 @@ jobs:
 
           else
 
-            echo "V6-C Monte Carlo runner not found - skipping"
+            echo "v6_c_monte_carlo.py not found."
+            echo "Monte Carlo skipped."
 
           fi
 
 
-      # =====================================================
+      # ==========================================================
       # V7-S0
-      # =====================================================
+      #
+      # IMPORTANT:
+      # continue-on-error means S1 will run even if S0 fails.
+      # ==========================================================
 
       - name: Run V7-S0 Survival Backtest
+        if: always()
+        continue-on-error: true
         run: |
+
           echo "=================================================="
-          echo "RUNNING V7 SURVIVAL BACKTEST"
-          echo "=================================================="
-
-          echo
-          echo "Version:"
-          echo "V7-S0"
-
-          echo
-          echo "Entry Engine:"
-          echo "V6-C"
-
-          echo
-          echo "Survival Layer:"
-          echo "Dynamic risk reduction"
-
-          echo
-          echo "Starting V7-S0..."
-          echo
-
-          python v7_survival_backtest.py
-
-          echo
-          echo "=================================================="
-          echo "V7-S0 COMPLETE"
+          echo "RUNNING V7-S0 SURVIVAL BACKTEST"
           echo "=================================================="
 
+          echo
+          echo "SURVIVAL FIRST"
+          echo "GROW SECOND"
+          echo
 
-      # =====================================================
-      # V7-S0 RESULTS
-      # =====================================================
+          if [ -f v7_survival_backtest.py ]; then
+
+            python v7_survival_backtest.py
+
+          else
+
+            echo "ERROR:"
+            echo "v7_survival_backtest.py NOT FOUND"
+
+            exit 1
+
+          fi
+
+
+      # ==========================================================
+      # SHOW V7-S0
+      # ==========================================================
 
       - name: Show V7-S0 Results
         if: always()
         run: |
+
           echo "=================================================="
           echo "V7-S0 RESULT FILES"
           echo "=================================================="
 
+
           if [ -f v7_survival_results.csv ]; then
 
             echo
-            echo "v7_survival_results.csv:"
+            echo "v7_survival_results.csv"
+            echo "--------------------------------------------------"
 
-            cat v7_survival_results.csv
+            head -100 \
+              v7_survival_results.csv
 
           else
 
@@ -559,12 +831,15 @@ jobs:
 
           fi
 
+
           if [ -f v7_survival_summary.csv ]; then
 
             echo
-            echo "v7_survival_summary.csv:"
+            echo "v7_survival_summary.csv"
+            echo "--------------------------------------------------"
 
-            cat v7_survival_summary.csv
+            cat \
+              v7_survival_summary.csv
 
           else
 
@@ -574,61 +849,65 @@ jobs:
           fi
 
 
-      # =====================================================
+      # ==========================================================
       # V7-S1
-      # =====================================================
+      #
+      # IMPORTANT:
+      # Runs independently from S0.
+      # ==========================================================
 
       - name: Run V7-S1 Survival Backtest
+        if: always()
+        continue-on-error: true
         run: |
+
           echo "=================================================="
           echo "RUNNING V7-S1 SURVIVAL BACKTEST"
           echo "=================================================="
 
           echo
-          echo "Version:"
-          echo "V7-S1"
-
+          echo "V6-C ENTRY"
+          echo "+ 0.10 ATR BREAKOUT FILTER"
           echo
-          echo "Entry Engine:"
-          echo "V6-C + Breakout Quality Filter"
-
-          echo
-          echo "S1 Filter:"
-          echo "Breakout >= 0.10 ATR"
-
-          echo
-          echo "Survival Layer:"
-          echo "Dynamic risk reduction"
-
-          echo
-          echo "Starting V7-S1..."
+          echo "SURVIVAL FIRST"
+          echo "GROW SECOND"
           echo
 
-          python v7_s1_backtest.py
+          if [ -f v7_s1_backtest.py ]; then
 
-          echo
-          echo "=================================================="
-          echo "V7-S1 COMPLETE"
-          echo "=================================================="
+            python v7_s1_backtest.py
+
+          else
+
+            echo "ERROR:"
+            echo "v7_s1_backtest.py NOT FOUND"
+
+            exit 1
+
+          fi
 
 
-      # =====================================================
-      # V7-S1 RESULTS
-      # =====================================================
+      # ==========================================================
+      # SHOW V7-S1
+      # ==========================================================
 
       - name: Show V7-S1 Results
         if: always()
         run: |
+
           echo "=================================================="
           echo "V7-S1 RESULT FILES"
           echo "=================================================="
 
+
           if [ -f v7_s1_results.csv ]; then
 
             echo
-            echo "v7_s1_results.csv:"
+            echo "v7_s1_results.csv"
+            echo "--------------------------------------------------"
 
-            cat v7_s1_results.csv
+            head -100 \
+              v7_s1_results.csv
 
           else
 
@@ -637,12 +916,15 @@ jobs:
 
           fi
 
+
           if [ -f v7_s1_summary.csv ]; then
 
             echo
-            echo "v7_s1_summary.csv:"
+            echo "v7_s1_summary.csv"
+            echo "--------------------------------------------------"
 
-            cat v7_s1_summary.csv
+            cat \
+              v7_s1_summary.csv
 
           else
 
@@ -652,38 +934,94 @@ jobs:
           fi
 
 
-      # =====================================================
+      # ==========================================================
+      # FINAL DATA REPORT
+      # ==========================================================
+
+      - name: Final data report
+        if: always()
+        run: |
+
+          echo "=================================================="
+          echo "FINAL DATA REPORT"
+          echo "=================================================="
+
+
+          for file in \
+            data/BTC_USDT_5m.csv \
+            data/ETH_USDT_5m.csv \
+            data/SOL_USDT_5m.csv
+
+          do
+
+            echo
+            echo "--------------------------------------------------"
+            echo "$file"
+            echo "--------------------------------------------------"
+
+
+            if [ -f "$file" ]; then
+
+              echo "Lines:"
+              wc -l "$file"
+
+              echo
+              echo "Size:"
+              ls -lh "$file"
+
+            else
+
+              echo "MISSING: $file"
+
+            fi
+
+          done
+
+
+      # ==========================================================
       # SHOW LOG DIRECTORY
-      # =====================================================
+      # ==========================================================
 
       - name: Show log directory
         if: always()
         run: |
+
           echo "=================================================="
-          echo "WORKSPACE FILES"
+          echo "LOG DIRECTORY"
           echo "=================================================="
+
+          ls -lah logs \
+            || true
+
 
           echo
-          echo "Repository:"
-          find . -maxdepth 2 -type f | sort
+          echo "ROOT FILES"
+          echo "=================================================="
 
-          echo
-          echo "CSV RESULTS:"
-          find . -type f -name "*.csv" | sort
+          ls -lah \
+            || true
 
 
-      # =====================================================
-      # UPLOAD RESULTS
-      # =====================================================
+      # ==========================================================
+      # UPLOAD ALL RESULTS
+      # ==========================================================
 
       - name: Upload V7 results
         if: always()
         uses: actions/upload-artifact@v4
+
         with:
+
           name: v7-backtest-results
+
           path: |
+
             v7_survival_results.csv
             v7_survival_summary.csv
+
             v7_s1_results.csv
             v7_s1_summary.csv
+
+            logs/
+
           if-no-files-found: warn
