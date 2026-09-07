@@ -10,7 +10,7 @@
 # - Breakout muss mindestens 0.10 ATR
 #   über dem vorherigen Donchian-20-High liegen
 #
-# V7 Survival Layer bleibt unverändert:
+# V7 Survival Layer:
 # - dynamisches Risiko abhängig vom Drawdown
 # - harte Kapital-Schutzstufen
 # - tägliches Verlustlimit
@@ -28,7 +28,7 @@
 # GROW SECOND
 # ============================================================
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Optional
 
 import pandas as pd
@@ -130,7 +130,6 @@ class V7SurvivalEngine:
         defensive_drawdown: float = 0.05,
         survival_drawdown: float = 0.10,
         critical_drawdown: float = 0.15,
-
     ):
 
         # ====================================================
@@ -218,9 +217,19 @@ class V7SurvivalEngine:
                 "zwischen 0 und 10% liegen."
             )
 
-        if self.variant not in {
-            "V7_S1",
-        }:
+        if self.fee_rate < 0:
+
+            raise ValueError(
+                "fee_rate darf nicht negativ sein."
+            )
+
+        if self.slippage_rate < 0:
+
+            raise ValueError(
+                "slippage_rate darf nicht negativ sein."
+            )
+
+        if self.variant != "V7_S1":
 
             raise ValueError(
                 f"V7-S1 verwendet ausschließlich "
@@ -268,11 +277,8 @@ class V7SurvivalEngine:
         # ====================================================
 
         self.normal_risk_trades = 0
-
         self.defensive_risk_trades = 0
-
         self.survival_risk_trades = 0
-
         self.critical_risk_trades = 0
 
     # ========================================================
@@ -335,10 +341,7 @@ class V7SurvivalEngine:
             equity
         )
 
-        # ----------------------------------------------------
         # NORMAL
-        # ----------------------------------------------------
-
         if drawdown < self.defensive_drawdown:
 
             return (
@@ -346,10 +349,7 @@ class V7SurvivalEngine:
                 "NORMAL"
             )
 
-        # ----------------------------------------------------
         # DEFENSIVE
-        # ----------------------------------------------------
-
         if drawdown < self.survival_drawdown:
 
             return (
@@ -357,10 +357,7 @@ class V7SurvivalEngine:
                 "DEFENSIVE"
             )
 
-        # ----------------------------------------------------
         # SURVIVAL
-        # ----------------------------------------------------
-
         if drawdown < self.critical_drawdown:
 
             return (
@@ -368,10 +365,7 @@ class V7SurvivalEngine:
                 "SURVIVAL"
             )
 
-        # ----------------------------------------------------
         # CRITICAL
-        # ----------------------------------------------------
-
         if drawdown < self.global_max_drawdown:
 
             return (
@@ -379,10 +373,7 @@ class V7SurvivalEngine:
                 "CRITICAL"
             )
 
-        # ----------------------------------------------------
         # HALT
-        # ----------------------------------------------------
-
         return (
             0.0,
             "HALT"
@@ -430,9 +421,7 @@ class V7SurvivalEngine:
         ) / self.day_start_equity
 
         return (
-            loss
-            >=
-            self.max_daily_loss
+            loss >= self.max_daily_loss
         )
 
     # ========================================================
@@ -460,9 +449,7 @@ class V7SurvivalEngine:
         ) / self.peak_equity
 
         return (
-            drawdown
-            >=
-            self.global_max_drawdown
+            drawdown >= self.global_max_drawdown
         )
 
     # ========================================================
@@ -939,6 +926,239 @@ class V7SurvivalEngine:
         self.position = None
 
     # ========================================================
+    # RESULT
+    # ========================================================
+
+    def _result(self):
+
+        final_balance = float(
+            self.balance
+        )
+
+        profit = (
+            final_balance
+            -
+            self.starting_balance
+        )
+
+        if self.starting_balance > 0:
+
+            return_pct = (
+                profit
+                /
+                self.starting_balance
+            ) * 100.0
+
+        else:
+
+            return_pct = 0.0
+
+        # ====================================================
+        # TRADE STATISTICS
+        # ====================================================
+
+        trades = len(
+            self.trades
+        )
+
+        wins = sum(
+            1
+            for trade in self.trades
+            if trade.net_profit > 0
+        )
+
+        losses = sum(
+            1
+            for trade in self.trades
+            if trade.net_profit < 0
+        )
+
+        if trades > 0:
+
+            win_rate = (
+                wins
+                /
+                trades
+            ) * 100.0
+
+        else:
+
+            win_rate = 0.0
+
+        # ====================================================
+        # PROFIT FACTOR
+        # ====================================================
+
+        gross_wins = sum(
+            trade.net_profit
+            for trade in self.trades
+            if trade.net_profit > 0
+        )
+
+        gross_losses = sum(
+            abs(trade.net_profit)
+            for trade in self.trades
+            if trade.net_profit < 0
+        )
+
+        if gross_losses > 0:
+
+            profit_factor = (
+                gross_wins
+                /
+                gross_losses
+            )
+
+        elif gross_wins > 0:
+
+            profit_factor = float("inf")
+
+        else:
+
+            profit_factor = 0.0
+
+        # ====================================================
+        # EXPECTANCY
+        # ====================================================
+
+        if trades > 0:
+
+            expectancy = (
+                sum(
+                    trade.net_profit
+                    for trade in self.trades
+                )
+                /
+                trades
+            )
+
+        else:
+
+            expectancy = 0.0
+
+        # ====================================================
+        # MAX DRAWDOWN
+        # ====================================================
+
+        max_drawdown_pct = 0.0
+
+        if self.equity_curve:
+
+            equity_values = [
+                float(
+                    item["equity"]
+                )
+                for item in self.equity_curve
+            ]
+
+            peak = equity_values[0]
+
+            for equity in equity_values:
+
+                peak = max(
+                    peak,
+                    equity
+                )
+
+                if peak > 0:
+
+                    drawdown = (
+                        peak
+                        -
+                        equity
+                    ) / peak
+
+                    max_drawdown_pct = max(
+                        max_drawdown_pct,
+                        drawdown * 100.0
+                    )
+
+        # ====================================================
+        # TOTAL FEES
+        # ====================================================
+
+        total_fees = sum(
+            trade.fees
+            for trade in self.trades
+        )
+
+        # ====================================================
+        # TOTAL SLIPPAGE
+        # ====================================================
+
+        total_slippage = sum(
+            trade.slippage_cost
+            for trade in self.trades
+        )
+
+        # ====================================================
+        # RESULT
+        # ====================================================
+
+        return {
+
+            "strategy":
+                "V7_S1",
+
+            "variant":
+                self.variant,
+
+            "starting_balance":
+                self.starting_balance,
+
+            "final_balance":
+                final_balance,
+
+            "profit":
+                profit,
+
+            "return_pct":
+                return_pct,
+
+            "trades":
+                trades,
+
+            "wins":
+                wins,
+
+            "losses":
+                losses,
+
+            "win_rate":
+                win_rate,
+
+            "profit_factor":
+                profit_factor,
+
+            "expectancy":
+                expectancy,
+
+            "max_drawdown_pct":
+                max_drawdown_pct,
+
+            "fees":
+                total_fees,
+
+            "slippage_cost":
+                total_slippage,
+
+            "normal_risk_trades":
+                self.normal_risk_trades,
+
+            "defensive_risk_trades":
+                self.defensive_risk_trades,
+
+            "survival_risk_trades":
+                self.survival_risk_trades,
+
+            "critical_risk_trades":
+                self.critical_risk_trades,
+
+            "kill_switch":
+                self.kill_switch,
+        }
+
+    # ========================================================
     # RUN
     # ========================================================
 
@@ -1104,7 +1324,7 @@ class V7SurvivalEngine:
                             equity
                         )
                         *
-                        100,
+                        100.0,
                 }
             )
 
@@ -1255,6 +1475,9 @@ class V7SurvivalEngine:
 
             # =================================================
             # ENTRY
+            #
+            # Signal on previous candle.
+            # Entry on current candle open.
             # =================================================
 
             self._enter(
@@ -1281,3 +1504,11 @@ class V7SurvivalEngine:
                 float(final_row["close"]),
                 "END"
             )
+
+        # ====================================================
+        # CRITICAL FIX
+        #
+        # run() MUST return a result dictionary.
+        # ====================================================
+
+        return self._result()
