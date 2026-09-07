@@ -1,6 +1,6 @@
 # ============================================================
-# V7-S0 PAPER TRADER
-# MARKET DATA
+# 20to100 Trading Bot
+# PAPER MARKET DATA
 # ============================================================
 
 from __future__ import annotations
@@ -10,31 +10,14 @@ import pandas as pd
 
 
 # ============================================================
-# CREATE EXCHANGE
+# EXCHANGE
 # ============================================================
 
-def create_exchange(
-    exchange_id: str
-):
+def create_exchange():
 
-    exchange_class = getattr(
-        ccxt,
-        exchange_id,
-        None
-    )
-
-    if exchange_class is None:
-
-        raise ValueError(
-            f"Unknown CCXT exchange: "
-            f"{exchange_id}"
-        )
-
-    exchange = exchange_class(
-        {
-            "enableRateLimit": True
-        }
-    )
+    exchange = ccxt.okx({
+        "enableRateLimit": True,
+    })
 
     exchange.load_markets()
 
@@ -42,7 +25,7 @@ def create_exchange(
 
 
 # ============================================================
-# FETCH 5m DATA
+# FETCH 5m
 # ============================================================
 
 def fetch_5m(
@@ -51,21 +34,26 @@ def fetch_5m(
     limit: int = 1000,
 ) -> pd.DataFrame:
 
-    rows = exchange.fetch_ohlcv(
+    candles = exchange.fetch_ohlcv(
         symbol,
         timeframe="5m",
         limit=limit,
     )
 
-    if not rows:
+    if not candles:
 
-        raise RuntimeError(
-            f"No OHLCV returned for "
-            f"{symbol}"
+        return pd.DataFrame(
+            columns=[
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+            ]
         )
 
     df = pd.DataFrame(
-        rows,
+        candles,
         columns=[
             "timestamp",
             "open",
@@ -82,54 +70,52 @@ def fetch_5m(
         utc=True,
     )
 
-    for column in [
+    df = df.set_index(
+        "timestamp"
+    )
+
+    numeric_columns = [
         "open",
         "high",
         "low",
         "close",
         "volume",
-    ]:
+    ]
+
+    for column in numeric_columns:
 
         df[column] = pd.to_numeric(
             df[column],
             errors="coerce",
         )
 
-    df = (
-        df
-        .dropna(
-            subset=[
-                "open",
-                "high",
-                "low",
-                "close",
-            ]
-        )
-        .drop_duplicates(
-            "timestamp"
-        )
-        .sort_values(
-            "timestamp"
-        )
-        .set_index(
-            "timestamp"
-        )
-    )
+    df = df.dropna()
 
-    return df
+    df = df[
+        ~df.index.duplicated(
+            keep="last"
+        )
+    ]
+
+    return df.sort_index()
 
 
 # ============================================================
-# RESAMPLE 5m -> 1h
+# 5m -> 1h
 # ============================================================
 
 def resample_5m_to_1h(
-    df_5m: pd.DataFrame,
+    df: pd.DataFrame,
 ) -> pd.DataFrame:
 
+    if df.empty:
+
+        return df.copy()
+
     hourly = (
-        df_5m
-        .resample("1h")
+        df.resample(
+            "1h"
+        )
         .agg(
             {
                 "open": "first",
@@ -139,14 +125,7 @@ def resample_5m_to_1h(
                 "volume": "sum",
             }
         )
-        .dropna(
-            subset=[
-                "open",
-                "high",
-                "low",
-                "close",
-            ]
-        )
+        .dropna()
     )
 
-    return hourly
+    return hourly.sort_index()
