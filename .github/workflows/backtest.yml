@@ -2,11 +2,14 @@ name: 20to100 Backtest
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
+
   schedule:
     - cron: "0 5 * * *"
+
 
 jobs:
 
@@ -42,6 +45,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+
           python -m pip install --upgrade pip
 
           pip install \
@@ -57,21 +61,28 @@ jobs:
 
       - name: Create directories
         run: |
+
           mkdir -p data
           mkdir -p logs
+          mkdir -p /tmp/binance_data
 
 
       # ==========================================================
-      # 5. DOWNLOAD HISTORICAL DATA
+      # 5. DOWNLOAD BINANCE PUBLIC DATA
       #
-      # Binance api.binance.com is blocked on some
-      # GitHub Actions runner locations with HTTP 451.
+      # Official archive:
       #
-      # Therefore use data.binance.com for market data.
+      # https://data.binance.vision
       #
       # 3 years
-      # BTC + ETH + SOL
+      # BTCUSDT
+      # ETHUSDT
+      # SOLUSDT
       # 5 minute candles
+      #
+      # Monthly archives are used for completed months.
+      # Daily archives are used for the current month.
+      #
       # ==========================================================
 
       - name: Download historical data
@@ -80,16 +91,24 @@ jobs:
           python <<'PY'
 
           import os
-          import time
+          import io
+          import zipfile
           import requests
-          from concurrent.futures import ThreadPoolExecutor, as_completed
+          import pandas as pd
+
+          from datetime import date, datetime, timedelta
 
 
           # ======================================================
           # CONFIG
           # ======================================================
 
-          BASE_URL = "https://data.binance.com/api/v3/klines"
+          BASE_URL = (
+              "https://data.binance.vision/"
+              "data/spot"
+          )
+
+          INTERVAL = "5m"
 
           SYMBOLS = {
               "BTCUSDT": "data/BTC_USDT_5m.csv",
@@ -97,26 +116,43 @@ jobs:
               "SOLUSDT": "data/SOL_USDT_5m.csv",
           }
 
-          INTERVAL = "5m"
-
-          # Binance max candles/request
-          LIMIT = 1000
-
-          # 3 years
-          DAYS = 365 * 3
-
-          END_MS = int(time.time() * 1000)
-          START_MS = END_MS - DAYS * 24 * 60 * 60 * 1000
+          YEARS_BACK = 3
 
 
           # ======================================================
-          # SESSION
+          # DATE RANGE
+          # ======================================================
+
+          today = date.today()
+
+          start_date = date(
+              today.year - YEARS_BACK,
+              today.month,
+              today.day
+          )
+
+          yesterday = today - timedelta(days=1)
+
+          print()
+          print("=" * 70)
+          print("BINANCE PUBLIC DATA DOWNLOAD")
+          print("=" * 70)
+          print()
+          print(f"Start date : {start_date}")
+          print(f"End date   : {yesterday}")
+          print(f"Interval   : {INTERVAL}")
+          print("Assets     : BTC + ETH + SOL")
+          print("=" * 70)
+
+
+          # ======================================================
+          # HTTP SESSION
           # ======================================================
 
           session = requests.Session()
 
           session.headers.update({
-              "User-Agent": "Mozilla/5.0"
+              "User-Agent": "20to100-trading-bot/1.0"
           })
 
 
@@ -124,273 +160,570 @@ jobs:
           # DOWNLOAD FUNCTION
           # ======================================================
 
-          def download_symbol(symbol, output_file):
+          def download_zip(url):
 
-              print()
-              print("=" * 60)
-              print(f"START {symbol}")
-              print("=" * 60)
+              print(f"DOWNLOAD: {url}")
 
-              all_rows = []
+              response = session.get(
+                  url,
+                  timeout=60
+              )
 
-              current_start = START_MS
+              if response.status_code == 404:
 
-              request_count = 0
+                  return None
 
-              while current_start < END_MS:
+              response.raise_for_status()
 
-                  request_count += 1
-
-                  params = {
-                      "symbol": symbol,
-                      "interval": INTERVAL,
-                      "limit": LIMIT,
-                      "startTime": current_start,
-                      "endTime": END_MS,
-                  }
-
-                  success = False
-
-                  for attempt in range(8):
-
-                      try:
-
-                          response = session.get(
-                              BASE_URL,
-                              params=params,
-                              timeout=30
-                          )
-
-                          # --------------------------------------
-                          # HTTP 451
-                          # --------------------------------------
-
-                          if response.status_code == 451:
-
-                              raise RuntimeError(
-                                  "HTTP 451 - Binance restricted "
-                                  "this GitHub Actions runner."
-                              )
-
-                          response.raise_for_status()
-
-                          rows = response.json()
-
-                          if not rows:
-                              success = True
-                              break
-
-                          all_rows.extend(rows)
-
-                          last_open_time = rows[-1][0]
-
-                          next_start = last_open_time + 1
-
-                          if next_start <= current_start:
-                              raise RuntimeError(
-                                  "Pagination did not advance."
-                              )
-
-                          current_start = next_start
-
-                          success = True
-
-                          # Small delay to avoid aggressive requests
-                          time.sleep(0.05)
-
-                          break
-
-                      except Exception as e:
-
-                          print(
-                              f"{symbol}: ERROR: {e} "
-                              f"-> retry {attempt + 1}"
-                          )
-
-                          # Don't waste 8 retries on HTTP 451
-                          if "451" in str(e):
-
-                              print()
-                              print(
-                                  f"{symbol}: HTTP 451 detected."
-                              )
-
-                              print(
-                                  "The GitHub Actions runner is "
-                                  "blocked by Binance."
-                              )
-
-                              raise
-
-                          wait = min(
-                              2 ** attempt,
-                              30
-                          )
-
-                          time.sleep(wait)
+              return response.content
 
 
-                  if not success:
+          # ======================================================
+          # READ ZIP
+          # ======================================================
 
+          def read_zip(content):
+
+              if content is None:
+                  return None
+
+              with zipfile.ZipFile(
+                  io.BytesIO(content)
+              ) as z:
+
+                  names = z.namelist()
+
+                  csv_files = [
+                      name
+                      for name in names
+                      if name.lower().endswith(".csv")
+                  ]
+
+                  if not csv_files:
                       raise RuntimeError(
-                          f"{symbol}: request failed permanently."
+                          "ZIP enthält keine CSV-Datei."
                       )
 
-                  if request_count % 100 == 0:
+                  csv_name = csv_files[0]
+
+                  with z.open(csv_name) as f:
+
+                      df = pd.read_csv(
+                          f,
+                          header=None
+                      )
+
+              return df
+
+
+          # ======================================================
+          # BINANCE COLUMN NAMES
+          #
+          # Binance spot kline format:
+          #
+          # 0 Open time
+          # 1 Open
+          # 2 High
+          # 3 Low
+          # 4 Close
+          # 5 Volume
+          # 6 Close time
+          # 7 Quote asset volume
+          # 8 Number of trades
+          # 9 Taker buy base volume
+          # 10 Taker buy quote volume
+          # 11 Ignore
+          #
+          # ======================================================
+
+          COLUMNS = [
+              "open_time",
+              "open",
+              "high",
+              "low",
+              "close",
+              "volume",
+              "close_time",
+              "quote_volume",
+              "trades",
+              "taker_buy_base",
+              "taker_buy_quote",
+              "ignore",
+          ]
+
+
+          # ======================================================
+          # MONTH ITERATOR
+          # ======================================================
+
+          def month_iterator(start, end):
+
+              current = date(
+                  start.year,
+                  start.month,
+                  1
+              )
+
+              end_month = date(
+                  end.year,
+                  end.month,
+                  1
+              )
+
+              while current <= end_month:
+
+                  yield current
+
+                  if current.month == 12:
+
+                      current = date(
+                          current.year + 1,
+                          1,
+                          1
+                      )
+
+                  else:
+
+                      current = date(
+                          current.year,
+                          current.month + 1,
+                          1
+                      )
+
+
+          # ======================================================
+          # DOWNLOAD ONE SYMBOL
+          # ======================================================
+
+          def download_symbol(
+              symbol,
+              output_file
+          ):
+
+              print()
+              print("=" * 70)
+              print(f"PROCESSING {symbol}")
+              print("=" * 70)
+
+              frames = []
+
+              monthly_count = 0
+              daily_count = 0
+
+              # --------------------------------------------------
+              # COMPLETED MONTHS
+              # --------------------------------------------------
+
+              first_month = date(
+                  start_date.year,
+                  start_date.month,
+                  1
+              )
+
+              current_month = date(
+                  today.year,
+                  today.month,
+                  1
+              )
+
+              # Only completed months
+              last_completed_month = date(
+                  current_month.year,
+                  current_month.month,
+                  1
+              )
+
+              # Move one month backwards
+              if last_completed_month.month == 1:
+
+                  last_completed_month = date(
+                      last_completed_month.year - 1,
+                      12,
+                      1
+                  )
+
+              else:
+
+                  last_completed_month = date(
+                      last_completed_month.year,
+                      last_completed_month.month - 1,
+                      1
+                  )
+
+
+              for month in month_iterator(
+                  first_month,
+                  last_completed_month
+              ):
+
+                  year = month.year
+                  month_number = f"{month.month:02d}"
+
+                  filename = (
+                      f"{symbol}-"
+                      f"{INTERVAL}-"
+                      f"{year}-"
+                      f"{month_number}.zip"
+                  )
+
+                  url = (
+                      f"{BASE_URL}/monthly/klines/"
+                      f"{symbol}/{INTERVAL}/"
+                      f"{filename}"
+                  )
+
+                  content = download_zip(url)
+
+                  if content is None:
+
+                      raise RuntimeError(
+                          f"FEHLER: Monatsdatei fehlt:\n{url}"
+                      )
+
+                  df = read_zip(content)
+
+                  if df is None or df.empty:
+
+                      raise RuntimeError(
+                          f"Leere Monatsdatei: {url}"
+                      )
+
+                  df.columns = COLUMNS
+
+                  frames.append(df)
+
+                  monthly_count += 1
+
+                  print(
+                      f"{symbol}: "
+                      f"MONTH {year}-{month_number} "
+                      f"-> {len(df):,} rows"
+                  )
+
+
+              # --------------------------------------------------
+              # CURRENT MONTH
+              #
+              # Monthly archive does not contain the
+              # incomplete current month.
+              #
+              # Therefore download daily files.
+              # --------------------------------------------------
+
+              current_day = date(
+                  today.year,
+                  today.month,
+                  1
+              )
+
+              day = current_day
+
+              while day <= yesterday:
+
+                  # Only days inside requested range
+                  if day < start_date:
+
+                      day += timedelta(days=1)
+                      continue
+
+                  filename = (
+                      f"{symbol}-"
+                      f"{INTERVAL}-"
+                      f"{day.year}-"
+                      f"{day.month:02d}-"
+                      f"{day.day:02d}.zip"
+                  )
+
+                  url = (
+                      f"{BASE_URL}/daily/klines/"
+                      f"{symbol}/{INTERVAL}/"
+                      f"{filename}"
+                  )
+
+                  content = download_zip(url)
+
+                  if content is None:
 
                       print(
                           f"{symbol}: "
-                          f"{len(all_rows):,} candles downloaded"
+                          f"NO DAILY FILE: {day}"
                       )
 
+                      day += timedelta(days=1)
 
-              # ==================================================
+                      continue
+
+                  df = read_zip(content)
+
+                  if df is not None and not df.empty:
+
+                      df.columns = COLUMNS
+
+                      frames.append(df)
+
+                      daily_count += 1
+
+                      print(
+                          f"{symbol}: "
+                          f"DAY {day} "
+                          f"-> {len(df):,} rows"
+                      )
+
+                  day += timedelta(days=1)
+
+
+              # --------------------------------------------------
+              # COMBINE
+              # --------------------------------------------------
+
+              if not frames:
+
+                  raise RuntimeError(
+                      f"{symbol}: keine Daten gefunden."
+                  )
+
+              df = pd.concat(
+                  frames,
+                  ignore_index=True
+              )
+
+
+              # --------------------------------------------------
+              # TIMESTAMP NORMALIZATION
+              #
+              # Binance Spot:
+              # 2025+ may use microseconds.
+              #
+              # We normalize everything to milliseconds.
+              # --------------------------------------------------
+
+              df["open_time"] = pd.to_numeric(
+                  df["open_time"],
+                  errors="coerce"
+              )
+
+              df = df.dropna(
+                  subset=["open_time"]
+              )
+
+              # Microseconds:
+              # around 1.7e15
+              #
+              # Milliseconds:
+              # around 1.7e12
+
+              microsecond_mask = (
+                  df["open_time"] > 10**14
+              )
+
+              df.loc[
+                  microsecond_mask,
+                  "open_time"
+              ] = (
+                  df.loc[
+                      microsecond_mask,
+                      "open_time"
+                  ] / 1000
+              )
+
+
+              df["open_time"] = (
+                  df["open_time"]
+                  .astype("int64")
+              )
+
+
+              # --------------------------------------------------
+              # NUMERIC COLUMNS
+              # --------------------------------------------------
+
+              numeric_columns = [
+                  "open",
+                  "high",
+                  "low",
+                  "close",
+                  "volume",
+              ]
+
+              for column in numeric_columns:
+
+                  df[column] = pd.to_numeric(
+                      df[column],
+                      errors="coerce"
+                  )
+
+
+              # --------------------------------------------------
+              # FILTER DATE RANGE
+              # --------------------------------------------------
+
+              start_timestamp = int(
+                  pd.Timestamp(
+                      start_date,
+                      tz="UTC"
+                  ).timestamp() * 1000
+              )
+
+              end_timestamp = int(
+                  pd.Timestamp(
+                      today,
+                      tz="UTC"
+                  ).timestamp() * 1000
+              )
+
+              df = df[
+                  (df["open_time"] >= start_timestamp)
+                  &
+                  (df["open_time"] < end_timestamp)
+              ]
+
+
+              # --------------------------------------------------
+              # REMOVE DUPLICATES
+              # --------------------------------------------------
+
+              df = df.drop_duplicates(
+                  subset=["open_time"]
+              )
+
+
+              # --------------------------------------------------
+              # SORT
+              # --------------------------------------------------
+
+              df = df.sort_values(
+                  "open_time"
+              )
+
+
+              # --------------------------------------------------
+              # FINAL COLUMNS
+              #
+              # This matches the format expected by
+              # the existing trading bot.
+              # --------------------------------------------------
+
+              output = df[
+                  [
+                      "open_time",
+                      "open",
+                      "high",
+                      "low",
+                      "close",
+                      "volume",
+                  ]
+              ].copy()
+
+
+              output = output.rename(
+                  columns={
+                      "open_time": "timestamp"
+                  }
+              )
+
+
+              # --------------------------------------------------
               # WRITE CSV
-              # ==================================================
+              # --------------------------------------------------
+
+              output.to_csv(
+                  output_file,
+                  index=False
+              )
+
+
+              # --------------------------------------------------
+              # REPORT
+              # --------------------------------------------------
 
               print()
               print(
-                  f"{symbol}: "
-                  f"TOTAL {len(all_rows):,} candles"
+                  f"{symbol}: DOWNLOAD COMPLETE"
               )
-
-              if not all_rows:
-
-                  raise RuntimeError(
-                      f"{symbol}: no data received."
-                  )
-
-
-              # Binance kline format:
-              #
-              # 0 open time
-              # 1 open
-              # 2 high
-              # 3 low
-              # 4 close
-              # 5 volume
-              # 6 close time
-              # 7 quote volume
-              # 8 number trades
-              # 9 taker buy base volume
-              # 10 taker buy quote volume
-              # 11 ignore
-
-
-              with open(output_file, "w") as f:
-
-                  f.write(
-                      "timestamp,open,high,low,close,volume\n"
-                  )
-
-                  for row in all_rows:
-
-                      timestamp = row[0]
-
-                      open_price = row[1]
-                      high_price = row[2]
-                      low_price = row[3]
-                      close_price = row[4]
-                      volume = row[5]
-
-                      f.write(
-                          f"{timestamp},"
-                          f"{open_price},"
-                          f"{high_price},"
-                          f"{low_price},"
-                          f"{close_price},"
-                          f"{volume}\n"
-                      )
-
 
               print(
-                  f"{symbol}: SAVED -> {output_file}"
+                  f"{symbol}: "
+                  f"Monthly files: {monthly_count}"
               )
 
-              return symbol, len(all_rows)
+              print(
+                  f"{symbol}: "
+                  f"Daily files: {daily_count}"
+              )
+
+              print(
+                  f"{symbol}: "
+                  f"Rows: {len(output):,}"
+              )
+
+              print(
+                  f"{symbol}: "
+                  f"Output: {output_file}"
+              )
+
+              print(
+                  f"{symbol}: "
+                  f"Start: "
+                  f"{pd.to_datetime(output['timestamp'].min(), unit='ms', utc=True)}"
+              )
+
+              print(
+                  f"{symbol}: "
+                  f"End: "
+                  f"{pd.to_datetime(output['timestamp'].max(), unit='ms', utc=True)}"
+              )
+
+              return len(output)
 
 
           # ======================================================
-          # PARALLEL DOWNLOAD
+          # DOWNLOAD ALL SYMBOLS
           # ======================================================
-
-          print()
-          print("=" * 60)
-          print("DOWNLOADING HISTORICAL DATA")
-          print("BTC + ETH + SOL")
-          print("5m candles")
-          print("3 years")
-          print("PARALLEL DOWNLOAD")
-          print("=" * 60)
-
 
           results = {}
 
-          with ThreadPoolExecutor(
-              max_workers=3
-          ) as executor:
+          for symbol, output_file in SYMBOLS.items():
 
-              futures = {
-                  executor.submit(
-                      download_symbol,
-                      symbol,
-                      output_file
-                  ): symbol
-                  for symbol, output_file
-                  in SYMBOLS.items()
-              }
-
-              for future in as_completed(futures):
-
-                  symbol = futures[future]
-
-                  try:
-
-                      name, count = future.result()
-
-                      results[name] = count
-
-                  except Exception as e:
-
-                      print()
-                      print(
-                          f"FAILED {symbol}: {e}"
-                      )
-
-                      raise
+              results[symbol] = download_symbol(
+                  symbol,
+                  output_file
+              )
 
 
           # ======================================================
-          # FINAL DOWNLOAD REPORT
+          # FINAL REPORT
           # ======================================================
 
           print()
-          print("=" * 60)
-          print("DOWNLOAD COMPLETE")
-          print("=" * 60)
+          print("=" * 70)
+          print("ALL DATA DOWNLOADS COMPLETE")
+          print("=" * 70)
 
-          for symbol, count in results.items():
+          for symbol, rows in results.items():
 
               print(
-                  f"{symbol}: "
-                  f"{count:,} candles"
+                  f"{symbol}: {rows:,} candles"
               )
 
-          print("=" * 60)
+          print("=" * 70)
 
           PY
 
 
       # ==========================================================
       # 6. VERIFY DATA
+      #
+      # VERY IMPORTANT:
+      # If this fails, NO BACKTEST is started.
       # ==========================================================
 
       - name: Verify historical data
         run: |
 
           echo "=================================================="
-          echo "VERIFYING DATA"
+          echo "VERIFYING HISTORICAL DATA"
           echo "=================================================="
+
 
           for file in \
             data/BTC_USDT_5m.csv \
@@ -399,39 +732,63 @@ jobs:
           do
 
             echo
+            echo "----------------------------------------------"
             echo "FILE: $file"
+            echo "----------------------------------------------"
+
 
             if [ ! -f "$file" ]; then
-              echo "ERROR: file missing"
+
+              echo "ERROR: FILE DOES NOT EXIST"
+              echo "$file"
+
               exit 1
+
             fi
 
-            rows=$(wc -l < "$file")
+
+            rows=$(($(wc -l < "$file") - 1))
+
 
             echo "Rows: $rows"
 
-            # 3 years of 5m data is roughly 315k candles.
-            # Require at least 250k.
 
             if [ "$rows" -lt 250000 ]; then
 
               echo
-              echo "ERROR: insufficient historical data"
-              echo "Required: >= 250000 rows"
+              echo "ERROR: INSUFFICIENT DATA"
+              echo "Required: >= 250000 candles"
               echo "Found: $rows"
 
               exit 1
 
             fi
 
+
+            echo
+            echo "First rows:"
+            head -n 3 "$file"
+
+
+            echo
+            echo "Last rows:"
+            tail -n 3 "$file"
+
+
+            echo
+            echo "OK: $file"
+
           done
 
+
           echo
-          echo "DATA VERIFICATION PASSED"
+          echo "=================================================="
+          echo "ALL DATA FILES VERIFIED"
+          echo "=================================================="
 
 
       # ==========================================================
-      # 7. SHOW DATA REPORT
+      # 7. FINAL DATA REPORT
       # ==========================================================
 
       - name: Final data report
@@ -441,35 +798,84 @@ jobs:
           echo "FINAL DATA REPORT"
           echo "=================================================="
 
-          for file in \
-            data/BTC_USDT_5m.csv \
-            data/ETH_USDT_5m.csv \
-            data/SOL_USDT_5m.csv
-          do
 
-            echo
-            echo "----------------------------------------------"
-            echo "$file"
-            echo "----------------------------------------------"
+          python <<'PY'
 
-            wc -l "$file"
+          import pandas as pd
+          from pathlib import Path
 
-            echo "First rows:"
-            head -n 3 "$file"
 
-            echo
-            echo "Last rows:"
-            tail -n 3 "$file"
+          files = [
+              Path("data/BTC_USDT_5m.csv"),
+              Path("data/ETH_USDT_5m.csv"),
+              Path("data/SOL_USDT_5m.csv"),
+          ]
 
-          done
+
+          for path in files:
+
+              print()
+              print("=" * 60)
+              print(path)
+              print("=" * 60)
+
+              df = pd.read_csv(path)
+
+              print(
+                  "Rows:",
+                  f"{len(df):,}"
+              )
+
+              print(
+                  "Columns:",
+                  list(df.columns)
+              )
+
+              print(
+                  "Start:",
+                  pd.to_datetime(
+                      df["timestamp"].min(),
+                      unit="ms",
+                      utc=True
+                  )
+              )
+
+              print(
+                  "End:",
+                  pd.to_datetime(
+                      df["timestamp"].max(),
+                      unit="ms",
+                      utc=True
+                  )
+              )
+
+              print(
+                  "Duplicate timestamps:",
+                  df["timestamp"].duplicated().sum()
+              )
+
+              print(
+                  "Missing close:",
+                  df["close"].isna().sum()
+              )
+
+
+          print()
+          print("=" * 60)
+          print("DATA REPORT COMPLETE")
+          print("=" * 60)
+
+          PY
 
 
       # ==========================================================
       # 8. V6 BACKTEST
+      #
+      # No "always".
+      # Only runs if data verification succeeded.
       # ==========================================================
 
       - name: Run V6 backtest
-        if: always()
         run: |
 
           echo "=================================================="
@@ -484,7 +890,6 @@ jobs:
       # ==========================================================
 
       - name: Run V6-C stress test
-        if: always()
         run: |
 
           echo "=================================================="
@@ -499,7 +904,6 @@ jobs:
       # ==========================================================
 
       - name: Run V6-C Monte Carlo
-        if: always()
         run: |
 
           echo "=================================================="
@@ -510,12 +914,10 @@ jobs:
 
 
       # ==========================================================
-      # 11. V7-S0 SURVIVAL
+      # 11. V7-S0
       # ==========================================================
 
       - name: Run V7-S0 survival backtest
-        if: always()
-        continue-on-error: true
         run: |
 
           echo "=================================================="
@@ -526,12 +928,10 @@ jobs:
 
 
       # ==========================================================
-      # 12. V7-S1 BREAKOUT FILTER
+      # 12. V7-S1
       # ==========================================================
 
       - name: Run V7-S1 backtest
-        if: always()
-        continue-on-error: true
         run: |
 
           echo "=================================================="
@@ -542,7 +942,7 @@ jobs:
 
 
       # ==========================================================
-      # 13. LIST RESULTS
+      # 13. SHOW RESULTS
       # ==========================================================
 
       - name: Show results
@@ -553,15 +953,26 @@ jobs:
           echo "RESULT FILES"
           echo "=================================================="
 
+
           echo
           echo "CSV files:"
+
           find . -type f \
-            \( -name "*.csv" -o -name "*.json" \) \
-            -print | sort
+            \( \
+              -name "*.csv" \
+              -o -name "*.json" \
+            \) \
+            -print \
+            | sort
+
 
           echo
           echo "Logs:"
-          find logs -type f -print 2>/dev/null || true
+
+          find logs \
+            -type f \
+            -print \
+            2>/dev/null || true
 
 
       # ==========================================================
@@ -571,12 +982,17 @@ jobs:
       - name: Upload backtest results
         if: always()
         uses: actions/upload-artifact@v4
+
         with:
+
           name: backtest-results
+
           path: |
             data/*.csv
             *.csv
             *.json
             logs/**
+
           if-no-files-found: warn
+
           retention-days: 14
