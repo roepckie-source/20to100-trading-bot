@@ -2,14 +2,11 @@ name: 20to100 Backtest
 
 on:
   workflow_dispatch:
-
   push:
     branches:
       - main
-
   schedule:
     - cron: "0 5 * * *"
-
 
 jobs:
 
@@ -22,7 +19,7 @@ jobs:
     steps:
 
       # ==========================================================
-      # CHECKOUT
+      # 1. CHECKOUT
       # ==========================================================
 
       - name: Checkout repository
@@ -30,7 +27,7 @@ jobs:
 
 
       # ==========================================================
-      # PYTHON
+      # 2. PYTHON
       # ==========================================================
 
       - name: Setup Python
@@ -40,12 +37,11 @@ jobs:
 
 
       # ==========================================================
-      # DEPENDENCIES
+      # 3. DEPENDENCIES
       # ==========================================================
 
       - name: Install dependencies
         run: |
-
           python -m pip install --upgrade pip
 
           pip install \
@@ -56,137 +52,94 @@ jobs:
 
 
       # ==========================================================
-      # DIRECTORIES
+      # 4. DIRECTORIES
       # ==========================================================
 
-      - name: Create data directory
+      - name: Create directories
         run: |
-
           mkdir -p data
           mkdir -p logs
 
-          echo "=================================================="
-          echo "DIRECTORIES READY"
-          echo "=================================================="
-
-          ls -lah
-
 
       # ==========================================================
-      # DATA DOWNLOAD
+      # 5. DOWNLOAD HISTORICAL DATA
       #
-      # FAST MODE
+      # Binance api.binance.com is blocked on some
+      # GitHub Actions runner locations with HTTP 451.
       #
-      # 3 YEARS
+      # Therefore use data.binance.com for market data.
+      #
+      # 3 years
       # BTC + ETH + SOL
-      # 5 MINUTES
-      #
-      # PARALLEL DOWNLOAD
+      # 5 minute candles
       # ==========================================================
 
-      - name: Download BTC ETH SOL 5m data
-        timeout-minutes: 20
+      - name: Download historical data
         run: |
 
-          echo "=================================================="
-          echo "DOWNLOADING HISTORICAL DATA"
-          echo "=================================================="
-          echo "BTC + ETH + SOL"
-          echo "5m candles"
-          echo "3 years"
-          echo "PARALLEL DOWNLOAD"
-          echo "=================================================="
+          python <<'PY'
 
-          python - <<'PY'
-
+          import os
+          import time
           import requests
-          import pandas as pd
-
-          from pathlib import Path
           from concurrent.futures import ThreadPoolExecutor, as_completed
-          from datetime import datetime, timezone, timedelta
+
 
           # ======================================================
           # CONFIG
           # ======================================================
 
-          DATA_DIR = Path("data")
-
-          DATA_DIR.mkdir(
-              exist_ok=True
-          )
+          BASE_URL = "https://data.binance.com/api/v3/klines"
 
           SYMBOLS = {
-              "BTCUSDT": "BTC_USDT_5m.csv",
-              "ETHUSDT": "ETH_USDT_5m.csv",
-              "SOLUSDT": "SOL_USDT_5m.csv",
+              "BTCUSDT": "data/BTC_USDT_5m.csv",
+              "ETHUSDT": "data/ETH_USDT_5m.csv",
+              "SOLUSDT": "data/SOL_USDT_5m.csv",
           }
 
           INTERVAL = "5m"
 
+          # Binance max candles/request
           LIMIT = 1000
 
-          BINANCE_URL = (
-              "https://api.binance.com/api/v3/klines"
-          )
+          # 3 years
+          DAYS = 365 * 3
 
-          # 3 YEARS
-          now = datetime.now(
-              timezone.utc
-          )
-
-          start_date = now - timedelta(
-              days=3 * 365
-          )
-
-          START_MS = int(
-              start_date.timestamp() * 1000
-          )
-
-          END_MS = int(
-              now.timestamp() * 1000
-          )
-
-          # Binance columns
-          COLUMNS = [
-              "timestamp",
-              "open",
-              "high",
-              "low",
-              "close",
-              "volume",
-              "close_time",
-              "quote_volume",
-              "trades",
-              "taker_buy_base",
-              "taker_buy_quote",
-              "ignore",
-          ]
+          END_MS = int(time.time() * 1000)
+          START_MS = END_MS - DAYS * 24 * 60 * 60 * 1000
 
 
           # ======================================================
-          # DOWNLOAD ONE SYMBOL
+          # SESSION
           # ======================================================
 
-          def download_symbol(
-              symbol,
-              filename
-          ):
+          session = requests.Session()
 
-              output = DATA_DIR / filename
+          session.headers.update({
+              "User-Agent": "Mozilla/5.0"
+          })
+
+
+          # ======================================================
+          # DOWNLOAD FUNCTION
+          # ======================================================
+
+          def download_symbol(symbol, output_file):
 
               print()
               print("=" * 60)
               print(f"START {symbol}")
               print("=" * 60)
 
-              rows = []
+              all_rows = []
 
               current_start = START_MS
 
               request_count = 0
 
               while current_start < END_MS:
+
+                  request_count += 1
 
                   params = {
                       "symbol": symbol,
@@ -202,340 +155,209 @@ jobs:
 
                       try:
 
-                          response = requests.get(
-                              BINANCE_URL,
+                          response = session.get(
+                              BASE_URL,
                               params=params,
                               timeout=30
                           )
 
                           # --------------------------------------
-                          # SUCCESS
+                          # HTTP 451
                           # --------------------------------------
 
-                          if response.status_code == 200:
-
-                              data = response.json()
-
-                              if not data:
-
-                                  current_start = END_MS
-
-                                  success = True
-
-                                  break
-
-                              rows.extend(
-                                  data
-                              )
-
-                              request_count += 1
-
-                              last_timestamp = data[-1][0]
-
-                              next_start = (
-                                  last_timestamp
-                                  + 5 * 60 * 1000
-                              )
-
-                              if next_start <= current_start:
-
-                                  raise RuntimeError(
-                                      "Timestamp did not advance."
-                                  )
-
-                              current_start = next_start
-
-                              success = True
-
-                              if request_count % 25 == 0:
-
-                                  print(
-                                      f"{symbol}: "
-                                      f"{len(rows):,} candles"
-                                  )
-
-                              break
-
-
-                          # --------------------------------------
-                          # RATE LIMIT
-                          # --------------------------------------
-
-                          elif response.status_code == 429:
-
-                              wait_seconds = min(
-                                  60,
-                                  5 * (attempt + 1)
-                              )
-
-                              print(
-                                  f"{symbol}: "
-                                  f"RATE LIMIT -> "
-                                  f"waiting "
-                                  f"{wait_seconds}s"
-                              )
-
-                              import time
-
-                              time.sleep(
-                                  wait_seconds
-                              )
-
-
-                          # --------------------------------------
-                          # SERVER ERROR
-                          # --------------------------------------
-
-                          elif response.status_code >= 500:
-
-                              wait_seconds = min(
-                                  30,
-                                  2 ** attempt
-                              )
-
-                              print(
-                                  f"{symbol}: "
-                                  f"SERVER ERROR "
-                                  f"{response.status_code} "
-                                  f"-> retry "
-                                  f"{wait_seconds}s"
-                              )
-
-                              import time
-
-                              time.sleep(
-                                  wait_seconds
-                              )
-
-
-                          # --------------------------------------
-                          # OTHER ERROR
-                          # --------------------------------------
-
-                          else:
+                          if response.status_code == 451:
 
                               raise RuntimeError(
-                                  f"HTTP "
-                                  f"{response.status_code}: "
-                                  f"{response.text[:300]}"
+                                  "HTTP 451 - Binance restricted "
+                                  "this GitHub Actions runner."
                               )
 
+                          response.raise_for_status()
 
-                      except Exception as exc:
+                          rows = response.json()
 
-                          if attempt == 7:
+                          if not rows:
+                              success = True
+                              break
+
+                          all_rows.extend(rows)
+
+                          last_open_time = rows[-1][0]
+
+                          next_start = last_open_time + 1
+
+                          if next_start <= current_start:
+                              raise RuntimeError(
+                                  "Pagination did not advance."
+                              )
+
+                          current_start = next_start
+
+                          success = True
+
+                          # Small delay to avoid aggressive requests
+                          time.sleep(0.05)
+
+                          break
+
+                      except Exception as e:
+
+                          print(
+                              f"{symbol}: ERROR: {e} "
+                              f"-> retry {attempt + 1}"
+                          )
+
+                          # Don't waste 8 retries on HTTP 451
+                          if "451" in str(e):
+
+                              print()
+                              print(
+                                  f"{symbol}: HTTP 451 detected."
+                              )
+
+                              print(
+                                  "The GitHub Actions runner is "
+                                  "blocked by Binance."
+                              )
 
                               raise
 
-                          wait_seconds = min(
-                              30,
-                              2 ** attempt
+                          wait = min(
+                              2 ** attempt,
+                              30
                           )
 
-                          print(
-                              f"{symbol}: "
-                              f"ERROR: {exc} "
-                              f"-> retry "
-                              f"{wait_seconds}s"
-                          )
-
-                          import time
-
-                          time.sleep(
-                              wait_seconds
-                          )
+                          time.sleep(wait)
 
 
                   if not success:
 
                       raise RuntimeError(
+                          f"{symbol}: request failed permanently."
+                      )
+
+                  if request_count % 100 == 0:
+
+                      print(
                           f"{symbol}: "
-                          f"Download failed."
+                          f"{len(all_rows):,} candles downloaded"
                       )
 
 
               # ==================================================
-              # DATAFRAME
-              # ==================================================
-
-              df = pd.DataFrame(
-                  rows,
-                  columns=COLUMNS
-              )
-
-              if df.empty:
-
-                  raise RuntimeError(
-                      f"{symbol}: NO DATA"
-                  )
-
-
-              # ==================================================
-              # ONLY REQUIRED COLUMNS
-              # ==================================================
-
-              df = df[
-                  [
-                      "timestamp",
-                      "open",
-                      "high",
-                      "low",
-                      "close",
-                      "volume",
-                  ]
-              ].copy()
-
-
-              # ==================================================
-              # TIMESTAMP
-              # ==================================================
-
-              df["timestamp"] = pd.to_datetime(
-                  df["timestamp"],
-                  unit="ms",
-                  utc=True
-              )
-
-
-              # ==================================================
-              # NUMERIC
-              # ==================================================
-
-              numeric_columns = [
-                  "open",
-                  "high",
-                  "low",
-                  "close",
-                  "volume",
-              ]
-
-              for column in numeric_columns:
-
-                  df[column] = pd.to_numeric(
-                      df[column],
-                      errors="coerce"
-                  )
-
-
-              # ==================================================
-              # CLEAN
-              # ==================================================
-
-              df = df.dropna()
-
-              df = df.drop_duplicates(
-                  subset=["timestamp"]
-              )
-
-              df = df.sort_values(
-                  "timestamp"
-              )
-
-
-              # ==================================================
-              # SAVE
-              # ==================================================
-
-              df.to_csv(
-                  output,
-                  index=False
-              )
-
-
-              # ==================================================
-              # REPORT
+              # WRITE CSV
               # ==================================================
 
               print()
-              print("=" * 60)
-              print(f"{symbol} COMPLETE")
-              print("=" * 60)
-
               print(
-                  f"Rows: "
-                  f"{len(df):,}"
+                  f"{symbol}: "
+                  f"TOTAL {len(all_rows):,} candles"
               )
 
-              print(
-                  f"File: "
-                  f"{output}"
-              )
-
-              print(
-                  f"From: "
-                  f"{df['timestamp'].iloc[0]}"
-              )
-
-              print(
-                  f"To: "
-                  f"{df['timestamp'].iloc[-1]}"
-              )
-
-              print(
-                  f"Size: "
-                  f"{output.stat().st_size / 1024 / 1024:.1f} MB"
-              )
-
-
-              # ==================================================
-              # SAFETY CHECK
-              #
-              # 3 years of 5m data should be around 315k rows.
-              # ==================================================
-
-              if len(df) < 250_000:
+              if not all_rows:
 
                   raise RuntimeError(
-                      f"{symbol}: "
-                      f"only {len(df):,} rows. "
-                      f"Expected at least 250,000."
+                      f"{symbol}: no data received."
                   )
 
 
-              return (
-                  symbol,
-                  len(df)
+              # Binance kline format:
+              #
+              # 0 open time
+              # 1 open
+              # 2 high
+              # 3 low
+              # 4 close
+              # 5 volume
+              # 6 close time
+              # 7 quote volume
+              # 8 number trades
+              # 9 taker buy base volume
+              # 10 taker buy quote volume
+              # 11 ignore
+
+
+              with open(output_file, "w") as f:
+
+                  f.write(
+                      "timestamp,open,high,low,close,volume\n"
+                  )
+
+                  for row in all_rows:
+
+                      timestamp = row[0]
+
+                      open_price = row[1]
+                      high_price = row[2]
+                      low_price = row[3]
+                      close_price = row[4]
+                      volume = row[5]
+
+                      f.write(
+                          f"{timestamp},"
+                          f"{open_price},"
+                          f"{high_price},"
+                          f"{low_price},"
+                          f"{close_price},"
+                          f"{volume}\n"
+                      )
+
+
+              print(
+                  f"{symbol}: SAVED -> {output_file}"
               )
+
+              return symbol, len(all_rows)
 
 
           # ======================================================
           # PARALLEL DOWNLOAD
           # ======================================================
 
-          results = []
+          print()
+          print("=" * 60)
+          print("DOWNLOADING HISTORICAL DATA")
+          print("BTC + ETH + SOL")
+          print("5m candles")
+          print("3 years")
+          print("PARALLEL DOWNLOAD")
+          print("=" * 60)
 
+
+          results = {}
 
           with ThreadPoolExecutor(
               max_workers=3
           ) as executor:
 
-              futures = [
-
+              futures = {
                   executor.submit(
                       download_symbol,
                       symbol,
-                      filename
-                  )
-
-                  for symbol, filename
+                      output_file
+                  ): symbol
+                  for symbol, output_file
                   in SYMBOLS.items()
-              ]
+              }
 
+              for future in as_completed(futures):
 
-              for future in as_completed(
-                  futures
-              ):
+                  symbol = futures[future]
 
-                  symbol, rows_count = (
-                      future.result()
-                  )
+                  try:
 
-                  results.append(
-                      (
-                          symbol,
-                          rows_count
+                      name, count = future.result()
+
+                      results[name] = count
+
+                  except Exception as e:
+
+                      print()
+                      print(
+                          f"FAILED {symbol}: {e}"
                       )
-                  )
+
+                      raise
 
 
           # ======================================================
@@ -547,13 +369,11 @@ jobs:
           print("DOWNLOAD COMPLETE")
           print("=" * 60)
 
-          for symbol, rows_count in sorted(
-              results
-          ):
+          for symbol, count in results.items():
 
               print(
                   f"{symbol}: "
-                  f"{rows_count:,} rows"
+                  f"{count:,} candles"
               )
 
           print("=" * 60)
@@ -562,219 +382,138 @@ jobs:
 
 
       # ==========================================================
-      # VERIFY DATA
+      # 6. VERIFY DATA
       # ==========================================================
 
       - name: Verify historical data
         run: |
 
           echo "=================================================="
-          echo "VERIFY HISTORICAL DATA"
+          echo "VERIFYING DATA"
           echo "=================================================="
 
-          python - <<'PY'
+          for file in \
+            data/BTC_USDT_5m.csv \
+            data/ETH_USDT_5m.csv \
+            data/SOL_USDT_5m.csv
+          do
 
-          from pathlib import Path
-          import pandas as pd
+            echo
+            echo "FILE: $file"
 
-          files = [
+            if [ ! -f "$file" ]; then
+              echo "ERROR: file missing"
+              exit 1
+            fi
 
-              Path(
-                  "data/BTC_USDT_5m.csv"
-              ),
+            rows=$(wc -l < "$file")
 
-              Path(
-                  "data/ETH_USDT_5m.csv"
-              ),
+            echo "Rows: $rows"
 
-              Path(
-                  "data/SOL_USDT_5m.csv"
-              ),
+            # 3 years of 5m data is roughly 315k candles.
+            # Require at least 250k.
 
-          ]
+            if [ "$rows" -lt 250000 ]; then
 
-          minimum = 250_000
+              echo
+              echo "ERROR: insufficient historical data"
+              echo "Required: >= 250000 rows"
+              echo "Found: $rows"
 
-          failed = False
+              exit 1
 
+            fi
 
-          for path in files:
+          done
 
-              print()
-              print(
-                  f"Checking: {path}"
-              )
-
-              if not path.exists():
-
-                  print(
-                      f"ERROR: "
-                      f"{path} does not exist"
-                  )
-
-                  failed = True
-
-                  continue
-
-
-              df = pd.read_csv(
-                  path
-              )
-
-              rows = len(df)
-
-              print(
-                  f"Rows: "
-                  f"{rows:,}"
-              )
-
-              print(
-                  f"Columns: "
-                  f"{list(df.columns)}"
-              )
-
-
-              if rows < minimum:
-
-                  print(
-                      f"ERROR: "
-                      f"only {rows:,} rows "
-                      f"(minimum "
-                      f"{minimum:,})"
-                  )
-
-                  failed = True
-
-              else:
-
-                  print(
-                      "OK"
-                  )
-
-
-          if failed:
-
-              raise SystemExit(
-                  "Historical data verification failed."
-              )
-
-
-          print()
-          print(
-              "ALL DATA FILES VALID"
-          )
-
-          PY
+          echo
+          echo "DATA VERIFICATION PASSED"
 
 
       # ==========================================================
-      # V6
+      # 7. SHOW DATA REPORT
       # ==========================================================
 
-      - name: Run V6 Backtest
+      - name: Final data report
+        run: |
+
+          echo "=================================================="
+          echo "FINAL DATA REPORT"
+          echo "=================================================="
+
+          for file in \
+            data/BTC_USDT_5m.csv \
+            data/ETH_USDT_5m.csv \
+            data/SOL_USDT_5m.csv
+          do
+
+            echo
+            echo "----------------------------------------------"
+            echo "$file"
+            echo "----------------------------------------------"
+
+            wc -l "$file"
+
+            echo "First rows:"
+            head -n 3 "$file"
+
+            echo
+            echo "Last rows:"
+            tail -n 3 "$file"
+
+          done
+
+
+      # ==========================================================
+      # 8. V6 BACKTEST
+      # ==========================================================
+
+      - name: Run V6 backtest
         if: always()
-        continue-on-error: true
         run: |
 
           echo "=================================================="
           echo "RUNNING V6 BACKTEST"
           echo "=================================================="
 
-          if [ -f v6_extended_multi_asset_backtest.py ]; then
-
-            python v6_extended_multi_asset_backtest.py
-
-          elif [ -f v6_backtest.py ]; then
-
-            python v6_backtest.py
-
-          else
-
-            echo "No V6 backtest script found."
-            echo "V6 skipped."
-
-          fi
+          python v6_backtest.py
 
 
       # ==========================================================
-      # SHOW V6
+      # 9. V6-C STRESS TEST
       # ==========================================================
 
-      - name: Show V6 Results
+      - name: Run V6-C stress test
         if: always()
-        run: |
-
-          echo "=================================================="
-          echo "V6 RESULTS"
-          echo "=================================================="
-
-          find logs \
-            -maxdepth 1 \
-            -type f \
-            -iname "*v6*" \
-            -print \
-            2>/dev/null \
-            || true
-
-
-      # ==========================================================
-      # V6-C STRESS TEST
-      # ==========================================================
-
-      - name: Run V6-C Stress Test
-        if: always()
-        continue-on-error: true
         run: |
 
           echo "=================================================="
           echo "RUNNING V6-C STRESS TEST"
           echo "=================================================="
 
-          if [ -f v6_c_stress_test.py ]; then
-
-            python v6_c_stress_test.py
-
-          else
-
-            echo "v6_c_stress_test.py not found."
-            echo "Stress test skipped."
-
-          fi
+          python v6_c_stress.py
 
 
       # ==========================================================
-      # V6-C MONTE CARLO
+      # 10. V6-C MONTE CARLO
       # ==========================================================
 
       - name: Run V6-C Monte Carlo
         if: always()
-        continue-on-error: true
         run: |
 
           echo "=================================================="
           echo "RUNNING V6-C MONTE CARLO"
           echo "=================================================="
 
-          if [ -f v6_c_monte_carlo.py ]; then
-
-            python v6_c_monte_carlo.py
-
-          else
-
-            echo "v6_c_monte_carlo.py not found."
-            echo "Monte Carlo skipped."
-
-          fi
+          python v6_c_monte_carlo.py
 
 
       # ==========================================================
-      # V7-S0
-      #
-      # IMPORTANT:
-      # continue-on-error means S1 will run even if S0 fails.
+      # 11. V7-S0 SURVIVAL
       # ==========================================================
 
-      - name: Run V7-S0 Survival Backtest
+      - name: Run V7-S0 survival backtest
         if: always()
         continue-on-error: true
         run: |
@@ -783,245 +522,61 @@ jobs:
           echo "RUNNING V7-S0 SURVIVAL BACKTEST"
           echo "=================================================="
 
-          echo
-          echo "SURVIVAL FIRST"
-          echo "GROW SECOND"
-          echo
-
-          if [ -f v7_survival_backtest.py ]; then
-
-            python v7_survival_backtest.py
-
-          else
-
-            echo "ERROR:"
-            echo "v7_survival_backtest.py NOT FOUND"
-
-            exit 1
-
-          fi
+          python v7_survival_backtest.py
 
 
       # ==========================================================
-      # SHOW V7-S0
+      # 12. V7-S1 BREAKOUT FILTER
       # ==========================================================
 
-      - name: Show V7-S0 Results
-        if: always()
-        run: |
-
-          echo "=================================================="
-          echo "V7-S0 RESULT FILES"
-          echo "=================================================="
-
-
-          if [ -f v7_survival_results.csv ]; then
-
-            echo
-            echo "v7_survival_results.csv"
-            echo "--------------------------------------------------"
-
-            head -100 \
-              v7_survival_results.csv
-
-          else
-
-            echo
-            echo "v7_survival_results.csv NOT FOUND"
-
-          fi
-
-
-          if [ -f v7_survival_summary.csv ]; then
-
-            echo
-            echo "v7_survival_summary.csv"
-            echo "--------------------------------------------------"
-
-            cat \
-              v7_survival_summary.csv
-
-          else
-
-            echo
-            echo "v7_survival_summary.csv NOT FOUND"
-
-          fi
-
-
-      # ==========================================================
-      # V7-S1
-      #
-      # IMPORTANT:
-      # Runs independently from S0.
-      # ==========================================================
-
-      - name: Run V7-S1 Survival Backtest
+      - name: Run V7-S1 backtest
         if: always()
         continue-on-error: true
         run: |
 
           echo "=================================================="
-          echo "RUNNING V7-S1 SURVIVAL BACKTEST"
+          echo "RUNNING V7-S1 BACKTEST"
           echo "=================================================="
 
-          echo
-          echo "V6-C ENTRY"
-          echo "+ 0.10 ATR BREAKOUT FILTER"
-          echo
-          echo "SURVIVAL FIRST"
-          echo "GROW SECOND"
-          echo
-
-          if [ -f v7_s1_backtest.py ]; then
-
-            python v7_s1_backtest.py
-
-          else
-
-            echo "ERROR:"
-            echo "v7_s1_backtest.py NOT FOUND"
-
-            exit 1
-
-          fi
+          python v7_s1_backtest.py
 
 
       # ==========================================================
-      # SHOW V7-S1
+      # 13. LIST RESULTS
       # ==========================================================
 
-      - name: Show V7-S1 Results
+      - name: Show results
         if: always()
         run: |
 
           echo "=================================================="
-          echo "V7-S1 RESULT FILES"
+          echo "RESULT FILES"
           echo "=================================================="
-
-
-          if [ -f v7_s1_results.csv ]; then
-
-            echo
-            echo "v7_s1_results.csv"
-            echo "--------------------------------------------------"
-
-            head -100 \
-              v7_s1_results.csv
-
-          else
-
-            echo
-            echo "v7_s1_results.csv NOT FOUND"
-
-          fi
-
-
-          if [ -f v7_s1_summary.csv ]; then
-
-            echo
-            echo "v7_s1_summary.csv"
-            echo "--------------------------------------------------"
-
-            cat \
-              v7_s1_summary.csv
-
-          else
-
-            echo
-            echo "v7_s1_summary.csv NOT FOUND"
-
-          fi
-
-
-      # ==========================================================
-      # FINAL DATA REPORT
-      # ==========================================================
-
-      - name: Final data report
-        if: always()
-        run: |
-
-          echo "=================================================="
-          echo "FINAL DATA REPORT"
-          echo "=================================================="
-
-
-          for file in \
-            data/BTC_USDT_5m.csv \
-            data/ETH_USDT_5m.csv \
-            data/SOL_USDT_5m.csv
-
-          do
-
-            echo
-            echo "--------------------------------------------------"
-            echo "$file"
-            echo "--------------------------------------------------"
-
-
-            if [ -f "$file" ]; then
-
-              echo "Lines:"
-              wc -l "$file"
-
-              echo
-              echo "Size:"
-              ls -lh "$file"
-
-            else
-
-              echo "MISSING: $file"
-
-            fi
-
-          done
-
-
-      # ==========================================================
-      # SHOW LOG DIRECTORY
-      # ==========================================================
-
-      - name: Show log directory
-        if: always()
-        run: |
-
-          echo "=================================================="
-          echo "LOG DIRECTORY"
-          echo "=================================================="
-
-          ls -lah logs \
-            || true
-
 
           echo
-          echo "ROOT FILES"
-          echo "=================================================="
+          echo "CSV files:"
+          find . -type f \
+            \( -name "*.csv" -o -name "*.json" \) \
+            -print | sort
 
-          ls -lah \
-            || true
+          echo
+          echo "Logs:"
+          find logs -type f -print 2>/dev/null || true
 
 
       # ==========================================================
-      # UPLOAD ALL RESULTS
+      # 14. UPLOAD ARTIFACTS
       # ==========================================================
 
-      - name: Upload V7 results
+      - name: Upload backtest results
         if: always()
         uses: actions/upload-artifact@v4
-
         with:
-
-          name: v7-backtest-results
-
+          name: backtest-results
           path: |
-
-            v7_survival_results.csv
-            v7_survival_summary.csv
-
-            v7_s1_results.csv
-            v7_s1_summary.csv
-
-            logs/
-
+            data/*.csv
+            *.csv
+            *.json
+            logs/**
           if-no-files-found: warn
+          retention-days: 14
