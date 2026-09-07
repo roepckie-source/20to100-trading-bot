@@ -71,22 +71,19 @@ jobs:
       #
       # Binance Public Data
       #
-      # Completed months:
-      #   monthly ZIP files
+      # IMPORTANT:
       #
-      # Current month:
-      #   daily ZIP files
+      # We deliberately use DAILY archives only.
       #
-      # Assets:
-      #   BTCUSDT
-      #   ETHUSDT
-      #   SOLUSDT
+      # No monthly archive dependency.
       #
-      # Interval:
-      #   5m
+      # BTCUSDT
+      # ETHUSDT
+      # SOLUSDT
       #
-      # History:
-      #   3 years
+      # 5 minute candles
+      #
+      # 3 years
       #
       # ==========================================================
 
@@ -101,6 +98,7 @@ jobs:
           import pandas as pd
 
           from datetime import date, timedelta
+          from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
           # ======================================================
@@ -128,6 +126,8 @@ jobs:
 
           YEARS_BACK = 3
 
+          MAX_WORKERS = 12
+
 
           # ======================================================
           # DATE RANGE
@@ -136,9 +136,11 @@ jobs:
           today = date.today()
 
           start_date = date(
+
               today.year - YEARS_BACK,
               today.month,
               today.day
+
           )
 
           end_date = today - timedelta(days=1)
@@ -148,29 +150,36 @@ jobs:
           print("=" * 70)
           print("BINANCE PUBLIC DATA DOWNLOAD")
           print("=" * 70)
-          print()
-          print(f"Start date : {start_date}")
-          print(f"End date   : {end_date}")
-          print(f"Interval   : {INTERVAL}")
-          print("Assets     : BTC + ETH + SOL")
-          print("History    : 3 years")
+
+          print(
+              f"Start date : {start_date}"
+          )
+
+          print(
+              f"End date   : {end_date}"
+          )
+
+          print(
+              f"Interval   : {INTERVAL}"
+          )
+
+          print(
+              "Assets     : BTC + ETH + SOL"
+          )
+
+          print(
+              "Mode       : DAILY ARCHIVES ONLY"
+          )
+
+          print(
+              f"Workers    : {MAX_WORKERS}"
+          )
+
           print("=" * 70)
 
 
           # ======================================================
-          # HTTP SESSION
-          # ======================================================
-
-          session = requests.Session()
-
-          session.headers.update({
-              "User-Agent":
-                  "20to100-trading-bot/1.0"
-          })
-
-
-          # ======================================================
-          # BINANCE COLUMN NAMES
+          # BINANCE COLUMNS
           # ======================================================
 
           COLUMNS = [
@@ -192,342 +201,364 @@ jobs:
 
 
           # ======================================================
-          # MONTH ITERATOR
+          # CREATE DATE LIST
           # ======================================================
 
-          def month_iterator(start, end):
+          def date_range(start, end):
 
-              current = date(
-                  start.year,
-                  start.month,
-                  1
-              )
+              current = start
 
-              end_month = date(
-                  end.year,
-                  end.month,
-                  1
-              )
-
-              while current <= end_month:
+              while current <= end:
 
                   yield current
 
-                  if current.month == 12:
+                  current += timedelta(days=1)
 
-                      current = date(
-                          current.year + 1,
-                          1,
-                          1
-                      )
 
-                  else:
+          DAYS = list(
+              date_range(
+                  start_date,
+                  end_date
+              )
+          )
 
-                      current = date(
-                          current.year,
-                          current.month + 1,
-                          1
-                      )
+
+          print()
+          print(
+              f"Days to download: {len(DAYS):,}"
+          )
+
+          print(
+              f"Total files: "
+              f"{len(DAYS) * len(SYMBOLS):,}"
+          )
 
 
           # ======================================================
-          # DOWNLOAD ZIP
+          # DOWNLOAD ONE DAILY FILE
           # ======================================================
 
-          def download_zip(url):
+          def download_day(
+              symbol,
+              day
+          ):
 
-              print()
-              print(f"DOWNLOAD: {url}")
+              filename = (
 
-              response = session.get(
-                  url,
-                  timeout=60
+                  f"{symbol}-"
+                  f"{INTERVAL}-"
+                  f"{day.year}-"
+                  f"{day.month:02d}-"
+                  f"{day.day:02d}.zip"
+
               )
 
-              if response.status_code == 404:
 
-                  return None
+              url = (
 
-              response.raise_for_status()
+                  f"{BASE_URL}/daily/klines/"
+                  f"{symbol}/{INTERVAL}/"
+                  f"{filename}"
 
-              return response.content
+              )
 
 
-          # ======================================================
-          # READ ZIP
-          # ======================================================
+              session = requests.Session()
 
-          def read_zip(content):
+              session.headers.update({
 
-              if content is None:
-                  return None
+                  "User-Agent":
+                      "20to100-trading-bot/1.0"
 
-              with zipfile.ZipFile(
-                  io.BytesIO(content)
-              ) as z:
+              })
 
-                  csv_files = [
 
-                      name
+              for attempt in range(5):
 
-                      for name in z.namelist()
+                  try:
 
-                      if name.lower().endswith(".csv")
+                      response = session.get(
 
-                  ]
+                          url,
+                          timeout=60
 
-                  if not csv_files:
-
-                      raise RuntimeError(
-                          "ZIP enthält keine CSV-Datei."
                       )
 
-                  csv_name = csv_files[0]
 
-                  with z.open(csv_name) as f:
+                      if response.status_code == 404:
 
-                      df = pd.read_csv(
-                          f,
-                          header=None
+                          return (
+                              symbol,
+                              day,
+                              None,
+                              "404"
+                          )
+
+
+                      response.raise_for_status()
+
+
+                      with zipfile.ZipFile(
+
+                          io.BytesIO(
+                              response.content
+                          )
+
+                      ) as z:
+
+                          csv_files = [
+
+                              name
+
+                              for name in z.namelist()
+
+                              if name.lower().endswith(
+                                  ".csv"
+                              )
+
+                          ]
+
+
+                          if not csv_files:
+
+                              raise RuntimeError(
+                                  "ZIP contains no CSV"
+                              )
+
+
+                          csv_name = csv_files[0]
+
+
+                          with z.open(csv_name) as f:
+
+                              df = pd.read_csv(
+
+                                  f,
+                                  header=None
+
+                              )
+
+
+                      if df.empty:
+
+                          return (
+                              symbol,
+                              day,
+                              None,
+                              "EMPTY"
+                          )
+
+
+                      if len(df.columns) != len(COLUMNS):
+
+                          raise RuntimeError(
+
+                              f"Unexpected columns: "
+                              f"{len(df.columns)}"
+
+                          )
+
+
+                      df.columns = COLUMNS
+
+
+                      return (
+                          symbol,
+                          day,
+                          df,
+                          "OK"
                       )
 
-              if df.empty:
-                  return None
 
-              # Binance files normally contain 12 columns.
-              # Be defensive in case of unexpected extra columns.
+                  except Exception as e:
 
-              if len(df.columns) != len(COLUMNS):
+                      if attempt == 4:
 
-                  raise RuntimeError(
-                      "Unerwartete Anzahl Spalten: "
-                      f"{len(df.columns)}"
-                  )
+                          return (
 
-              df.columns = COLUMNS
+                              symbol,
+                              day,
+                              None,
+                              f"ERROR: {e}"
 
-              return df
+                          )
+
+
+                      import time
+
+                      time.sleep(
+                          2 ** attempt
+                      )
+
+
+              return (
+                  symbol,
+                  day,
+                  None,
+                  "FAILED"
+              )
 
 
           # ======================================================
-          # DOWNLOAD SYMBOL
+          # PROCESS ONE SYMBOL
           # ======================================================
 
-          def download_symbol(
+          def process_symbol(
               symbol,
               output_file
           ):
 
               print()
               print("=" * 70)
-              print(f"PROCESSING {symbol}")
+              print(
+                  f"PROCESSING {symbol}"
+              )
               print("=" * 70)
 
 
               frames = []
 
-
-              monthly_count = 0
-              daily_count = 0
-
-
-              # ==================================================
-              # COMPLETED MONTHS
-              #
-              # Example:
-              #
-              # Today = 2026-09-07
-              #
-              # August 2026 is completed.
-              #
-              # Therefore:
-              #
-              # 2026-08 -> MONTHLY
-              # 2026-09 -> DAILY
-              #
-              # ==================================================
-
-              current_month = date(
-                  today.year,
-                  today.month,
-                  1
-              )
+              successful = 0
+              missing = 0
+              failed = 0
 
 
-              previous_day = (
-                  current_month
-                  - timedelta(days=1)
-              )
-
-
-              last_completed_month = date(
-                  previous_day.year,
-                  previous_day.month,
-                  1
-              )
+              futures = {}
 
 
               # ==================================================
-              # MONTHLY FILES
+              # PARALLEL DAILY DOWNLOAD
               # ==================================================
 
-              for month in month_iterator(
-                  start_date,
-                  last_completed_month
-              ):
+              with ThreadPoolExecutor(
 
-                  filename = (
+                  max_workers=MAX_WORKERS
 
-                      f"{symbol}-"
-                      f"{INTERVAL}-"
-                      f"{month.year}-"
-                      f"{month.month:02d}.zip"
+              ) as executor:
 
-                  )
+                  for day in DAYS:
 
+                      future = executor.submit(
 
-                  url = (
+                          download_day,
+                          symbol,
+                          day
 
-                      f"{BASE_URL}/monthly/klines/"
-                      f"{symbol}/{INTERVAL}/"
-                      f"{filename}"
+                      )
 
-                  )
+                      futures[future] = day
 
 
-                  content = download_zip(url)
+                  completed = 0
 
 
-                  if content is None:
+                  for future in as_completed(
+                      futures
+                  ):
 
-                      raise RuntimeError(
+                      completed += 1
 
-                          "Monatsdatei fehlt:\n"
-                          f"{url}"
+                      day = futures[future]
+
+
+                      symbol_result, day_result, df, status = (
+
+                          future.result()
 
                       )
 
 
-                  df = read_zip(content)
+                      if status == "OK":
+
+                          frames.append(df)
+
+                          successful += 1
 
 
-                  if df is None:
+                      elif status == "404":
 
-                      raise RuntimeError(
-
-                          f"Leere Monatsdatei:\n{url}"
-
-                      )
+                          missing += 1
 
 
-                  frames.append(df)
+                          print(
 
-                  monthly_count += 1
+                              f"{symbol}: "
+                              f"404 {day}"
+
+                          )
 
 
-                  print(
+                      else:
 
-                      f"{symbol}: "
-                      f"MONTH "
-                      f"{month.year}-"
-                      f"{month.month:02d} "
-                      f"-> "
-                      f"{len(df):,} rows"
+                          failed += 1
 
-                  )
+
+                          print(
+
+                              f"{symbol}: "
+                              f"FAILED {day}: "
+                              f"{status}"
+
+                          )
+
+
+                      if (
+
+                          completed % 100 == 0
+
+                          or completed == len(DAYS)
+
+                      ):
+
+                          print(
+
+                              f"{symbol}: "
+                              f"{completed:,}/"
+                              f"{len(DAYS):,} "
+                              f"| OK={successful:,} "
+                              f"| 404={missing:,} "
+                              f"| FAILED={failed:,}"
+
+                          )
 
 
               # ==================================================
-              # CURRENT MONTH = DAILY FILES
-              #
-              # This fixes the August/September problem.
+              # VALIDATION
               # ==================================================
 
-              current_day = date(
-                  today.year,
-                  today.month,
-                  1
+              print()
+
+              print(
+
+                  f"{symbol}: "
+                  f"successful daily files = "
+                  f"{successful:,}"
+
               )
 
+              print(
 
-              while current_day <= end_date:
+                  f"{symbol}: "
+                  f"missing daily files = "
+                  f"{missing:,}"
 
-                  # Don't download days before our start date.
+              )
 
-                  if current_day < start_date:
+              print(
 
-                      current_day += timedelta(days=1)
+                  f"{symbol}: "
+                  f"failed daily files = "
+                  f"{failed:,}"
 
-                      continue
+              )
 
-
-                  filename = (
-
-                      f"{symbol}-"
-                      f"{INTERVAL}-"
-                      f"{current_day.year}-"
-                      f"{current_day.month:02d}-"
-                      f"{current_day.day:02d}.zip"
-
-                  )
-
-
-                  url = (
-
-                      f"{BASE_URL}/daily/klines/"
-                      f"{symbol}/{INTERVAL}/"
-                      f"{filename}"
-
-                  )
-
-
-                  content = download_zip(url)
-
-
-                  if content is None:
-
-                      raise RuntimeError(
-
-                          "Tagesdatei fehlt:\n"
-                          f"{url}"
-
-                      )
-
-
-                  df = read_zip(content)
-
-
-                  if df is not None:
-
-                      frames.append(df)
-
-                      daily_count += 1
-
-
-                      print(
-
-                          f"{symbol}: "
-                          f"DAY "
-                          f"{current_day} "
-                          f"-> "
-                          f"{len(df):,} rows"
-
-                      )
-
-
-                  current_day += timedelta(days=1)
-
-
-              # ==================================================
-              # CHECK
-              # ==================================================
 
               if not frames:
 
                   raise RuntimeError(
 
                       f"{symbol}: "
-                      "keine Daten gefunden."
+                      "NO DATA DOWNLOADED"
 
                   )
 
@@ -537,41 +568,47 @@ jobs:
               # ==================================================
 
               df = pd.concat(
+
                   frames,
                   ignore_index=True
+
               )
 
 
-              print()
               print(
+
                   f"{symbol}: "
-                  f"RAW COMBINED ROWS = "
+                  f"RAW ROWS = "
                   f"{len(df):,}"
+
               )
 
 
               # ==================================================
               # TIMESTAMP
-              #
-              # Binance historical datasets can contain
-              # millisecond or microsecond timestamps.
-              #
-              # Normalize to milliseconds.
               # ==================================================
 
               df["open_time"] = pd.to_numeric(
+
                   df["open_time"],
                   errors="coerce"
+
               )
 
 
               df = df.dropna(
+
                   subset=["open_time"]
+
               )
 
 
+              # Microseconds -> milliseconds
+
               microseconds = (
+
                   df["open_time"] > 10**14
+
               )
 
 
@@ -622,34 +659,36 @@ jobs:
 
 
               # ==================================================
-              # REMOVE INVALID PRICE DATA
+              # REMOVE INVALID ROWS
               # ==================================================
 
               df = df.dropna(
 
                   subset=[
+
                       "open",
                       "high",
                       "low",
                       "close",
                       "volume",
+
                   ]
 
               )
 
 
               # ==================================================
-              # EXACT DATE RANGE
+              # EXACT DATE FILTER
               # ==================================================
 
               start_timestamp = int(
 
                   pd.Timestamp(
+
                       start_date,
                       tz="UTC"
-                  ).timestamp()
 
-                  * 1000
+                  ).timestamp() * 1000
 
               )
 
@@ -657,26 +696,30 @@ jobs:
               end_timestamp = int(
 
                   pd.Timestamp(
+
                       today,
                       tz="UTC"
-                  ).timestamp()
 
-                  * 1000
+                  ).timestamp() * 1000
 
               )
 
 
               df = df[
 
-                  (df["open_time"] >= start_timestamp)
+                  (df["open_time"]
+                   >= start_timestamp)
+
                   &
-                  (df["open_time"] < end_timestamp)
+
+                  (df["open_time"]
+                   < end_timestamp)
 
               ]
 
 
               # ==================================================
-              # REMOVE DUPLICATES
+              # DUPLICATES
               # ==================================================
 
               before = len(df)
@@ -690,7 +733,9 @@ jobs:
 
 
               duplicates_removed = (
+
                   before - len(df)
+
               )
 
 
@@ -699,7 +744,9 @@ jobs:
               # ==================================================
 
               df = df.sort_values(
+
                   "open_time"
+
               )
 
 
@@ -710,12 +757,14 @@ jobs:
               output = df[
 
                   [
+
                       "open_time",
                       "open",
                       "high",
                       "low",
                       "close",
                       "volume",
+
                   ]
 
               ].copy()
@@ -724,14 +773,17 @@ jobs:
               output = output.rename(
 
                   columns={
-                      "open_time": "timestamp"
+
+                      "open_time":
+                          "timestamp"
+
                   }
 
               )
 
 
               # ==================================================
-              # WRITE CSV
+              # SAVE
               # ==================================================
 
               output.to_csv(
@@ -743,29 +795,21 @@ jobs:
 
 
               # ==================================================
-              # FINAL REPORT
+              # REPORT
               # ==================================================
 
               print()
+
+              print("=" * 70)
+
               print(
-                  "=" * 70
+                  f"{symbol}: COMPLETE"
               )
 
               print(
                   f"{symbol}: "
-                  "DOWNLOAD COMPLETE"
-              )
-
-              print(
-                  f"{symbol}: "
-                  f"Monthly files = "
-                  f"{monthly_count}"
-              )
-
-              print(
-                  f"{symbol}: "
-                  f"Daily files = "
-                  f"{daily_count}"
+                  f"Rows = "
+                  f"{len(output):,}"
               )
 
               print(
@@ -776,60 +820,62 @@ jobs:
 
               print(
                   f"{symbol}: "
-                  f"FINAL ROWS = "
-                  f"{len(output):,}"
-              )
-
-              print(
-                  f"{symbol}: "
-                  f"OUTPUT = "
+                  f"Output = "
                   f"{output_file}"
               )
 
 
               if len(output) > 0:
 
-                  first_ts = pd.to_datetime(
+                  first = pd.to_datetime(
 
-                      output["timestamp"].min(),
+                      output[
+                          "timestamp"
+                      ].min(),
+
                       unit="ms",
+
                       utc=True
 
                   )
 
 
-                  last_ts = pd.to_datetime(
+                  last = pd.to_datetime(
 
-                      output["timestamp"].max(),
+                      output[
+                          "timestamp"
+                      ].max(),
+
                       unit="ms",
+
                       utc=True
 
                   )
 
 
                   print(
+
                       f"{symbol}: "
-                      f"START = "
-                      f"{first_ts}"
+                      f"Start = {first}"
+
                   )
 
                   print(
+
                       f"{symbol}: "
-                      f"END = "
-                      f"{last_ts}"
+                      f"End = {last}"
+
                   )
 
 
-              print(
-                  "=" * 70
-              )
+              print("=" * 70)
 
 
               return len(output)
 
 
           # ======================================================
-          # DOWNLOAD ALL SYMBOLS
+          # ALL SYMBOLS
           # ======================================================
 
           results = {}
@@ -837,7 +883,7 @@ jobs:
 
           for symbol, output_file in SYMBOLS.items():
 
-              results[symbol] = download_symbol(
+              results[symbol] = process_symbol(
 
                   symbol,
                   output_file
@@ -846,7 +892,7 @@ jobs:
 
 
           # ======================================================
-          # FINAL DOWNLOAD REPORT
+          # FINAL
           # ======================================================
 
           print()
@@ -873,11 +919,6 @@ jobs:
 
       # ==========================================================
       # 6. VERIFY DATA
-      #
-      # IMPORTANT:
-      #
-      # If this fails, no backtest starts.
-      #
       # ==========================================================
 
       - name: Verify historical data
@@ -896,28 +937,17 @@ jobs:
 
             echo
             echo "----------------------------------------------"
-            echo "FILE: $file"
+            echo "$file"
             echo "----------------------------------------------"
 
 
-            # ----------------------------------------------------
-            # FILE EXISTS
-            # ----------------------------------------------------
-
             if [ ! -f "$file" ]; then
 
-              echo
-              echo "ERROR: FILE DOES NOT EXIST"
-              echo "$file"
-
+              echo "ERROR: FILE MISSING"
               exit 1
 
             fi
 
-
-            # ----------------------------------------------------
-            # ROW COUNT
-            # ----------------------------------------------------
 
             rows=$(($(wc -l < "$file") - 1))
 
@@ -925,15 +955,11 @@ jobs:
             echo "Rows: $rows"
 
 
-            # ----------------------------------------------------
-            # MINIMUM DATA
-            # ----------------------------------------------------
-
             if [ "$rows" -lt 250000 ]; then
 
               echo
-              echo "ERROR: INSUFFICIENT DATA"
-              echo "Required: >= 250000 candles"
+              echo "ERROR: NOT ENOUGH DATA"
+              echo "Required: >= 250000"
               echo "Found: $rows"
 
               exit 1
@@ -941,38 +967,26 @@ jobs:
             fi
 
 
-            # ----------------------------------------------------
-            # HEADER
-            # ----------------------------------------------------
-
             echo
             echo "Header:"
 
             head -n 1 "$file"
 
 
-            # ----------------------------------------------------
-            # FIRST ROW
-            # ----------------------------------------------------
-
             echo
-            echo "First data row:"
+            echo "First row:"
 
             sed -n '2p' "$file"
 
 
-            # ----------------------------------------------------
-            # LAST ROW
-            # ----------------------------------------------------
-
             echo
-            echo "Last data row:"
+            echo "Last row:"
 
             tail -n 1 "$file"
 
 
             echo
-            echo "OK: $file"
+            echo "OK"
 
           done
 
@@ -1047,9 +1061,13 @@ jobs:
                   print(
                       "Start:",
                       pd.to_datetime(
+
                           df["timestamp"].min(),
+
                           unit="ms",
+
                           utc=True
+
                       )
                   )
 
@@ -1057,16 +1075,22 @@ jobs:
                   print(
                       "End:",
                       pd.to_datetime(
+
                           df["timestamp"].max(),
+
                           unit="ms",
+
                           utc=True
+
                       )
                   )
 
 
               print(
                   "Duplicate timestamps:",
-                  df["timestamp"].duplicated().sum()
+                  df[
+                      "timestamp"
+                  ].duplicated().sum()
               )
 
 
@@ -1109,7 +1133,7 @@ jobs:
 
 
       # ==========================================================
-      # 8. V6 BACKTEST
+      # 8. V6
       # ==========================================================
 
       - name: Run V6 backtest
@@ -1123,7 +1147,7 @@ jobs:
 
 
       # ==========================================================
-      # 9. V6-C STRESS TEST
+      # 9. V6-C STRESS
       # ==========================================================
 
       - name: Run V6-C stress test
@@ -1151,7 +1175,7 @@ jobs:
 
 
       # ==========================================================
-      # 11. V7-S0 SURVIVAL BACKTEST
+      # 11. V7-S0
       # ==========================================================
 
       - name: Run V7-S0 survival backtest
@@ -1165,7 +1189,7 @@ jobs:
 
 
       # ==========================================================
-      # 12. V7-S1 BACKTEST
+      # 12. V7-S1
       # ==========================================================
 
       - name: Run V7-S1 backtest
@@ -1180,8 +1204,6 @@ jobs:
 
       # ==========================================================
       # 13. SHOW RESULTS
-      #
-      # This is allowed to run even if a backtest fails.
       # ==========================================================
 
       - name: Show results
@@ -1191,10 +1213,6 @@ jobs:
           echo "=================================================="
           echo "RESULT FILES"
           echo "=================================================="
-
-
-          echo
-          echo "CSV / JSON files:"
 
 
           find . \
@@ -1209,7 +1227,7 @@ jobs:
 
 
           echo
-          echo "Logs:"
+          echo "LOG FILES"
 
 
           find logs \
@@ -1233,11 +1251,8 @@ jobs:
           path: |
 
             data/*.csv
-
             *.csv
-
             *.json
-
             logs/**
 
           if-no-files-found: warn
