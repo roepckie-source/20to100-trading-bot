@@ -1,1 +1,5 @@
-# V7-S0 Paper Trader
+from .trader import PaperTrader
+
+__all__ = [
+    "PaperTrader",
+]
