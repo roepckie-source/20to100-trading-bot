@@ -1,6 +1,13 @@
 # ============================================================
 # 20to100 Trading Bot
-# PAPER TRADING RUNNER - V7-S0
+# V7-S0 PAPER TRADING RUNNER
+#
+# IMPORTANT:
+# - PAPER TRADING ONLY
+# - NO REAL ORDERS
+# - NO API KEYS
+# - V6-C ENTRY
+# - V7-S0 SURVIVAL ENGINE
 # ============================================================
 
 from __future__ import annotations
@@ -16,9 +23,7 @@ from paper_trader.market_data import (
     resample_5m_to_1h,
 )
 
-from paper_trader.trader import (
-    PaperTrader,
-)
+from paper_trader.trader import PaperTrader
 
 
 # ============================================================
@@ -49,28 +54,44 @@ def main():
     args = parse_args()
 
     print("")
-    print("============================================================")
+    print("=" * 64)
     print("20to100 TRADING BOT")
     print("V7-S0 PAPER TRADING")
-    print("============================================================")
+    print("=" * 64)
     print("")
-    print("⚠️  PAPER TRADING ONLY")
-    print("⚠️  KEINE ECHTEN ORDERS")
-    print("⚠️  KEINE API KEYS")
+    print("PAPER TRADING ONLY")
+    print("KEINE ECHTEN ORDERS")
+    print("KEINE API KEYS")
     print("")
-    print(f"Exchange:        {config.PAPER_EXCHANGE}")
-    print(f"Symbols:         {config.SYMBOLS}")
-    print(f"Starting Capital:${config.STARTING_CAPITAL:.2f}")
-    print(f"Data TF:         {config.DATA_TIMEFRAME}")
-    print(f"Signal TF:       {config.SIGNAL_TIMEFRAME}")
-    print(f"Poll:            {config.POLL_SECONDS}s")
+    print(f"Exchange:         {config.PAPER_EXCHANGE}")
+    print(f"Symbols:          {config.SYMBOLS}")
+    print(
+        f"Starting Capital: "
+        f"${config.STARTING_CAPITAL:.2f}"
+    )
+    print(
+        f"Data TF:          "
+        f"{config.DATA_TIMEFRAME}"
+    )
+    print(
+        f"Signal TF:        "
+        f"{config.SIGNAL_TIMEFRAME}"
+    )
+    print(
+        f"Poll:             "
+        f"{config.POLL_SECONDS}s"
+    )
+    print(
+        f"OHLCV History:    "
+        f"{config.OHLCV_LIMIT}"
+    )
     print("")
-    print("Strategy:        V6-C")
-    print("Risk Engine:     V7-S0")
-    print("Leverage:        NONE")
-    print("Live Trading:    FALSE")
+    print("Strategy:         V6-C")
+    print("Risk Engine:      V7-S0")
+    print("Leverage:         NONE")
+    print("Live Trading:     FALSE")
     print("")
-    print("============================================================")
+    print("=" * 64)
     print("")
 
     # ========================================================
@@ -84,15 +105,20 @@ def main():
     ):
 
         raise RuntimeError(
-            "ABBRUCH: LIVE_TRADING darf beim "
-            "Paper-Trader NICHT aktiviert sein."
+            "ABBRUCH: LIVE_TRADING muss beim "
+            "Paper-Trader FALSE sein."
         )
 
     # ========================================================
     # EXCHANGE
     # ========================================================
 
+    print("Verbinde mit OKX Public API...")
+
     exchange = create_exchange()
+
+    print("OKX Verbindung erfolgreich.")
+    print("")
 
     # ========================================================
     # TRADERS
@@ -102,59 +128,18 @@ def main():
 
     for symbol in config.SYMBOLS:
 
-        trader = PaperTrader(
-            symbol=symbol,
-
-            starting_balance=(
-                config.STARTING_CAPITAL
-            ),
-
-            base_risk_per_trade=(
-                config.BASE_RISK_PER_TRADE
-            ),
-
-            fee_rate=(
-                config.FEE_RATE
-            ),
-
-            slippage_rate=(
-                config.SLIPPAGE_RATE
-            ),
-
-            atr_stop_multiplier=(
-                config.ATR_STOP_MULTIPLIER
-            ),
-
-            trailing_atr_multiplier=(
-                config.TRAILING_ATR_MULTIPLIER
-            ),
-
-            adx_min=(
-                config.ADX_MIN
-            ),
-
-            max_daily_loss=(
-                config.MAX_DAILY_LOSS
-            ),
-
-            max_consecutive_losses=(
-                config.MAX_CONSECUTIVE_LOSSES
-            ),
-
-            loss_cooldown_bars=(
-                config.LOSS_COOLDOWN_BARS
-            ),
-
-            global_max_drawdown=(
-                config.GLOBAL_MAX_DRAWDOWN
-            ),
-
-            variant="V6_C",
+        print(
+            f"[{symbol}] "
+            f"Initialisiere V7-S0 Paper Trader..."
         )
 
-        trader.load_state()
+        trader = PaperTrader(
+            symbol=symbol
+        )
 
         traders[symbol] = trader
+
+    print("")
 
     # ========================================================
     # ONE CYCLE
@@ -163,18 +148,23 @@ def main():
     def run_cycle():
 
         print("")
-        print("------------------------------------------------------------")
+        print("-" * 64)
         print("PAPER DATA CYCLE")
-        print("------------------------------------------------------------")
+        print("-" * 64)
 
         for symbol, trader in traders.items():
 
             try:
 
+                print("")
                 print(
                     f"[{symbol}] "
                     f"Lade {config.DATA_TIMEFRAME} Daten..."
                 )
+
+                # ------------------------------------------------
+                # FETCH 5m
+                # ------------------------------------------------
 
                 df_5m = fetch_5m(
                     exchange,
@@ -186,7 +176,7 @@ def main():
 
                     print(
                         f"[{symbol}] "
-                        "Keine Daten."
+                        "Keine Marktdaten."
                     )
 
                     continue
@@ -201,8 +191,10 @@ def main():
                 # 5m -> 1h
                 # ------------------------------------------------
 
-                df_1h = resample_5m_to_1h(
-                    df_5m
+                df_1h = (
+                    resample_5m_to_1h(
+                        df_5m
+                    )
                 )
 
                 print(
@@ -211,11 +203,16 @@ def main():
                     f"{len(df_1h)}"
                 )
 
+                # ------------------------------------------------
+                # MINIMUM HISTORY
+                # ------------------------------------------------
+
                 if len(df_1h) < 300:
 
                     print(
                         f"[{symbol}] "
-                        "❌ Nicht genug 1h-Daten."
+                        f"NICHT GENUG HISTORIE: "
+                        f"{len(df_1h)}/300"
                     )
 
                     continue
@@ -232,40 +229,19 @@ def main():
                 # STATUS
                 # ------------------------------------------------
 
-                status = trader.status()
-
-                print(
-                    f"[{symbol}] "
-                    f"Balance: "
-                    f"${status['balance']:.4f}"
-                )
-
-                print(
-                    f"[{symbol}] "
-                    f"Trades: "
-                    f"{status['trades']}"
-                )
-
-                print(
-                    f"[{symbol}] "
-                    f"Position: "
-                    f"{'OPEN' if status['position'] else 'NONE'}"
-                )
-
-                print(
-                    f"[{symbol}] "
-                    f"Kill Switch: "
-                    f"{status['kill_switch']}"
-                )
+                trader.status()
 
             except Exception as exc:
 
                 print(
                     f"[{symbol}] "
-                    f"❌ FEHLER: {exc}"
+                    f"FEHLER: {exc}"
                 )
 
-        print("------------------------------------------------------------")
+        print("")
+        print("-" * 64)
+        print("PAPER DATA CYCLE COMPLETE")
+        print("-" * 64)
         print("")
 
     # ========================================================
@@ -275,13 +251,13 @@ def main():
     if args.once:
 
         print(
-            "▶ Einmaliger Paper-Test gestartet..."
+            "Einmaliger Paper-Test gestartet..."
         )
 
         run_cycle()
 
         print(
-            "✓ Einmaliger Paper-Test beendet."
+            "Einmaliger Paper-Test beendet."
         )
 
         return
@@ -291,11 +267,11 @@ def main():
     # ========================================================
 
     print(
-        "▶ Dauerhafter Paper-Trading-Betrieb gestartet."
+        "Dauerhafter Paper-Trading-Betrieb gestartet."
     )
 
     print(
-        "▶ STRG+C zum Beenden."
+        "STRG+C zum Beenden."
     )
 
     print("")
@@ -318,7 +294,7 @@ def main():
         except Exception as exc:
 
             print(
-                f"❌ Hauptschleifen-Fehler: {exc}"
+                f"Hauptschleifen-Fehler: {exc}"
             )
 
         time.sleep(
