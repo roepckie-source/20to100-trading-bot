@@ -1,97 +1,1565 @@
-Dear Bake Claims Team,
+# ============================================================
+# 20to100 Trading Bot
+# V7 SURVIVAL ENGINE - S1
+#
+# V6-C bleibt vollständig eingefroren.
+#
+# V7-S1:
+# - V6-C Entry Logic
+# - zusätzlicher Signal-Quality-Filter
+# - Breakout muss mindestens 0.10 ATR
+#   über dem vorherigen Donchian-20-High liegen
+#
+# V7 Survival Layer bleibt unverändert:
+# - dynamisches Risiko abhängig vom Drawdown
+# - harte Kapital-Schutzstufen
+# - tägliches Verlustlimit
+# - Verlustserien-Schutz
+# - globaler Drawdown-Kill-Switch
+# - Gebühren
+# - Slippage
+# - ATR Stop
+# - ATR Trailing Stop
+# - Next-candle execution
+# - kein Look-ahead
+#
+# Ziel:
+# SURVIVE FIRST
+# GROW SECOND
+# ============================================================
 
-I am writing to submit a formal claim concerning the DFI assets associated with my former Bake/Cake customer account.
+from dataclasses import dataclass, asdict
+from typing import Optional
 
-1. Customer and DeFiChain account information
+import pandas as pd
 
-My DeFiChain address associated with my Bake account has remained unchanged since 2022:
+from strategy.strategy_v7_s1 import buy_signal_v7_s1
 
-DeFiChain address:
-df1qvwpxuexgw2uxgd8gra2wa8tx0dqrk9es88vsyp
 
-I have retained my original Bake/Cake account records and have now reviewed the corresponding account export.
+# ============================================================
+# TRADE
+# ============================================================
 
-2. DFI purchases recorded in my Bake account
+@dataclass
+class Trade:
 
-The account export contains 13 transactions classified as “Deposit recurring buy” for DFI during 2025.
+    entry_time: object
+    exit_time: object
 
-According to the export, these transactions total:
+    entry_price: float
+    exit_price: float
 
-7,449,969.270549409 DFI
+    quantity: float
 
-for a total fiat value of:
+    initial_risk_usdt: float
 
-USD 6,732.00
+    gross_profit: float
 
-For the period July–September 2025 alone, the export records:
+    fees: float
 
-7,401,559.17172517 DFI
+    slippage_cost: float
 
-for:
+    net_profit: float
 
-USD 6,332.00
+    r_multiple: float
 
-These figures are taken directly from my original account export.
+    exit_reason: str
 
-3. Blockchain withdrawals to my DeFiChain address
 
-The same account export contains DFI withdrawals to the DeFiChain address stated above.
+# ============================================================
+# ENGINE
+# ============================================================
 
-Examples include:
+class V7SurvivalEngine:
 
-Date	DFI withdrawn	Blockchain transaction ID
-05 Sep 2025	2,770.10288371 DFI	02f5c9826004bcbb4c3b32899018f7b44f5b017169843baec13879e7f81a61a2
-09 Sep 2025	1,509.35606572 DFI	a2fc63daa88cccae5e1d9db57d5632f660f63b968a534ab64a3daa1500f1bbd1
-16 Sep 2025	1,233.03294799 DFI	0109445198b79406d216bc6a66361458cbc5c48d35f96bd14f5e04c179f4f6eb
+    def __init__(
+        self,
 
-The export records these withdrawals with my DeFiChain address as the destination.
+        starting_balance: float = 100.0,
 
-4. Request for complete account reconciliation
+        # ----------------------------------------------------
+        # BASE RISK
+        # ----------------------------------------------------
 
-I therefore request a complete reconciliation of my former Bake/Cake customer account.
+        base_risk_per_trade: float = 0.01,
 
-Please provide written confirmation of the following:
+        # ----------------------------------------------------
+        # COSTS
+        # ----------------------------------------------------
 
-1. The complete DFI purchase history associated with my account.
+        fee_rate: float = 0.001,
+        slippage_rate: float = 0.0005,
 
-2. The complete DFI withdrawal history.
+        # ----------------------------------------------------
+        # STOP
+        # ----------------------------------------------------
 
-3. All DFI that were held within the Bake platform, including assets held in staking, freezer or other internal products.
+        atr_stop_multiplier: float = 3.0,
+        trailing_atr_multiplier: float = 3.0,
 
-4. The exact DFI balance attributable to my account immediately before the suspension of crypto-asset services on 15 April 2026.
+        # ----------------------------------------------------
+        # SIGNAL
+        # ----------------------------------------------------
 
-5. The subsequent treatment of those assets, including any transfers, conversions or movements to another entity or custodial institution.
+        adx_min: float = 20.0,
+        variant: str = "V7_S1",
 
-6. The name and contact details of the entity or custodial institution currently responsible for the assets or the corresponding customer claim.
+        # ----------------------------------------------------
+        # DAILY PROTECTION
+        # ----------------------------------------------------
 
-7. The current outstanding DFI balance or, if the DFI were converted or otherwise settled, the corresponding current claim amount and valuation basis.
+        max_daily_loss: float = 0.05,
 
-8. A complete customer ledger/account statement showing the acquisition, holding, staking, withdrawal, transfer and/or conversion of my DFI.
+        # ----------------------------------------------------
+        # LOSS STREAK
+        # ----------------------------------------------------
 
-5. Preservation of records
+        max_consecutive_losses: int = 3,
+        loss_cooldown_bars: int = 24,
 
-Please also preserve all records relating to my account and assets, including:
+        # ----------------------------------------------------
+        # GLOBAL PROTECTION
+        # ----------------------------------------------------
 
-customer account records;
-transaction and ledger records;
-blockchain transaction records;
-staking/freezer records;
-custody records;
-internal transfer records; and
-records concerning any transfer of customer assets following the suspension of services.
-6. Confirmation
+        global_max_drawdown: float = 0.20,
 
-Please treat this correspondence as a formal claim and formal request for account reconciliation.
+        # ----------------------------------------------------
+        # SURVIVAL RISK LEVELS
+        # ----------------------------------------------------
 
-Please confirm:
+        defensive_drawdown: float = 0.05,
+        survival_drawdown: float = 0.10,
+        critical_drawdown: float = 0.15,
 
-a) receipt of this claim, and
-b) the corresponding claim/reference number.
+    ):
 
-I am prepared to provide identification and supporting documentation through an appropriate secure channel if required.
+        # ====================================================
+        # BASIC
+        # ====================================================
 
-I look forward to receiving your written response and the complete reconciliation of my account.
+        self.starting_balance = float(
+            starting_balance
+        )
 
-Kind regards,
+        self.base_risk_per_trade = float(
+            base_risk_per_trade
+        )
 
-Thomas Röpcke
+        self.fee_rate = float(
+            fee_rate
+        )
+
+        self.slippage_rate = float(
+            slippage_rate
+        )
+
+        self.atr_stop_multiplier = float(
+            atr_stop_multiplier
+        )
+
+        self.trailing_atr_multiplier = float(
+            trailing_atr_multiplier
+        )
+
+        self.adx_min = float(
+            adx_min
+        )
+
+        self.variant = str(
+            variant
+        ).upper()
+
+        # ====================================================
+        # PROTECTION
+        # ====================================================
+
+        self.max_daily_loss = float(
+            max_daily_loss
+        )
+
+        self.max_consecutive_losses = int(
+            max_consecutive_losses
+        )
+
+        self.loss_cooldown_bars = int(
+            loss_cooldown_bars
+        )
+
+        self.global_max_drawdown = float(
+            global_max_drawdown
+        )
+
+        self.defensive_drawdown = float(
+            defensive_drawdown
+        )
+
+        self.survival_drawdown = float(
+            survival_drawdown
+        )
+
+        self.critical_drawdown = float(
+            critical_drawdown
+        )
+
+        # ====================================================
+        # VALIDATION
+        # ====================================================
+
+        if self.starting_balance <= 0:
+            raise ValueError(
+                "starting_balance muss > 0 sein."
+            )
+
+        if not 0 < self.base_risk_per_trade <= 0.10:
+            raise ValueError(
+                "base_risk_per_trade muss "
+                "zwischen 0 und 10% liegen."
+            )
+
+        if self.fee_rate < 0:
+            raise ValueError(
+                "fee_rate darf nicht negativ sein."
+            )
+
+        if self.slippage_rate < 0:
+            raise ValueError(
+                "slippage_rate darf nicht negativ sein."
+            )
+
+        if self.variant not in {
+            "V7_S1",
+        }:
+            raise ValueError(
+                f"V7-S1 verwendet ausschließlich "
+                f"V7_S1. Erhalten: {self.variant}"
+            )
+
+        # ====================================================
+        # ACCOUNT
+        # ====================================================
+
+        self.balance = (
+            self.starting_balance
+        )
+
+        self.position: Optional[dict] = None
+
+        self.trades = []
+
+        self.equity_curve = []
+
+        # ====================================================
+        # RISK STATE
+        # ====================================================
+
+        self.consecutive_losses = 0
+
+        self.cooldown_until = -1
+
+        self.current_day = None
+
+        self.day_start_equity = (
+            self.starting_balance
+        )
+
+        self.peak_equity = (
+            self.starting_balance
+        )
+
+        self.kill_switch = False
+
+        self._current_index = 0
+
+        # ====================================================
+        # STATISTICS
+        # ====================================================
+
+        self.normal_risk_trades = 0
+
+        self.defensive_risk_trades = 0
+
+        self.survival_risk_trades = 0
+
+        self.critical_risk_trades = 0
+
+    # ========================================================
+    # EQUITY
+    # ========================================================
+
+    def _calculate_equity(
+        self,
+        market_price: float
+    ):
+
+        equity = self.balance
+
+        if self.position is not None:
+
+            equity += (
+                self.position["quantity"]
+                *
+                float(market_price)
+            )
+
+        return float(
+            equity
+        )
+
+    # ========================================================
+    # CURRENT DRAWDOWN
+    # ========================================================
+
+    def _current_drawdown(
+        self,
+        equity: float
+    ):
+
+        if self.peak_equity <= 0:
+            return 1.0
+
+        return max(
+            0.0,
+            (
+                self.peak_equity
+                -
+                equity
+            )
+            /
+            self.peak_equity
+        )
+
+    # ========================================================
+    # SURVIVAL RISK LEVEL
+    # ========================================================
+
+    def _risk_multiplier(
+        self,
+        equity: float
+    ):
+
+        drawdown = self._current_drawdown(
+            equity
+        )
+
+        # ----------------------------------------------------
+        # NORMAL
+        # ----------------------------------------------------
+
+        if drawdown < self.defensive_drawdown:
+
+            return (
+                1.00,
+                "NORMAL"
+            )
+
+        # ----------------------------------------------------
+        # DEFENSIVE
+        # ----------------------------------------------------
+
+        if drawdown < self.survival_drawdown:
+
+            return (
+                0.75,
+                "DEFENSIVE"
+            )
+
+        # ----------------------------------------------------
+        # SURVIVAL
+        # ----------------------------------------------------
+
+        if drawdown < self.critical_drawdown:
+
+            return (
+                0.50,
+                "SURVIVAL"
+            )
+
+        # ----------------------------------------------------
+        # CRITICAL
+        # ----------------------------------------------------
+
+        if drawdown < self.global_max_drawdown:
+
+            return (
+                0.25,
+                "CRITICAL"
+            )
+
+        # ----------------------------------------------------
+        # HALT
+        # ----------------------------------------------------
+
+        return (
+            0.0,
+            "HALT"
+        )
+
+    # ========================================================
+    # DAILY RESET
+    # ========================================================
+
+    def _reset_day_if_needed(
+        self,
+        timestamp,
+        equity
+    ):
+
+        day = pd.Timestamp(
+            timestamp
+        ).date()
+
+        if self.current_day != day:
+
+            self.current_day = day
+
+            self.day_start_equity = float(
+                equity
+            )
+
+    # ========================================================
+    # DAILY LOSS
+    # ========================================================
+
+    def _daily_loss_limit_hit(
+        self,
+        equity
+    ):
+
+        if self.day_start_equity <= 0:
+            return True
+
+        loss = (
+            self.day_start_equity
+            -
+            equity
+        ) / self.day_start_equity
+
+        return (
+            loss
+            >=
+            self.max_daily_loss
+        )
+
+    # ========================================================
+    # GLOBAL DRAWDOWN
+    # ========================================================
+
+    def _global_drawdown_hit(
+        self,
+        equity
+    ):
+
+        self.peak_equity = max(
+            self.peak_equity,
+            equity
+        )
+
+        if self.peak_equity <= 0:
+            return True
+
+        drawdown = (
+            self.peak_equity
+            -
+            equity
+        ) / self.peak_equity
+
+        return (
+            drawdown
+            >=
+            self.global_max_drawdown
+        )
+
+    # ========================================================
+    # ENTRY
+    # ========================================================
+
+    def _enter(
+        self,
+        timestamp,
+        signal_row,
+        entry_row,
+        equity
+    ):
+
+        # ====================================================
+        # RISK LEVEL
+        # ====================================================
+
+        risk_multiplier, risk_level = (
+            self._risk_multiplier(
+                equity
+            )
+        )
+
+        if risk_multiplier <= 0:
+            return
+
+        effective_risk = (
+            self.base_risk_per_trade
+            *
+            risk_multiplier
+        )
+
+        # ====================================================
+        # ENTRY
+        # ====================================================
+
+        raw_entry = float(
+            entry_row["open"]
+        )
+
+        entry_price = (
+            raw_entry
+            *
+            (
+                1.0
+                +
+                self.slippage_rate
+            )
+        )
+
+        # ====================================================
+        # ATR
+        # ====================================================
+
+        atr = float(
+            signal_row["atr_14"]
+        )
+
+        if atr <= 0:
+            return
+
+        # ====================================================
+        # STOP
+        # ====================================================
+
+        stop_price = (
+            entry_price
+            -
+            atr
+            *
+            self.atr_stop_multiplier
+        )
+
+        if stop_price <= 0:
+            return
+
+        if stop_price >= entry_price:
+            return
+
+        # ====================================================
+        # MONEY RISK
+        # ====================================================
+
+        risk_money = (
+            self.balance
+            *
+            effective_risk
+        )
+
+        if risk_money <= 0:
+            return
+
+        # ====================================================
+        # RISK PER UNIT
+        # ====================================================
+
+        risk_per_unit = (
+            entry_price
+            -
+            stop_price
+        )
+
+        if risk_per_unit <= 0:
+            return
+
+        # ====================================================
+        # SIZE BY RISK
+        # ====================================================
+
+        qty_by_risk = (
+            risk_money
+            /
+            risk_per_unit
+        )
+
+        # ====================================================
+        # SIZE BY CASH
+        # ====================================================
+
+        qty_by_cash = (
+            self.balance
+            /
+            (
+                entry_price
+                *
+                (
+                    1.0
+                    +
+                    self.fee_rate
+                )
+            )
+        )
+
+        quantity = min(
+            qty_by_risk,
+            qty_by_cash
+        )
+
+        if quantity <= 0:
+            return
+
+        # ====================================================
+        # NOTIONAL
+        # ====================================================
+
+        notional = (
+            quantity
+            *
+            entry_price
+        )
+
+        entry_fee = (
+            notional
+            *
+            self.fee_rate
+        )
+
+        total_entry_cost = (
+            notional
+            +
+            entry_fee
+        )
+
+        if total_entry_cost > self.balance:
+            return
+
+        # ====================================================
+        # REMOVE CASH
+        # ====================================================
+
+        self.balance -= (
+            total_entry_cost
+        )
+
+        # ====================================================
+        # STATISTICS
+        # ====================================================
+
+        if risk_level == "NORMAL":
+
+            self.normal_risk_trades += 1
+
+        elif risk_level == "DEFENSIVE":
+
+            self.defensive_risk_trades += 1
+
+        elif risk_level == "SURVIVAL":
+
+            self.survival_risk_trades += 1
+
+        elif risk_level == "CRITICAL":
+
+            self.critical_risk_trades += 1
+
+        # ====================================================
+        # POSITION
+        # ====================================================
+
+        self.position = {
+
+            "entry_time":
+                timestamp,
+
+            "entry_price":
+                entry_price,
+
+            "quantity":
+                quantity,
+
+            "initial_stop":
+                stop_price,
+
+            "stop":
+                stop_price,
+
+            "risk_per_unit":
+                risk_per_unit,
+
+            "entry_fee":
+                entry_fee,
+
+            "highest":
+                entry_price,
+
+            "entry_atr":
+                atr,
+
+            "risk_level":
+                risk_level,
+
+            "effective_risk":
+                effective_risk,
+        }
+
+    # ========================================================
+    # EXIT
+    # ========================================================
+
+    def _exit(
+        self,
+        timestamp,
+        raw_exit_price,
+        reason
+    ):
+
+        pos = self.position
+
+        if pos is None:
+            return
+
+        # ====================================================
+        # SELL SLIPPAGE
+        # ====================================================
+
+        exit_price = (
+            float(raw_exit_price)
+            *
+            (
+                1.0
+                -
+                self.slippage_rate
+            )
+        )
+
+        # ====================================================
+        # GROSS
+        # ====================================================
+
+        gross = (
+            exit_price
+            -
+            pos["entry_price"]
+        ) * pos["quantity"]
+
+        # ====================================================
+        # EXIT FEE
+        # ====================================================
+
+        exit_notional = (
+            exit_price
+            *
+            pos["quantity"]
+        )
+
+        exit_fee = (
+            exit_notional
+            *
+            self.fee_rate
+        )
+
+        entry_fee = float(
+            pos["entry_fee"]
+        )
+
+        fees = (
+            entry_fee
+            +
+            exit_fee
+        )
+
+        # ====================================================
+        # SLIPPAGE COST
+        # ====================================================
+
+        theoretical_entry = (
+            pos["entry_price"]
+            /
+            (
+                1.0
+                +
+                self.slippage_rate
+            )
+        )
+
+        theoretical_exit = (
+            exit_price
+            /
+            (
+                1.0
+                -
+                self.slippage_rate
+            )
+        )
+
+        entry_slippage = (
+            abs(
+                theoretical_entry
+                -
+                pos["entry_price"]
+            )
+            *
+            pos["quantity"]
+        )
+
+        exit_slippage = (
+            abs(
+                theoretical_exit
+                -
+                exit_price
+            )
+            *
+            pos["quantity"]
+        )
+
+        slippage_cost = (
+            entry_slippage
+            +
+            exit_slippage
+        )
+
+        # ====================================================
+        # NET
+        # ====================================================
+
+        net = (
+            gross
+            -
+            entry_fee
+            -
+            exit_fee
+        )
+
+        # ====================================================
+        # RETURN CASH
+        # ====================================================
+
+        self.balance += (
+            exit_notional
+            -
+            exit_fee
+        )
+
+        # ====================================================
+        # INITIAL RISK
+        # ====================================================
+
+        initial_risk = (
+            pos["risk_per_unit"]
+            *
+            pos["quantity"]
+        )
+
+        # ====================================================
+        # R MULTIPLE
+        # ====================================================
+
+        if initial_risk > 0:
+
+            r_multiple = (
+                net
+                /
+                initial_risk
+            )
+
+        else:
+
+            r_multiple = 0.0
+
+        # ====================================================
+        # SAVE TRADE
+        # ====================================================
+
+        trade = Trade(
+
+            entry_time=pos[
+                "entry_time"
+            ],
+
+            exit_time=timestamp,
+
+            entry_price=pos[
+                "entry_price"
+            ],
+
+            exit_price=exit_price,
+
+            quantity=pos[
+                "quantity"
+            ],
+
+            initial_risk_usdt=initial_risk,
+
+            gross_profit=gross,
+
+            fees=fees,
+
+            slippage_cost=slippage_cost,
+
+            net_profit=net,
+
+            r_multiple=r_multiple,
+
+            exit_reason=reason,
+        )
+
+        self.trades.append(
+            trade
+        )
+
+        # ====================================================
+        # LOSS CONTROL
+        # ====================================================
+
+        if net < 0:
+
+            self.consecutive_losses += 1
+
+            if (
+                self.consecutive_losses
+                >=
+                self.max_consecutive_losses
+            ):
+
+                self.cooldown_until = (
+                    self._current_index
+                    +
+                    self.loss_cooldown_bars
+                )
+
+        else:
+
+            self.consecutive_losses = 0
+
+        self.position = None
+
+    # ========================================================
+    # RESULT
+    # ========================================================
+
+    def _result(self):
+
+        final_balance = float(
+            self.balance
+        )
+
+        # ----------------------------------------------------
+        # PROFIT
+        # ----------------------------------------------------
+
+        profit = (
+            final_balance
+            -
+            self.starting_balance
+        )
+
+        return_pct = 0.0
+
+        if self.starting_balance > 0:
+
+            return_pct = (
+                profit
+                /
+                self.starting_balance
+            ) * 100.0
+
+        # ----------------------------------------------------
+        # TRADES
+        # ----------------------------------------------------
+
+        trade_count = len(
+            self.trades
+        )
+
+        wins = 0
+        losses = 0
+
+        gross_wins = 0.0
+        gross_losses = 0.0
+
+        total_net_profit = 0.0
+        total_fees = 0.0
+        total_slippage = 0.0
+
+        for trade in self.trades:
+
+            net = float(
+                trade.net_profit
+            )
+
+            total_net_profit += net
+
+            total_fees += float(
+                trade.fees
+            )
+
+            total_slippage += float(
+                trade.slippage_cost
+            )
+
+            if net > 0:
+
+                wins += 1
+
+                gross_wins += net
+
+            elif net < 0:
+
+                losses += 1
+
+                gross_losses += abs(
+                    net
+                )
+
+        # ----------------------------------------------------
+        # WIN RATE
+        # ----------------------------------------------------
+
+        if trade_count > 0:
+
+            win_rate = (
+                wins
+                /
+                trade_count
+            ) * 100.0
+
+        else:
+
+            win_rate = 0.0
+
+        # ----------------------------------------------------
+        # PROFIT FACTOR
+        # ----------------------------------------------------
+
+        if gross_losses > 0:
+
+            profit_factor = (
+                gross_wins
+                /
+                gross_losses
+            )
+
+        elif gross_wins > 0:
+
+            profit_factor = float(
+                "inf"
+            )
+
+        else:
+
+            profit_factor = 0.0
+
+        # ----------------------------------------------------
+        # EXPECTANCY
+        # ----------------------------------------------------
+
+        if trade_count > 0:
+
+            expectancy = (
+                total_net_profit
+                /
+                trade_count
+            )
+
+        else:
+
+            expectancy = 0.0
+
+        # ----------------------------------------------------
+        # MAX DRAWDOWN
+        # ----------------------------------------------------
+
+        max_drawdown_pct = 0.0
+
+        if self.equity_curve:
+
+            peak = float(
+                self.equity_curve[0][
+                    "equity"
+                ]
+            )
+
+            for point in self.equity_curve:
+
+                equity = float(
+                    point["equity"]
+                )
+
+                if equity > peak:
+
+                    peak = equity
+
+                if peak > 0:
+
+                    drawdown = (
+                        peak
+                        -
+                        equity
+                    ) / peak
+
+                    max_drawdown_pct = max(
+                        max_drawdown_pct,
+                        drawdown * 100.0
+                    )
+
+        # ----------------------------------------------------
+        # RESULT
+        # ----------------------------------------------------
+
+        return {
+
+            "strategy":
+                "V7_S1",
+
+            "variant":
+                self.variant,
+
+            "starting_balance":
+                self.starting_balance,
+
+            "final_balance":
+                final_balance,
+
+            "profit":
+                profit,
+
+            "return_pct":
+                return_pct,
+
+            "trades":
+                trade_count,
+
+            "wins":
+                wins,
+
+            "losses":
+                losses,
+
+            "win_rate":
+                win_rate,
+
+            "profit_factor":
+                profit_factor,
+
+            "expectancy":
+                expectancy,
+
+            "max_drawdown_pct":
+                max_drawdown_pct,
+
+            "fees":
+                total_fees,
+
+            "slippage_cost":
+                total_slippage,
+
+            "normal_risk_trades":
+                self.normal_risk_trades,
+
+            "defensive_risk_trades":
+                self.defensive_risk_trades,
+
+            "survival_risk_trades":
+                self.survival_risk_trades,
+
+            "critical_risk_trades":
+                self.critical_risk_trades,
+
+            "kill_switch":
+                self.kill_switch,
+
+            "consecutive_losses":
+                self.consecutive_losses,
+
+            "trades_detail":
+                [
+                    asdict(trade)
+                    for trade in self.trades
+                ],
+        }
+
+    # ========================================================
+    # RUN
+    # ========================================================
+
+    def run(
+        self,
+        df: pd.DataFrame
+    ):
+
+        # ====================================================
+        # MINIMUM DATA
+        # ====================================================
+
+        if len(df) < 300:
+
+            return self._result()
+
+        data = df.copy()
+
+        # ====================================================
+        # DATETIME
+        # ====================================================
+
+        if not isinstance(
+            data.index,
+            pd.DatetimeIndex
+        ):
+
+            if "timestamp" in data.columns:
+
+                data["timestamp"] = (
+                    pd.to_datetime(
+                        data["timestamp"],
+                        utc=True
+                    )
+                )
+
+                data = data.set_index(
+                    "timestamp"
+                )
+
+            else:
+
+                raise ValueError(
+                    "DataFrame benötigt "
+                    "DatetimeIndex oder timestamp."
+                )
+
+        else:
+
+            if data.index.tz is None:
+
+                data.index = (
+                    data.index
+                    .tz_localize("UTC")
+                )
+
+            else:
+
+                data.index = (
+                    data.index
+                    .tz_convert("UTC")
+                )
+
+        data = data.sort_index()
+
+        # ====================================================
+        # REQUIRED
+        # ====================================================
+
+        required = [
+
+            "open",
+            "high",
+            "low",
+            "close",
+
+            "atr_14",
+            "adx_14",
+
+            "ema_100",
+            "ema_200",
+
+            "ema_200_slope",
+            "ema_200_slope_reference",
+
+            "atr_14_ma50",
+
+            "donchian_high_20",
+        ]
+
+        missing = [
+
+            c
+            for c in required
+            if c not in data.columns
+
+        ]
+
+        if missing:
+
+            raise ValueError(
+                f"Fehlende V6-C Spalten: "
+                f"{missing}"
+            )
+
+        # ====================================================
+        # MAIN LOOP
+        # ====================================================
+
+        for i in range(
+            2,
+            len(data)
+        ):
+
+            self._current_index = i
+
+            row = data.iloc[i]
+
+            previous = data.iloc[
+                i - 1
+            ]
+
+            previous_previous = data.iloc[
+                i - 2
+            ]
+
+            timestamp = data.index[i]
+
+            current_price = float(
+                row["close"]
+            )
+
+            # =================================================
+            # EQUITY
+            # =================================================
+
+            equity = (
+                self._calculate_equity(
+                    current_price
+                )
+            )
+
+            # =================================================
+            # DAILY RESET
+            # =================================================
+
+            self._reset_day_if_needed(
+                timestamp,
+                equity
+            )
+
+            # =================================================
+            # PEAK
+            # =================================================
+
+            self.peak_equity = max(
+                self.peak_equity,
+                equity
+            )
+
+            # =================================================
+            # EQUITY CURVE
+            # =================================================
+
+            self.equity_curve.append(
+
+                {
+
+                    "timestamp":
+                        timestamp,
+
+                    "equity":
+                        equity,
+
+                    "drawdown_pct":
+                        self._current_drawdown(
+                            equity
+                        )
+                        *
+                        100,
+                }
+            )
+
+            # =================================================
+            # GLOBAL DD
+            # =================================================
+
+            if self._global_drawdown_hit(
+                equity
+            ):
+
+                self.kill_switch = True
+
+            # =================================================
+            # MANAGE POSITION
+            # =================================================
+
+            if self.position is not None:
+
+                pos = self.position
+
+                # ---------------------------------------------
+                # STOP FIRST
+                # ---------------------------------------------
+
+                if (
+                    float(row["low"])
+                    <=
+                    pos["stop"]
+                ):
+
+                    self._exit(
+                        timestamp,
+                        pos["stop"],
+                        "ATR_STOP"
+                    )
+
+                    continue
+
+                # ---------------------------------------------
+                # HIGHEST
+                # ---------------------------------------------
+
+                pos["highest"] = max(
+
+                    pos["highest"],
+
+                    float(row["high"])
+
+                )
+
+                # ---------------------------------------------
+                # TRAILING
+                # ---------------------------------------------
+
+                current_atr = float(
+                    row["atr_14"]
+                )
+
+                if current_atr > 0:
+
+                    candidate = (
+
+                        pos["highest"]
+
+                        -
+                        current_atr
+                        *
+                        self.trailing_atr_multiplier
+
+                    )
+
+                    if candidate > pos["stop"]:
+
+                        pos["stop"] = candidate
+
+                # ---------------------------------------------
+                # END
+                # ---------------------------------------------
+
+                if (
+                    i
+                    ==
+                    len(data) - 1
+                ):
+
+                    self._exit(
+                        timestamp,
+                        current_price,
+                        "END"
+                    )
+
+                continue
+
+            # =================================================
+            # KILL SWITCH
+            # =================================================
+
+            if self.kill_switch:
+
+                continue
+
+            # =================================================
+            # DAILY LOSS
+            # =================================================
+
+            if self._daily_loss_limit_hit(
+                equity
+            ):
+
+                continue
+
+            # =================================================
+            # COOLDOWN
+            # =================================================
+
+            if (
+                i
+                <
+                self.cooldown_until
+            ):
+
+                continue
+
+            # =================================================
+            # SURVIVAL RISK LEVEL
+            # =================================================
+
+            risk_multiplier, risk_level = (
+                self._risk_multiplier(
+                    equity
+                )
+            )
+
+            if risk_multiplier <= 0:
+
+                continue
+
+            # =================================================
+            # V7-S1 SIGNAL
+            #
+            # V6-C + 0.10 ATR breakout filter
+            # =================================================
+
+            signal = buy_signal_v7_s1(
+
+                previous,
+
+                previous_previous,
+
+                adx_min=self.adx_min
+
+            )
+
+            if not signal:
+
+                continue
+
+            # =================================================
+            # ENTRY
+            # =================================================
+
+            self._enter(
+
+                timestamp,
+
+                previous,
+
+                row,
+
+                equity
+
+            )
+
+        # ====================================================
+        # FINAL EXIT
+        # ====================================================
+
+        if self.position is not None:
+
+            final_row = data.iloc[-1]
+
+            self._current_index = (
+                len(data) - 1
+            )
+
+            self._exit(
+
+                data.index[-1],
+
+                float(
+                    final_row["close"]
+                ),
+
+                "END"
+
+            )
+
+        # ====================================================
+        # IMPORTANT:
+        # ENGINE MUST RETURN RESULT
+        # ====================================================
+
+        return self._result()
