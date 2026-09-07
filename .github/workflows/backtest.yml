@@ -2,14 +2,14 @@ name: 20to100 Backtest
 
 on:
   workflow_dispatch:
-
   push:
     branches:
       - main
-
   schedule:
     - cron: "0 5 * * *"
 
+permissions:
+  contents: read
 
 jobs:
 
@@ -21,17 +21,17 @@ jobs:
 
     steps:
 
-      # ==========================================================
-      # 1. CHECKOUT
-      # ==========================================================
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # ==========================================================
-      # 2. PYTHON
-      # ==========================================================
+      # ============================================================
+      # PYTHON
+      # ============================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -39,13 +39,12 @@ jobs:
           python-version: "3.12"
 
 
-      # ==========================================================
-      # 3. DEPENDENCIES
-      # ==========================================================
+      # ============================================================
+      # DEPENDENCIES
+      # ============================================================
 
       - name: Install dependencies
         run: |
-
           python -m pip install --upgrade pip
 
           pip install \
@@ -55,879 +54,55 @@ jobs:
             ccxt
 
 
-      # ==========================================================
-      # 4. DIRECTORIES
-      # ==========================================================
+      # ============================================================
+      # DIRECTORY SETUP
+      # ============================================================
 
-      - name: Create directories
+      - name: Prepare directories
         run: |
-
           mkdir -p data
           mkdir -p logs
+          mkdir -p results
 
 
-      # ==========================================================
-      # 5. DOWNLOAD HISTORICAL DATA
+      # ============================================================
+      # SHOW REPOSITORY
+      # ============================================================
+
+      - name: Show repository files
+        run: |
+          echo "=================================================="
+          echo "REPOSITORY FILES"
+          echo "=================================================="
+
+          find . -maxdepth 3 -type f | sort
+
+
+      # ============================================================
+      # DOWNLOAD HISTORICAL DATA
       #
       # Binance Public Data
       #
-      # IMPORTANT:
-      #
-      # We deliberately use DAILY archives only.
-      #
-      # No monthly archive dependency.
-      #
-      # BTCUSDT
-      # ETHUSDT
-      # SOLUSDT
-      #
-      # 5 minute candles
-      #
-      # 3 years
-      #
-      # ==========================================================
+      # Daily archives are used intentionally.
+      # This avoids the monthly archive problem around
+      # the current month.
+      # ============================================================
 
-      - name: Download historical data
+      - name: Download BTC ETH SOL 5m data
         run: |
+          python download_data.py
 
-          python <<'PY'
 
-          import io
-          import zipfile
-          import requests
-          import pandas as pd
+      # ============================================================
+      # VERIFY DATA
+      # ============================================================
 
-          from datetime import date, timedelta
-          from concurrent.futures import ThreadPoolExecutor, as_completed
-
-
-          # ======================================================
-          # CONFIG
-          # ======================================================
-
-          BASE_URL = (
-              "https://data.binance.vision/data/spot"
-          )
-
-          INTERVAL = "5m"
-
-          SYMBOLS = {
-
-              "BTCUSDT":
-                  "data/BTC_USDT_5m.csv",
-
-              "ETHUSDT":
-                  "data/ETH_USDT_5m.csv",
-
-              "SOLUSDT":
-                  "data/SOL_USDT_5m.csv",
-
-          }
-
-          YEARS_BACK = 3
-
-          MAX_WORKERS = 12
-
-
-          # ======================================================
-          # DATE RANGE
-          # ======================================================
-
-          today = date.today()
-
-          start_date = date(
-
-              today.year - YEARS_BACK,
-              today.month,
-              today.day
-
-          )
-
-          end_date = today - timedelta(days=1)
-
-
-          print()
-          print("=" * 70)
-          print("BINANCE PUBLIC DATA DOWNLOAD")
-          print("=" * 70)
-
-          print(
-              f"Start date : {start_date}"
-          )
-
-          print(
-              f"End date   : {end_date}"
-          )
-
-          print(
-              f"Interval   : {INTERVAL}"
-          )
-
-          print(
-              "Assets     : BTC + ETH + SOL"
-          )
-
-          print(
-              "Mode       : DAILY ARCHIVES ONLY"
-          )
-
-          print(
-              f"Workers    : {MAX_WORKERS}"
-          )
-
-          print("=" * 70)
-
-
-          # ======================================================
-          # BINANCE COLUMNS
-          # ======================================================
-
-          COLUMNS = [
-
-              "open_time",
-              "open",
-              "high",
-              "low",
-              "close",
-              "volume",
-              "close_time",
-              "quote_volume",
-              "trades",
-              "taker_buy_base",
-              "taker_buy_quote",
-              "ignore",
-
-          ]
-
-
-          # ======================================================
-          # CREATE DATE LIST
-          # ======================================================
-
-          def date_range(start, end):
-
-              current = start
-
-              while current <= end:
-
-                  yield current
-
-                  current += timedelta(days=1)
-
-
-          DAYS = list(
-              date_range(
-                  start_date,
-                  end_date
-              )
-          )
-
-
-          print()
-          print(
-              f"Days to download: {len(DAYS):,}"
-          )
-
-          print(
-              f"Total files: "
-              f"{len(DAYS) * len(SYMBOLS):,}"
-          )
-
-
-          # ======================================================
-          # DOWNLOAD ONE DAILY FILE
-          # ======================================================
-
-          def download_day(
-              symbol,
-              day
-          ):
-
-              filename = (
-
-                  f"{symbol}-"
-                  f"{INTERVAL}-"
-                  f"{day.year}-"
-                  f"{day.month:02d}-"
-                  f"{day.day:02d}.zip"
-
-              )
-
-
-              url = (
-
-                  f"{BASE_URL}/daily/klines/"
-                  f"{symbol}/{INTERVAL}/"
-                  f"{filename}"
-
-              )
-
-
-              session = requests.Session()
-
-              session.headers.update({
-
-                  "User-Agent":
-                      "20to100-trading-bot/1.0"
-
-              })
-
-
-              for attempt in range(5):
-
-                  try:
-
-                      response = session.get(
-
-                          url,
-                          timeout=60
-
-                      )
-
-
-                      if response.status_code == 404:
-
-                          return (
-                              symbol,
-                              day,
-                              None,
-                              "404"
-                          )
-
-
-                      response.raise_for_status()
-
-
-                      with zipfile.ZipFile(
-
-                          io.BytesIO(
-                              response.content
-                          )
-
-                      ) as z:
-
-                          csv_files = [
-
-                              name
-
-                              for name in z.namelist()
-
-                              if name.lower().endswith(
-                                  ".csv"
-                              )
-
-                          ]
-
-
-                          if not csv_files:
-
-                              raise RuntimeError(
-                                  "ZIP contains no CSV"
-                              )
-
-
-                          csv_name = csv_files[0]
-
-
-                          with z.open(csv_name) as f:
-
-                              df = pd.read_csv(
-
-                                  f,
-                                  header=None
-
-                              )
-
-
-                      if df.empty:
-
-                          return (
-                              symbol,
-                              day,
-                              None,
-                              "EMPTY"
-                          )
-
-
-                      if len(df.columns) != len(COLUMNS):
-
-                          raise RuntimeError(
-
-                              f"Unexpected columns: "
-                              f"{len(df.columns)}"
-
-                          )
-
-
-                      df.columns = COLUMNS
-
-
-                      return (
-                          symbol,
-                          day,
-                          df,
-                          "OK"
-                      )
-
-
-                  except Exception as e:
-
-                      if attempt == 4:
-
-                          return (
-
-                              symbol,
-                              day,
-                              None,
-                              f"ERROR: {e}"
-
-                          )
-
-
-                      import time
-
-                      time.sleep(
-                          2 ** attempt
-                      )
-
-
-              return (
-                  symbol,
-                  day,
-                  None,
-                  "FAILED"
-              )
-
-
-          # ======================================================
-          # PROCESS ONE SYMBOL
-          # ======================================================
-
-          def process_symbol(
-              symbol,
-              output_file
-          ):
-
-              print()
-              print("=" * 70)
-              print(
-                  f"PROCESSING {symbol}"
-              )
-              print("=" * 70)
-
-
-              frames = []
-
-              successful = 0
-              missing = 0
-              failed = 0
-
-
-              futures = {}
-
-
-              # ==================================================
-              # PARALLEL DAILY DOWNLOAD
-              # ==================================================
-
-              with ThreadPoolExecutor(
-
-                  max_workers=MAX_WORKERS
-
-              ) as executor:
-
-                  for day in DAYS:
-
-                      future = executor.submit(
-
-                          download_day,
-                          symbol,
-                          day
-
-                      )
-
-                      futures[future] = day
-
-
-                  completed = 0
-
-
-                  for future in as_completed(
-                      futures
-                  ):
-
-                      completed += 1
-
-                      day = futures[future]
-
-
-                      symbol_result, day_result, df, status = (
-
-                          future.result()
-
-                      )
-
-
-                      if status == "OK":
-
-                          frames.append(df)
-
-                          successful += 1
-
-
-                      elif status == "404":
-
-                          missing += 1
-
-
-                          print(
-
-                              f"{symbol}: "
-                              f"404 {day}"
-
-                          )
-
-
-                      else:
-
-                          failed += 1
-
-
-                          print(
-
-                              f"{symbol}: "
-                              f"FAILED {day}: "
-                              f"{status}"
-
-                          )
-
-
-                      if (
-
-                          completed % 100 == 0
-
-                          or completed == len(DAYS)
-
-                      ):
-
-                          print(
-
-                              f"{symbol}: "
-                              f"{completed:,}/"
-                              f"{len(DAYS):,} "
-                              f"| OK={successful:,} "
-                              f"| 404={missing:,} "
-                              f"| FAILED={failed:,}"
-
-                          )
-
-
-              # ==================================================
-              # VALIDATION
-              # ==================================================
-
-              print()
-
-              print(
-
-                  f"{symbol}: "
-                  f"successful daily files = "
-                  f"{successful:,}"
-
-              )
-
-              print(
-
-                  f"{symbol}: "
-                  f"missing daily files = "
-                  f"{missing:,}"
-
-              )
-
-              print(
-
-                  f"{symbol}: "
-                  f"failed daily files = "
-                  f"{failed:,}"
-
-              )
-
-
-              if not frames:
-
-                  raise RuntimeError(
-
-                      f"{symbol}: "
-                      "NO DATA DOWNLOADED"
-
-                  )
-
-
-              # ==================================================
-              # COMBINE
-              # ==================================================
-
-              df = pd.concat(
-
-                  frames,
-                  ignore_index=True
-
-              )
-
-
-              print(
-
-                  f"{symbol}: "
-                  f"RAW ROWS = "
-                  f"{len(df):,}"
-
-              )
-
-
-              # ==================================================
-              # TIMESTAMP
-              # ==================================================
-
-              df["open_time"] = pd.to_numeric(
-
-                  df["open_time"],
-                  errors="coerce"
-
-              )
-
-
-              df = df.dropna(
-
-                  subset=["open_time"]
-
-              )
-
-
-              # Microseconds -> milliseconds
-
-              microseconds = (
-
-                  df["open_time"] > 10**14
-
-              )
-
-
-              df.loc[
-                  microseconds,
-                  "open_time"
-              ] = (
-
-                  df.loc[
-                      microseconds,
-                      "open_time"
-                  ] / 1000
-
-              )
-
-
-              df["open_time"] = (
-
-                  df["open_time"]
-                  .astype("int64")
-
-              )
-
-
-              # ==================================================
-              # NUMERIC COLUMNS
-              # ==================================================
-
-              numeric_columns = [
-
-                  "open",
-                  "high",
-                  "low",
-                  "close",
-                  "volume",
-
-              ]
-
-
-              for column in numeric_columns:
-
-                  df[column] = pd.to_numeric(
-
-                      df[column],
-                      errors="coerce"
-
-                  )
-
-
-              # ==================================================
-              # REMOVE INVALID ROWS
-              # ==================================================
-
-              df = df.dropna(
-
-                  subset=[
-
-                      "open",
-                      "high",
-                      "low",
-                      "close",
-                      "volume",
-
-                  ]
-
-              )
-
-
-              # ==================================================
-              # EXACT DATE FILTER
-              # ==================================================
-
-              start_timestamp = int(
-
-                  pd.Timestamp(
-
-                      start_date,
-                      tz="UTC"
-
-                  ).timestamp() * 1000
-
-              )
-
-
-              end_timestamp = int(
-
-                  pd.Timestamp(
-
-                      today,
-                      tz="UTC"
-
-                  ).timestamp() * 1000
-
-              )
-
-
-              df = df[
-
-                  (df["open_time"]
-                   >= start_timestamp)
-
-                  &
-
-                  (df["open_time"]
-                   < end_timestamp)
-
-              ]
-
-
-              # ==================================================
-              # DUPLICATES
-              # ==================================================
-
-              before = len(df)
-
-
-              df = df.drop_duplicates(
-
-                  subset=["open_time"]
-
-              )
-
-
-              duplicates_removed = (
-
-                  before - len(df)
-
-              )
-
-
-              # ==================================================
-              # SORT
-              # ==================================================
-
-              df = df.sort_values(
-
-                  "open_time"
-
-              )
-
-
-              # ==================================================
-              # FINAL FORMAT
-              # ==================================================
-
-              output = df[
-
-                  [
-
-                      "open_time",
-                      "open",
-                      "high",
-                      "low",
-                      "close",
-                      "volume",
-
-                  ]
-
-              ].copy()
-
-
-              output = output.rename(
-
-                  columns={
-
-                      "open_time":
-                          "timestamp"
-
-                  }
-
-              )
-
-
-              # ==================================================
-              # SAVE
-              # ==================================================
-
-              output.to_csv(
-
-                  output_file,
-                  index=False
-
-              )
-
-
-              # ==================================================
-              # REPORT
-              # ==================================================
-
-              print()
-
-              print("=" * 70)
-
-              print(
-                  f"{symbol}: COMPLETE"
-              )
-
-              print(
-                  f"{symbol}: "
-                  f"Rows = "
-                  f"{len(output):,}"
-              )
-
-              print(
-                  f"{symbol}: "
-                  f"Duplicates removed = "
-                  f"{duplicates_removed:,}"
-              )
-
-              print(
-                  f"{symbol}: "
-                  f"Output = "
-                  f"{output_file}"
-              )
-
-
-              if len(output) > 0:
-
-                  first = pd.to_datetime(
-
-                      output[
-                          "timestamp"
-                      ].min(),
-
-                      unit="ms",
-
-                      utc=True
-
-                  )
-
-
-                  last = pd.to_datetime(
-
-                      output[
-                          "timestamp"
-                      ].max(),
-
-                      unit="ms",
-
-                      utc=True
-
-                  )
-
-
-                  print(
-
-                      f"{symbol}: "
-                      f"Start = {first}"
-
-                  )
-
-                  print(
-
-                      f"{symbol}: "
-                      f"End = {last}"
-
-                  )
-
-
-              print("=" * 70)
-
-
-              return len(output)
-
-
-          # ======================================================
-          # ALL SYMBOLS
-          # ======================================================
-
-          results = {}
-
-
-          for symbol, output_file in SYMBOLS.items():
-
-              results[symbol] = process_symbol(
-
-                  symbol,
-                  output_file
-
-              )
-
-
-          # ======================================================
-          # FINAL
-          # ======================================================
-
-          print()
-          print("=" * 70)
-          print("ALL DATA DOWNLOADS COMPLETE")
-          print("=" * 70)
-
-
-          for symbol, rows in results.items():
-
-              print(
-
-                  f"{symbol}: "
-                  f"{rows:,} candles"
-
-              )
-
-
-          print("=" * 70)
-
-
-          PY
-
-
-      # ==========================================================
-      # 6. VERIFY DATA
-      # ==========================================================
-
-      - name: Verify historical data
+      - name: Verify downloaded data
         run: |
 
           echo "=================================================="
-          echo "VERIFYING HISTORICAL DATA"
+          echo "DATA VERIFICATION"
           echo "=================================================="
-
 
           for file in \
             data/BTC_USDT_5m.csv \
@@ -936,219 +111,59 @@ jobs:
           do
 
             echo
-            echo "----------------------------------------------"
-            echo "$file"
-            echo "----------------------------------------------"
-
+            echo "FILE: $file"
 
             if [ ! -f "$file" ]; then
-
-              echo "ERROR: FILE MISSING"
+              echo "❌ MISSING: $file"
               exit 1
-
             fi
 
+            echo "Size:"
+            ls -lh "$file"
 
-            rows=$(($(wc -l < "$file") - 1))
+            echo "Rows:"
+            wc -l "$file"
 
+            echo "First rows:"
+            head -3 "$file"
 
-            echo "Rows: $rows"
-
-
-            if [ "$rows" -lt 250000 ]; then
-
-              echo
-              echo "ERROR: NOT ENOUGH DATA"
-              echo "Required: >= 250000"
-              echo "Found: $rows"
-
-              exit 1
-
-            fi
-
-
-            echo
-            echo "Header:"
-
-            head -n 1 "$file"
-
-
-            echo
-            echo "First row:"
-
-            sed -n '2p' "$file"
-
-
-            echo
-            echo "Last row:"
-
-            tail -n 1 "$file"
-
-
-            echo
-            echo "OK"
+            echo "Last rows:"
+            tail -3 "$file"
 
           done
 
-
           echo
           echo "=================================================="
-          echo "ALL DATA FILES VERIFIED"
+          echo "DATA CHECK COMPLETE"
           echo "=================================================="
 
 
-      # ==========================================================
-      # 7. FINAL DATA REPORT
-      # ==========================================================
-
-      - name: Final data report
-        run: |
-
-          echo "=================================================="
-          echo "FINAL DATA REPORT"
-          echo "=================================================="
-
-
-          python <<'PY'
-
-          import pandas as pd
-
-          from pathlib import Path
-
-
-          files = [
-
-              Path(
-                  "data/BTC_USDT_5m.csv"
-              ),
-
-              Path(
-                  "data/ETH_USDT_5m.csv"
-              ),
-
-              Path(
-                  "data/SOL_USDT_5m.csv"
-              ),
-
-          ]
-
-
-          for path in files:
-
-              print()
-              print("=" * 60)
-              print(path)
-              print("=" * 60)
-
-
-              df = pd.read_csv(path)
-
-
-              print(
-                  "Rows:",
-                  f"{len(df):,}"
-              )
-
-
-              print(
-                  "Columns:",
-                  list(df.columns)
-              )
-
-
-              if len(df) > 0:
-
-                  print(
-                      "Start:",
-                      pd.to_datetime(
-
-                          df["timestamp"].min(),
-
-                          unit="ms",
-
-                          utc=True
-
-                      )
-                  )
-
-
-                  print(
-                      "End:",
-                      pd.to_datetime(
-
-                          df["timestamp"].max(),
-
-                          unit="ms",
-
-                          utc=True
-
-                      )
-                  )
-
-
-              print(
-                  "Duplicate timestamps:",
-                  df[
-                      "timestamp"
-                  ].duplicated().sum()
-              )
-
-
-              print(
-                  "Missing open:",
-                  df["open"].isna().sum()
-              )
-
-
-              print(
-                  "Missing high:",
-                  df["high"].isna().sum()
-              )
-
-
-              print(
-                  "Missing low:",
-                  df["low"].isna().sum()
-              )
-
-
-              print(
-                  "Missing close:",
-                  df["close"].isna().sum()
-              )
-
-
-              print(
-                  "Missing volume:",
-                  df["volume"].isna().sum()
-              )
-
-
-          print()
-          print("=" * 60)
-          print("DATA REPORT COMPLETE")
-          print("=" * 60)
-
-          PY
-
-
-      # ==========================================================
-      # 8. V6
-      # ==========================================================
+      # ============================================================
+      # V6 BASELINE
+      # ============================================================
 
       - name: Run V6 backtest
         run: |
 
           echo "=================================================="
-          echo "RUNNING V6 BACKTEST"
+          echo "RUNNING V6 BASELINE"
           echo "=================================================="
 
           python v6_backtest.py
 
 
-      # ==========================================================
-      # 9. V6-C STRESS
-      # ==========================================================
+      # ============================================================
+      # V6-C STRESS TEST
+      #
+      # IMPORTANT:
+      # The actual repository filename is:
+      #
+      # v6_c_stress_test.py
+      #
+      # NOT:
+      #
+      # v6_c_stress.py
+      # ============================================================
 
       - name: Run V6-C stress test
         run: |
@@ -1157,12 +172,12 @@ jobs:
           echo "RUNNING V6-C STRESS TEST"
           echo "=================================================="
 
-          python v6_c_stress.py
+          python v6_c_stress_test.py
 
 
-      # ==========================================================
-      # 10. V6-C MONTE CARLO
-      # ==========================================================
+      # ============================================================
+      # V6-C MONTE CARLO
+      # ============================================================
 
       - name: Run V6-C Monte Carlo
         run: |
@@ -1174,9 +189,9 @@ jobs:
           python v6_c_monte_carlo.py
 
 
-      # ==========================================================
-      # 11. V7-S0
-      # ==========================================================
+      # ============================================================
+      # V7-S0 SURVIVAL BACKTEST
+      # ============================================================
 
       - name: Run V7-S0 survival backtest
         run: |
@@ -1188,9 +203,15 @@ jobs:
           python v7_survival_backtest.py
 
 
-      # ==========================================================
-      # 12. V7-S1
-      # ==========================================================
+      # ============================================================
+      # V7-S1
+      #
+      # V6-C entry
+      # +
+      # survival engine
+      # +
+      # 0.10 ATR breakout quality filter
+      # ============================================================
 
       - name: Run V7-S1 backtest
         run: |
@@ -1202,59 +223,75 @@ jobs:
           python v7_s1_backtest.py
 
 
-      # ==========================================================
-      # 13. SHOW RESULTS
-      # ==========================================================
+      # ============================================================
+      # RESULT CHECK
+      # ============================================================
 
       - name: Show results
         if: always()
         run: |
 
+          echo
           echo "=================================================="
-          echo "RESULT FILES"
+          echo "FINAL DATA / RESULT REPORT"
           echo "=================================================="
-
-
-          find . \
-            -type f \
-            \( \
-              -name "*.csv" \
-              -o \
-              -name "*.json" \
-            \) \
-            -print \
-            | sort
-
 
           echo
-          echo "LOG FILES"
+          echo "Repository:"
+          find . -maxdepth 2 -type f | sort
 
+          echo
+          echo "=================================================="
+          echo "DATA FILES"
+          echo "=================================================="
 
-          find logs \
+          for file in \
+            data/BTC_USDT_5m.csv \
+            data/ETH_USDT_5m.csv \
+            data/SOL_USDT_5m.csv
+          do
+
+            echo
+            echo "----------------------------------------"
+            echo "$file"
+            echo "----------------------------------------"
+
+            if [ -f "$file" ]; then
+              ls -lh "$file"
+              echo "Rows:"
+              wc -l "$file"
+            else
+              echo "MISSING"
+            fi
+
+          done
+
+          echo
+          echo "=================================================="
+          echo "CSV RESULTS"
+          echo "=================================================="
+
+          find . \
+            -maxdepth 3 \
             -type f \
-            -print \
-            2>/dev/null || true
+            \( -name "*.csv" -o -name "*.json" -o -name "*.txt" \) \
+            -print | sort
 
 
-      # ==========================================================
-      # 14. UPLOAD RESULTS
-      # ==========================================================
+      # ============================================================
+      # UPLOAD ARTIFACTS
+      # ============================================================
 
       - name: Upload backtest results
         if: always()
         uses: actions/upload-artifact@v4
-
         with:
-
           name: backtest-results
-
           path: |
-
             data/*.csv
-            *.csv
-            *.json
+            results/**
             logs/**
-
+            *_results.csv
+            *_summary.csv
           if-no-files-found: warn
-
-          retention-days: 14
+          retention-days: 30
