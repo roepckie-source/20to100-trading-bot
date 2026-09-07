@@ -12,6 +12,7 @@
 
 import json
 import os
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone, date
 from pathlib import Path
 
@@ -41,29 +42,14 @@ from config_paper import (
 
 class PaperTrader:
     """
-    Incremental paper-trading adapter around the existing
-    V7-S0 survival engine.
+    Incremental paper-trading adapter around V7-S0.
 
-    The backtest engine remains the source of truth for:
-        - position sizing
-        - risk multiplier
-        - stops
-        - trailing stops
-        - daily loss protection
-        - consecutive loss protection
-        - global drawdown kill switch
-        - fees
-        - slippage
-        - trade accounting
+    NO REAL ORDERS ARE SENT.
     """
 
     def __init__(self, symbol: str):
 
         self.symbol = symbol
-
-        # ----------------------------------------------------
-        # Directories
-        # ----------------------------------------------------
 
         self.log_dir = Path(LOG_DIR)
         self.state_dir = Path(STATE_DIR)
@@ -72,7 +58,7 @@ class PaperTrader:
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
         # ----------------------------------------------------
-        # Engine
+        # V7-S0 ENGINE
         # ----------------------------------------------------
 
         self.engine = V7SurvivalEngine(
@@ -91,7 +77,7 @@ class PaperTrader:
         )
 
         # ----------------------------------------------------
-        # Persistent state
+        # STATE
         # ----------------------------------------------------
 
         self.state_file = (
@@ -114,29 +100,21 @@ class PaperTrader:
         self.cooldown_until = -1
 
         self.kill_switch = False
-
         self.position = None
 
-        # Number of already logged engine trades
         self.logged_trades = 0
 
         self.load_state()
 
-        # ----------------------------------------------------
-        # Make sure engine state matches restored paper state
-        # ----------------------------------------------------
-
+        # Restore engine state
         self.engine.balance = self.balance
         self.engine.peak_equity = self.peak_equity
         self.engine.day_start_equity = self.day_start_equity
         self.engine.current_day = self.current_day
-
         self.engine.consecutive_losses = self.consecutive_losses
         self.engine.cooldown_until = self.cooldown_until
         self.engine.kill_switch = self.kill_switch
-
         self.engine.position = self.position
-
         self.engine._current_index = self.bar_counter
 
     # ========================================================
@@ -146,12 +124,20 @@ class PaperTrader:
     def load_state(self):
 
         if not self.state_file.exists():
-            print(f"[{self.symbol}] No previous paper state found.")
+            print(
+                f"[{self.symbol}] "
+                f"No previous paper state found."
+            )
             return
 
         try:
 
-            with open(self.state_file, "r", encoding="utf-8") as f:
+            with open(
+                self.state_file,
+                "r",
+                encoding="utf-8",
+            ) as f:
+
                 state = json.load(f)
 
             self.last_completed_bar = self._parse_timestamp(
@@ -167,50 +153,74 @@ class PaperTrader:
             )
 
             self.balance = float(
-                state.get("balance", STARTING_CAPITAL)
+                state.get(
+                    "balance",
+                    STARTING_CAPITAL,
+                )
             )
 
             self.peak_equity = float(
-                state.get("peak_equity", self.balance)
+                state.get(
+                    "peak_equity",
+                    self.balance,
+                )
             )
 
             self.day_start_equity = float(
-                state.get("day_start_equity", self.balance)
+                state.get(
+                    "day_start_equity",
+                    self.balance,
+                )
             )
 
             current_day = state.get("current_day")
 
             if current_day:
-                self.current_day = date.fromisoformat(current_day)
+                self.current_day = date.fromisoformat(
+                    current_day
+                )
 
             self.consecutive_losses = int(
-                state.get("consecutive_losses", 0)
+                state.get(
+                    "consecutive_losses",
+                    0,
+                )
             )
 
             self.cooldown_until = int(
-                state.get("cooldown_until", -1)
+                state.get(
+                    "cooldown_until",
+                    -1,
+                )
             )
 
             self.kill_switch = bool(
-                state.get("kill_switch", False)
+                state.get(
+                    "kill_switch",
+                    False,
+                )
             )
 
             self.position = state.get("position")
 
             self.logged_trades = int(
-                state.get("logged_trades", 0)
+                state.get(
+                    "logged_trades",
+                    0,
+                )
             )
 
             print(
-                f"[{self.symbol}] Paper state restored | "
+                f"[{self.symbol}] "
+                f"Paper state restored | "
                 f"balance=${self.balance:.4f}"
             )
 
         except Exception as exc:
 
             print(
-                f"[{self.symbol}] WARNING: "
-                f"Could not load state: {exc}"
+                f"[{self.symbol}] "
+                f"WARNING: Could not load state: {exc}"
             )
 
     # --------------------------------------------------------
@@ -219,34 +229,52 @@ class PaperTrader:
 
         state = {
             "symbol": self.symbol,
-            "last_completed_bar": self._serialize_timestamp(
-                self.last_completed_bar
-            ),
-            "last_entry_hour": self._serialize_timestamp(
-                self.last_entry_hour
-            ),
+            "last_completed_bar":
+                self._serialize_timestamp(
+                    self.last_completed_bar
+                ),
+            "last_entry_hour":
+                self._serialize_timestamp(
+                    self.last_entry_hour
+                ),
             "bar_counter": self.bar_counter,
             "balance": self.balance,
             "peak_equity": self.peak_equity,
             "day_start_equity": self.day_start_equity,
             "current_day": (
                 self.current_day.isoformat()
-                if isinstance(self.current_day, date)
+                if isinstance(
+                    self.current_day,
+                    date,
+                )
                 else None
             ),
-            "consecutive_losses": self.consecutive_losses,
-            "cooldown_until": self.cooldown_until,
-            "kill_switch": self.kill_switch,
-            "position": self.position,
-            "logged_trades": self.logged_trades,
-            "updated_at": datetime.now(
-                timezone.utc
-            ).isoformat(),
+            "consecutive_losses":
+                self.consecutive_losses,
+            "cooldown_until":
+                self.cooldown_until,
+            "kill_switch":
+                self.kill_switch,
+            "position":
+                self.position,
+            "logged_trades":
+                self.logged_trades,
+            "updated_at":
+                datetime.now(
+                    timezone.utc
+                ).isoformat(),
         }
 
-        temp_file = self.state_file.with_suffix(".tmp")
+        temp_file = self.state_file.with_suffix(
+            ".tmp"
+        )
 
-        with open(temp_file, "w", encoding="utf-8") as f:
+        with open(
+            temp_file,
+            "w",
+            encoding="utf-8",
+        ) as f:
+
             json.dump(
                 state,
                 f,
@@ -254,10 +282,13 @@ class PaperTrader:
                 default=str,
             )
 
-        os.replace(temp_file, self.state_file)
+        os.replace(
+            temp_file,
+            self.state_file,
+        )
 
     # ========================================================
-    # TIMESTAMP HELPERS
+    # TIMESTAMP
     # ========================================================
 
     @staticmethod
@@ -284,20 +315,25 @@ class PaperTrader:
 
         try:
             return pd.Timestamp(value)
+
         except Exception:
             return None
 
     # ========================================================
-    # LOGGING
+    # CSV LOGGING
     # ========================================================
 
-    def _append_csv(self, filename, row):
+    def _append_csv(
+        self,
+        filename,
+        row,
+    ):
 
         path = self.log_dir / filename
 
-        df = pd.DataFrame([row])
-
-        df.to_csv(
+        pd.DataFrame(
+            [row]
+        ).to_csv(
             path,
             mode="a",
             header=not path.exists(),
@@ -317,32 +353,52 @@ class PaperTrader:
         self._append_csv(
             "paper_signals.csv",
             {
-                "timestamp": timestamp,
-                "symbol": self.symbol,
-                "variant": VARIANT,
-                "signal": bool(signal),
-                "close": row.get("close"),
-                "ema_100": row.get("ema_100"),
-                "ema_200": row.get("ema_200"),
-                "ema_200_slope": row.get("ema_200_slope"),
-                "adx_14": row.get("adx_14"),
-                "atr_14": row.get("atr_14"),
-                "atr_14_ma50": row.get("atr_14_ma50"),
-                "donchian_high_20": row.get("donchian_high_20"),
-                "reason": reason,
+                "timestamp":
+                    timestamp,
+                "symbol":
+                    self.symbol,
+                "variant":
+                    VARIANT,
+                "signal":
+                    bool(signal),
+                "close":
+                    row.get("close"),
+                "ema_100":
+                    row.get("ema_100"),
+                "ema_200":
+                    row.get("ema_200"),
+                "ema_200_slope":
+                    row.get("ema_200_slope"),
+                "adx_14":
+                    row.get("adx_14"),
+                "atr_14":
+                    row.get("atr_14"),
+                "atr_14_ma50":
+                    row.get("atr_14_ma50"),
+                "donchian_high_20":
+                    row.get("donchian_high_20"),
+                "reason":
+                    reason,
             },
         )
 
     # --------------------------------------------------------
 
-    def log_equity(self, timestamp, equity):
+    def log_equity(
+        self,
+        timestamp,
+        equity,
+    ):
 
         drawdown = 0.0
 
         if self.peak_equity > 0:
 
             drawdown = (
-                (equity - self.peak_equity)
+                (
+                    equity
+                    - self.peak_equity
+                )
                 / self.peak_equity
                 * 100.0
             )
@@ -350,44 +406,110 @@ class PaperTrader:
         self._append_csv(
             "paper_equity.csv",
             {
-                "timestamp": timestamp,
-                "symbol": self.symbol,
-                "balance": self.balance,
-                "equity": equity,
-                "peak_equity": self.peak_equity,
-                "drawdown_pct": drawdown,
-                "position_open": self.position is not None,
-                "kill_switch": self.kill_switch,
+                "timestamp":
+                    timestamp,
+                "symbol":
+                    self.symbol,
+                "balance":
+                    self.balance,
+                "equity":
+                    equity,
+                "peak_equity":
+                    self.peak_equity,
+                "drawdown_pct":
+                    drawdown,
+                "position_open":
+                    self.position is not None,
+                "kill_switch":
+                    self.kill_switch,
             },
         )
 
-    # --------------------------------------------------------
+    # ========================================================
+    # TRADE LOGGING
+    # ========================================================
 
-    def log_trade(self, trade):
+    def _log_new_trades(self):
 
-        if not trade:
-            return
-
-        row = dict(trade)
-
-        row["symbol"] = self.symbol
-        row["variant"] = VARIANT
-
-        self._append_csv(
-            "paper_trades.csv",
-            row,
+        trades = getattr(
+            self.engine,
+            "trades",
+            [],
         )
+
+        while self.logged_trades < len(trades):
+
+            trade = trades[
+                self.logged_trades
+            ]
+
+            # Trade is a dataclass in V7-S0
+            if is_dataclass(trade):
+
+                row = asdict(trade)
+
+            elif isinstance(
+                trade,
+                dict,
+            ):
+
+                row = dict(trade)
+
+            else:
+
+                row = {
+                    "trade":
+                        str(trade)
+                }
+
+            row["symbol"] = self.symbol
+            row["variant"] = VARIANT
+
+            self._append_csv(
+                "paper_trades.csv",
+                row,
+            )
+
+            net_profit = float(
+                row.get(
+                    "net_profit",
+                    0.0,
+                )
+            )
+
+            if net_profit > 0:
+
+                print(
+                    f"[{self.symbol}] "
+                    f"✅ PAPER SELL | "
+                    f"Net=${net_profit:.4f}"
+                )
+
+            else:
+
+                print(
+                    f"[{self.symbol}] "
+                    f"🔴 PAPER SELL | "
+                    f"Net=${net_profit:.4f}"
+                )
+
+            self.logged_trades += 1
 
     # ========================================================
     # EQUITY
     # ========================================================
 
-    def _calculate_equity(self, row):
+    def _calculate_equity(
+        self,
+        row,
+    ):
 
-        return self.engine._calculate_equity(row)
+        return self.engine._calculate_equity(
+            row
+        )
 
     # ========================================================
-    # PROCESS COMPLETED BAR
+    # COMPLETED BAR
     # ========================================================
 
     def _process_completed_bar(
@@ -397,81 +519,153 @@ class PaperTrader:
     ):
 
         self.engine._current_index += 1
-        self.bar_counter = self.engine._current_index
 
-        equity = self._calculate_equity(row)
+        self.bar_counter = (
+            self.engine._current_index
+        )
 
-        # ----------------------------------------------------
-        # Day reset
-        # ----------------------------------------------------
-
-        self.engine._reset_day_if_needed(timestamp, equity)
-
-        self.day_start_equity = self.engine.day_start_equity
-        self.current_day = self.engine.current_day
+        equity = self._calculate_equity(
+            row
+        )
 
         # ----------------------------------------------------
-        # Peak equity
+        # Daily reset
         # ----------------------------------------------------
 
-        if equity > self.engine.peak_equity:
+        self.engine._reset_day_if_needed(
+            timestamp,
+            equity,
+        )
+
+        # ----------------------------------------------------
+        # Peak
+        # ----------------------------------------------------
+
+        if (
+            equity
+            > self.engine.peak_equity
+        ):
+
             self.engine.peak_equity = equity
-
-        self.peak_equity = self.engine.peak_equity
 
         # ----------------------------------------------------
         # Global drawdown
         # ----------------------------------------------------
 
-        if self.engine._global_drawdown_hit(equity):
+        if self.engine._global_drawdown_hit(
+            equity
+        ):
 
             if not self.engine.kill_switch:
 
                 print(
                     f"[{self.symbol}] "
-                    f"!!! GLOBAL DRAWDOWN KILL SWITCH !!!"
+                    f"!!! GLOBAL DRAWDOWN "
+                    f"KILL SWITCH !!!"
                 )
 
             self.engine.kill_switch = True
-            self.kill_switch = True
 
         # ----------------------------------------------------
         # Position management
         #
-        # Same order as V7-S0:
+        # EXACT V7-S0 ORDER:
         #
-        # 1. stop
-        # 2. trailing stop
+        # 1. Stop
+        # 2. Trailing stop
         # ----------------------------------------------------
 
         if self.engine.position is not None:
 
-            position_before = self.engine.position
+            position = self.engine.position
 
-            self.engine._manage_position(
-                timestamp,
-                row,
-                equity,
+            # Stop-loss first
+            stop_price = float(
+                position["stop"]
             )
 
-            self.position = self.engine.position
+            if float(row["low"]) <= stop_price:
 
-            # ------------------------------------------------
-            # Trade closed?
-            # ------------------------------------------------
-
-            if (
-                position_before is not None
-                and self.engine.position is None
-            ):
+                self.engine._exit(
+                    timestamp,
+                    stop_price,
+                    "ATR_STOP",
+                )
 
                 self._log_new_trades()
 
+            else:
+
+                # Update highest price
+                high = float(
+                    row["high"]
+                )
+
+                if high > float(
+                    position["highest"]
+                ):
+
+                    position["highest"] = high
+
+                # Trailing stop
+                atr = float(
+                    row["atr_14"]
+                )
+
+                if atr > 0:
+
+                    candidate = (
+                        position["highest"]
+                        - (
+                            atr
+                            * self.engine
+                              .trailing_atr_multiplier
+                        )
+                    )
+
+                    if candidate > float(
+                        position["stop"]
+                    ):
+
+                        position["stop"] = candidate
+
+                self.engine.position = position
+
         # ----------------------------------------------------
-        # Equity log
+        # Sync
         # ----------------------------------------------------
 
-        self.balance = float(self.engine.balance)
+        self.position = (
+            self.engine.position
+        )
+
+        self.balance = float(
+            self.engine.balance
+        )
+
+        self.peak_equity = float(
+            self.engine.peak_equity
+        )
+
+        self.day_start_equity = float(
+            self.engine.day_start_equity
+        )
+
+        self.current_day = (
+            self.engine.current_day
+        )
+
+        self.consecutive_losses = int(
+            self.engine.consecutive_losses
+        )
+
+        self.cooldown_until = int(
+            self.engine.cooldown_until
+        )
+
+        self.kill_switch = bool(
+            self.engine.kill_switch
+        )
 
         self.log_equity(
             timestamp,
@@ -479,7 +673,7 @@ class PaperTrader:
         )
 
     # ========================================================
-    # ENTRY FOR CURRENT HOUR
+    # CURRENT HOUR / ENTRY
     # ========================================================
 
     def _process_current_hour(
@@ -490,25 +684,19 @@ class PaperTrader:
         previous_previous_row,
     ):
 
-        # ----------------------------------------------------
-        # Only process one entry decision per hour
-        # ----------------------------------------------------
-
+        # Only one entry decision per hour
         if (
             self.last_entry_hour is not None
-            and timestamp <= self.last_entry_hour
+            and timestamp
+            <= self.last_entry_hour
         ):
+
             return
 
         self.last_entry_hour = timestamp
 
-        self.engine._current_index += 1
-        self.bar_counter = self.engine._current_index
-
-        equity = self._calculate_equity(current_row)
-
         # ----------------------------------------------------
-        # Safety: existing position
+        # Existing position
         # ----------------------------------------------------
 
         if self.engine.position is not None:
@@ -521,6 +709,14 @@ class PaperTrader:
             )
 
             return
+
+        # ----------------------------------------------------
+        # Current equity
+        # ----------------------------------------------------
+
+        equity = self._calculate_equity(
+            current_row
+        )
 
         # ----------------------------------------------------
         # Kill switch
@@ -538,10 +734,12 @@ class PaperTrader:
             return
 
         # ----------------------------------------------------
-        # Daily loss protection
+        # Daily loss
         # ----------------------------------------------------
 
-        if self.engine._daily_loss_limit_hit(equity):
+        if self.engine._daily_loss_limit_hit(
+            equity
+        ):
 
             self.log_signal(
                 timestamp,
@@ -553,7 +751,7 @@ class PaperTrader:
             return
 
         # ----------------------------------------------------
-        # Consecutive-loss cooldown
+        # Consecutive losses
         # ----------------------------------------------------
 
         if (
@@ -569,6 +767,10 @@ class PaperTrader:
             )
 
             return
+
+        # ----------------------------------------------------
+        # Cooldown
+        # ----------------------------------------------------
 
         if (
             self.engine._current_index
@@ -586,10 +788,6 @@ class PaperTrader:
 
         # ----------------------------------------------------
         # V6-C signal
-        #
-        # IMPORTANT:
-        # Signal is calculated from the COMPLETED candle.
-        # Entry is executed on the CURRENT candle open.
         # ----------------------------------------------------
 
         try:
@@ -614,7 +812,8 @@ class PaperTrader:
         except Exception as exc:
 
             print(
-                f"[{self.symbol}] Signal error: {exc}"
+                f"[{self.symbol}] "
+                f"Signal error: {exc}"
             )
 
             signal = False
@@ -633,8 +832,10 @@ class PaperTrader:
         # Risk multiplier
         # ----------------------------------------------------
 
-        risk_multiplier = self.engine._risk_multiplier(
-            equity
+        risk_multiplier = (
+            self.engine._risk_multiplier(
+                equity
+            )
         )
 
         if risk_multiplier <= 0:
@@ -651,24 +852,30 @@ class PaperTrader:
         # ----------------------------------------------------
         # ENTER
         #
-        # Existing V7-S0 engine method.
-        # This preserves:
-        # - slippage
-        # - ATR stop
-        # - position sizing
-        # - fees
+        # _enter() modifies engine.position.
+        # It does NOT return a Boolean.
         # ----------------------------------------------------
 
-        entered = self.engine._enter(
+        was_flat = (
+            self.engine.position is None
+        )
+
+        self.engine._enter(
             timestamp,
             previous_row,
             current_row,
             equity,
         )
 
-        if entered:
+        if (
+            was_flat
+            and self.engine.position
+            is not None
+        ):
 
-            self.position = self.engine.position
+            self.position = (
+                self.engine.position
+            )
 
             self.balance = float(
                 self.engine.balance
@@ -678,63 +885,26 @@ class PaperTrader:
                 f"[{self.symbol}] "
                 f"🟢 PAPER BUY | "
                 f"{timestamp} | "
-                f"price={self.position.get('entry_price', 0):.4f} | "
-                f"qty={self.position.get('quantity', 0):.8f}"
+                f"price="
+                f"{self.position.get('entry_price', 0):.4f} | "
+                f"qty="
+                f"{self.position.get('quantity', 0):.8f}"
             )
 
     # ========================================================
-    # TRADE LOGGING
+    # MAIN PROCESS
     # ========================================================
 
-    def _log_new_trades(self):
+    def process(
+        self,
+        hourly_df: pd.DataFrame,
+    ):
 
-        trades = getattr(
-            self.engine,
-            "trades",
-            [],
-        )
+        if (
+            hourly_df is None
+            or hourly_df.empty
+        ):
 
-        while self.logged_trades < len(trades):
-
-            trade = trades[self.logged_trades]
-
-            self.log_trade(trade)
-
-            self.logged_trades += 1
-
-            pnl = float(
-                trade.get(
-                    "pnl",
-                    0.0,
-                )
-            )
-
-            if pnl > 0:
-
-                print(
-                    f"[{self.symbol}] "
-                    f"✅ PAPER SELL | "
-                    f"PnL=${pnl:.4f}"
-                )
-
-            else:
-
-                print(
-                    f"[{self.symbol}] "
-                    f"🔴 PAPER SELL | "
-                    f"PnL=${pnl:.4f}"
-                )
-
-    # ========================================================
-    # MAIN PROCESS FUNCTION
-    # ========================================================
-
-    def process(self, hourly_df: pd.DataFrame):
-
-        if hourly_df is None:
-            return
-
-        if hourly_df.empty:
             return
 
         df = hourly_df.copy()
@@ -743,26 +913,31 @@ class PaperTrader:
         # Normalize index
         # ----------------------------------------------------
 
-        if not isinstance(df.index, pd.DatetimeIndex):
+        if not isinstance(
+            df.index,
+            pd.DatetimeIndex,
+        ):
 
             df.index = pd.to_datetime(
                 df.index,
                 utc=True,
             )
 
+        elif df.index.tz is None:
+
+            df.index = (
+                df.index.tz_localize(
+                    "UTC"
+                )
+            )
+
         else:
 
-            if df.index.tz is None:
-
-                df.index = df.index.tz_localize(
+            df.index = (
+                df.index.tz_convert(
                     "UTC"
                 )
-
-            else:
-
-                df.index = df.index.tz_convert(
-                    "UTC"
-                )
+            )
 
         df = df.sort_index()
 
@@ -772,13 +947,16 @@ class PaperTrader:
 
         try:
 
-            df = calculate_indicators(df)
+            df = calculate_indicators(
+                df
+            )
 
         except Exception as exc:
 
             print(
                 f"[{self.symbol}] "
-                f"Indicator calculation failed: {exc}"
+                f"Indicator calculation failed: "
+                f"{exc}"
             )
 
             return
@@ -794,8 +972,8 @@ class PaperTrader:
             return
 
         # ----------------------------------------------------
-        # Current candle = still forming
-        # Previous candle = completed
+        # Current = forming
+        # Previous = completed
         # ----------------------------------------------------
 
         current_timestamp = df.index[-1]
@@ -806,15 +984,12 @@ class PaperTrader:
             return
 
         # ----------------------------------------------------
-        # Process newly completed candles
+        # First startup
+        #
+        # Do NOT replay historical data.
         # ----------------------------------------------------
 
         if self.last_completed_bar is None:
-
-            # First startup:
-            #
-            # We do NOT replay history.
-            # We initialize from the current market state.
 
             self.last_completed_bar = (
                 completed_df.index[-1]
@@ -828,8 +1003,10 @@ class PaperTrader:
                 self.engine._current_index
             )
 
-            current_equity = self._calculate_equity(
-                df.iloc[-1]
+            current_equity = (
+                self._calculate_equity(
+                    df.iloc[-1]
+                )
             )
 
             self.balance = float(
@@ -861,7 +1038,7 @@ class PaperTrader:
             return
 
         # ----------------------------------------------------
-        # Find all completed bars not processed yet
+        # New completed bars
         # ----------------------------------------------------
 
         new_completed = completed_df[
@@ -869,24 +1046,33 @@ class PaperTrader:
             > self.last_completed_bar
         ]
 
-        for timestamp, row in new_completed.iterrows():
+        for timestamp, row in (
+            new_completed.iterrows()
+        ):
 
             self._process_completed_bar(
                 timestamp,
                 row,
             )
 
-            self.last_completed_bar = timestamp
+            self.last_completed_bar = (
+                timestamp
+            )
 
         # ----------------------------------------------------
-        # Current hour entry
+        # Entry decision
+        #
+        # Signal = completed candle
+        # Entry = current candle open
         # ----------------------------------------------------
 
         if len(df) >= 3:
 
             previous_row = df.iloc[-2]
 
-            previous_previous_row = df.iloc[-3]
+            previous_previous_row = (
+                df.iloc[-3]
+            )
 
             self._process_current_hour(
                 current_timestamp,
@@ -896,7 +1082,7 @@ class PaperTrader:
             )
 
         # ----------------------------------------------------
-        # Restore references
+        # Final sync
         # ----------------------------------------------------
 
         self.balance = float(
@@ -927,11 +1113,9 @@ class PaperTrader:
             self.engine.kill_switch
         )
 
-        self.position = self.engine.position
-
-        # ----------------------------------------------------
-        # Save
-        # ----------------------------------------------------
+        self.position = (
+            self.engine.position
+        )
 
         self.save_state()
 
