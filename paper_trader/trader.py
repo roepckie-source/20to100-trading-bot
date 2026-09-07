@@ -1,265 +1,252 @@
 # ============================================================
 # 20to100 Trading Bot
-# PAPER TRADER - V7-S0
+# V7-S0 PAPER TRADER
 #
-# V6-C bleibt vollständig eingefroren.
-#
-# PAPER ONLY
-# ------------------------------------------------------------
-# - Keine echten Orders
-# - Keine API Keys notwendig
-# - Öffentliche OHLCV-Daten
-# - 5m -> 1h
-# - V6-C Entry
-# - V7-S0 Risk Management
-# - ATR Stop
-# - ATR Trailing Stop
-# - Daily Loss Limit
-# - Consecutive Loss Protection
-# - Global Drawdown Kill Switch
-# - State Persistence
-# - CSV Logging
+# IMPORTANT:
+# - PAPER TRADING ONLY
+# - NO REAL ORDERS
+# - Uses the existing V7 Survival Engine
+# - Uses V6-C signal
+# - 5m market data -> 1h signal timeframe
 # ============================================================
 
-from __future__ import annotations
-
-import csv
 import json
 import os
-from dataclasses import asdict
+from datetime import datetime, timezone, date
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
 from backtest.v7_survival_engine import V7SurvivalEngine
-from strategy.indicators import calculate_indicators
 from strategy.strategy_v6 import buy_signal
+from strategy.indicators import calculate_indicators
 
-
-# ============================================================
-# PATHS
-# ============================================================
-
-ROOT_DIR = Path(__file__).resolve().parent.parent
-
-LOG_DIR = ROOT_DIR / "logs"
-
-STATE_DIR = LOG_DIR / "paper_state"
-TRADE_DIR = LOG_DIR / "paper_trades"
-EQUITY_DIR = LOG_DIR / "paper_equity"
-SIGNAL_DIR = LOG_DIR / "paper_signals"
-
-for directory in [
+from config_paper import (
+    STARTING_CAPITAL,
+    FEE_RATE,
+    SLIPPAGE_RATE,
+    ATR_STOP_MULTIPLIER,
+    TRAILING_ATR_MULTIPLIER,
+    ADX_MIN,
+    MAX_DAILY_LOSS,
+    MAX_CONSECUTIVE_LOSSES,
+    LOSS_COOLDOWN_BARS,
+    GLOBAL_MAX_DRAWDOWN,
+    BASE_RISK_PER_TRADE,
+    VARIANT,
     LOG_DIR,
     STATE_DIR,
-    TRADE_DIR,
-    EQUITY_DIR,
-    SIGNAL_DIR,
-]:
-    directory.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+)
 
-
-# ============================================================
-# PAPER TRADER
-# ============================================================
 
 class PaperTrader:
+    """
+    Incremental paper-trading adapter around the existing
+    V7-S0 survival engine.
 
-    def __init__(
-        self,
-        symbol: str,
-        starting_balance: float = 20.0,
-        base_risk_per_trade: float = 0.01,
-        fee_rate: float = 0.001,
-        slippage_rate: float = 0.0005,
-        atr_stop_multiplier: float = 3.0,
-        trailing_atr_multiplier: float = 3.0,
-        adx_min: float = 20.0,
-        max_daily_loss: float = 0.05,
-        max_consecutive_losses: int = 3,
-        loss_cooldown_bars: int = 24,
-        global_max_drawdown: float = 0.20,
-        variant: str = "V6_C",
-    ):
+    The backtest engine remains the source of truth for:
+        - position sizing
+        - risk multiplier
+        - stops
+        - trailing stops
+        - daily loss protection
+        - consecutive loss protection
+        - global drawdown kill switch
+        - fees
+        - slippage
+        - trade accounting
+    """
 
-        # ====================================================
-        # BASIC
-        # ====================================================
+    def __init__(self, symbol: str):
 
-        self.symbol = str(symbol)
+        self.symbol = symbol
 
-        self.starting_balance = float(
-            starting_balance
-        )
+        # ----------------------------------------------------
+        # Directories
+        # ----------------------------------------------------
 
-        self.variant = str(
-            variant
-        ).upper()
+        self.log_dir = Path(LOG_DIR)
+        self.state_dir = Path(STATE_DIR)
 
-        if self.variant != "V6_C":
-            raise ValueError(
-                "PaperTrader verwendet ausschließlich V6_C."
-            )
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
 
-        # ====================================================
-        # V7-S0 ENGINE
-        # ====================================================
+        # ----------------------------------------------------
+        # Engine
+        # ----------------------------------------------------
 
         self.engine = V7SurvivalEngine(
-            starting_balance=self.starting_balance,
-            base_risk_per_trade=base_risk_per_trade,
-            fee_rate=fee_rate,
-            slippage_rate=slippage_rate,
-            atr_stop_multiplier=atr_stop_multiplier,
-            trailing_atr_multiplier=trailing_atr_multiplier,
-            adx_min=adx_min,
-            variant="V6_C",
-            max_daily_loss=max_daily_loss,
-            max_consecutive_losses=max_consecutive_losses,
-            loss_cooldown_bars=loss_cooldown_bars,
-            global_max_drawdown=global_max_drawdown,
+            starting_balance=STARTING_CAPITAL,
+            base_risk_per_trade=BASE_RISK_PER_TRADE,
+            fee_rate=FEE_RATE,
+            slippage_rate=SLIPPAGE_RATE,
+            atr_stop_multiplier=ATR_STOP_MULTIPLIER,
+            trailing_atr_multiplier=TRAILING_ATR_MULTIPLIER,
+            adx_min=ADX_MIN,
+            variant=VARIANT,
+            max_daily_loss=MAX_DAILY_LOSS,
+            max_consecutive_losses=MAX_CONSECUTIVE_LOSSES,
+            loss_cooldown_bars=LOSS_COOLDOWN_BARS,
+            global_max_drawdown=GLOBAL_MAX_DRAWDOWN,
         )
 
-        # ====================================================
-        # STATE
-        # ====================================================
-
-        self.last_completed_bar: Optional[pd.Timestamp] = None
-
-        self.last_entry_hour: Optional[pd.Timestamp] = None
-
-        self.initialized = False
-
-        # Number of processed 1h bars.
-        #
-        # This is intentionally persisted because V7-S0 uses
-        # the current bar index for cooldown handling.
-        self.bar_counter = 0
-
-        # Number of trades already written to CSV.
-        self.logged_trade_count = 0
-
-        # ====================================================
-        # FILES
-        # ====================================================
-
-        safe_symbol = (
-            self.symbol
-            .replace("/", "_")
-            .replace(":", "_")
-        )
+        # ----------------------------------------------------
+        # Persistent state
+        # ----------------------------------------------------
 
         self.state_file = (
-            STATE_DIR
-            / f"{safe_symbol}.json"
+            self.state_dir
+            / f"{self.symbol.replace('/', '_')}_paper_state.json"
         )
 
-        self.trade_file = (
-            TRADE_DIR
-            / f"{safe_symbol}.csv"
-        )
+        self.last_completed_bar = None
+        self.last_entry_hour = None
 
-        self.equity_file = (
-            EQUITY_DIR
-            / f"{safe_symbol}.csv"
-        )
+        self.bar_counter = -1
 
-        self.signal_file = (
-            SIGNAL_DIR
-            / f"{safe_symbol}.csv"
-        )
+        self.balance = float(STARTING_CAPITAL)
+        self.peak_equity = float(STARTING_CAPITAL)
+        self.day_start_equity = float(STARTING_CAPITAL)
+
+        self.current_day = None
+
+        self.consecutive_losses = 0
+        self.cooldown_until = -1
+
+        self.kill_switch = False
+
+        self.position = None
+
+        # Number of already logged engine trades
+        self.logged_trades = 0
+
+        self.load_state()
+
+        # ----------------------------------------------------
+        # Make sure engine state matches restored paper state
+        # ----------------------------------------------------
+
+        self.engine.balance = self.balance
+        self.engine.peak_equity = self.peak_equity
+        self.engine.day_start_equity = self.day_start_equity
+        self.engine.current_day = self.current_day
+
+        self.engine.consecutive_losses = self.consecutive_losses
+        self.engine.cooldown_until = self.cooldown_until
+        self.engine.kill_switch = self.kill_switch
+
+        self.engine.position = self.position
+
+        self.engine._current_index = self.bar_counter
 
     # ========================================================
-    # STATE SAVE
+    # STATE
     # ========================================================
+
+    def load_state(self):
+
+        if not self.state_file.exists():
+            print(f"[{self.symbol}] No previous paper state found.")
+            return
+
+        try:
+
+            with open(self.state_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+
+            self.last_completed_bar = self._parse_timestamp(
+                state.get("last_completed_bar")
+            )
+
+            self.last_entry_hour = self._parse_timestamp(
+                state.get("last_entry_hour")
+            )
+
+            self.bar_counter = int(
+                state.get("bar_counter", -1)
+            )
+
+            self.balance = float(
+                state.get("balance", STARTING_CAPITAL)
+            )
+
+            self.peak_equity = float(
+                state.get("peak_equity", self.balance)
+            )
+
+            self.day_start_equity = float(
+                state.get("day_start_equity", self.balance)
+            )
+
+            current_day = state.get("current_day")
+
+            if current_day:
+                self.current_day = date.fromisoformat(current_day)
+
+            self.consecutive_losses = int(
+                state.get("consecutive_losses", 0)
+            )
+
+            self.cooldown_until = int(
+                state.get("cooldown_until", -1)
+            )
+
+            self.kill_switch = bool(
+                state.get("kill_switch", False)
+            )
+
+            self.position = state.get("position")
+
+            self.logged_trades = int(
+                state.get("logged_trades", 0)
+            )
+
+            print(
+                f"[{self.symbol}] Paper state restored | "
+                f"balance=${self.balance:.4f}"
+            )
+
+        except Exception as exc:
+
+            print(
+                f"[{self.symbol}] WARNING: "
+                f"Could not load state: {exc}"
+            )
+
+    # --------------------------------------------------------
 
     def save_state(self):
 
-        position = self.engine.position
-
         state = {
             "symbol": self.symbol,
-
-            "variant": self.variant,
-
-            "initialized": self.initialized,
-
-            "last_completed_bar": (
-                self._timestamp_to_string(
-                    self.last_completed_bar
-                )
-                if self.last_completed_bar is not None
-                else None
+            "last_completed_bar": self._serialize_timestamp(
+                self.last_completed_bar
             ),
-
-            "last_entry_hour": (
-                self._timestamp_to_string(
-                    self.last_entry_hour
-                )
-                if self.last_entry_hour is not None
-                else None
+            "last_entry_hour": self._serialize_timestamp(
+                self.last_entry_hour
             ),
-
             "bar_counter": self.bar_counter,
-
-            "logged_trade_count":
-                self.logged_trade_count,
-
-            "balance":
-                float(self.engine.balance),
-
-            "peak_equity":
-                float(self.engine.peak_equity),
-
-            "day_start_equity":
-                float(self.engine.day_start_equity),
-
-            "current_day":
-                (
-                    self.engine.current_day.isoformat()
-                    if self.engine.current_day is not None
-                    else None
-                ),
-
-            "consecutive_losses":
-                int(self.engine.consecutive_losses),
-
-            "cooldown_until":
-                int(self.engine.cooldown_until),
-
-            "kill_switch":
-                bool(self.engine.kill_switch),
-
-            "normal_risk_trades":
-                int(self.engine.normal_risk_trades),
-
-            "defensive_risk_trades":
-                int(self.engine.defensive_risk_trades),
-
-            "survival_risk_trades":
-                int(self.engine.survival_risk_trades),
-
-            "critical_risk_trades":
-                int(self.engine.critical_risk_trades),
-
-            "position":
-                position,
+            "balance": self.balance,
+            "peak_equity": self.peak_equity,
+            "day_start_equity": self.day_start_equity,
+            "current_day": (
+                self.current_day.isoformat()
+                if isinstance(self.current_day, date)
+                else None
+            ),
+            "consecutive_losses": self.consecutive_losses,
+            "cooldown_until": self.cooldown_until,
+            "kill_switch": self.kill_switch,
+            "position": self.position,
+            "logged_trades": self.logged_trades,
+            "updated_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
         }
 
-        tmp_file = self.state_file.with_suffix(
-            ".tmp"
-        )
+        temp_file = self.state_file.with_suffix(".tmp")
 
-        with open(
-            tmp_file,
-            "w",
-            encoding="utf-8",
-        ) as f:
-
+        with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(
                 state,
                 f,
@@ -267,400 +254,619 @@ class PaperTrader:
                 default=str,
             )
 
-        os.replace(
-            tmp_file,
-            self.state_file,
+        os.replace(temp_file, self.state_file)
+
+    # ========================================================
+    # TIMESTAMP HELPERS
+    # ========================================================
+
+    @staticmethod
+    def _serialize_timestamp(value):
+
+        if value is None:
+            return None
+
+        if isinstance(value, pd.Timestamp):
+            return value.isoformat()
+
+        if isinstance(value, datetime):
+            return value.isoformat()
+
+        return str(value)
+
+    # --------------------------------------------------------
+
+    @staticmethod
+    def _parse_timestamp(value):
+
+        if not value:
+            return None
+
+        try:
+            return pd.Timestamp(value)
+        except Exception:
+            return None
+
+    # ========================================================
+    # LOGGING
+    # ========================================================
+
+    def _append_csv(self, filename, row):
+
+        path = self.log_dir / filename
+
+        df = pd.DataFrame([row])
+
+        df.to_csv(
+            path,
+            mode="a",
+            header=not path.exists(),
+            index=False,
+        )
+
+    # --------------------------------------------------------
+
+    def log_signal(
+        self,
+        timestamp,
+        signal,
+        row,
+        reason="",
+    ):
+
+        self._append_csv(
+            "paper_signals.csv",
+            {
+                "timestamp": timestamp,
+                "symbol": self.symbol,
+                "variant": VARIANT,
+                "signal": bool(signal),
+                "close": row.get("close"),
+                "ema_100": row.get("ema_100"),
+                "ema_200": row.get("ema_200"),
+                "ema_200_slope": row.get("ema_200_slope"),
+                "adx_14": row.get("adx_14"),
+                "atr_14": row.get("atr_14"),
+                "atr_14_ma50": row.get("atr_14_ma50"),
+                "donchian_high_20": row.get("donchian_high_20"),
+                "reason": reason,
+            },
+        )
+
+    # --------------------------------------------------------
+
+    def log_equity(self, timestamp, equity):
+
+        drawdown = 0.0
+
+        if self.peak_equity > 0:
+
+            drawdown = (
+                (equity - self.peak_equity)
+                / self.peak_equity
+                * 100.0
+            )
+
+        self._append_csv(
+            "paper_equity.csv",
+            {
+                "timestamp": timestamp,
+                "symbol": self.symbol,
+                "balance": self.balance,
+                "equity": equity,
+                "peak_equity": self.peak_equity,
+                "drawdown_pct": drawdown,
+                "position_open": self.position is not None,
+                "kill_switch": self.kill_switch,
+            },
+        )
+
+    # --------------------------------------------------------
+
+    def log_trade(self, trade):
+
+        if not trade:
+            return
+
+        row = dict(trade)
+
+        row["symbol"] = self.symbol
+        row["variant"] = VARIANT
+
+        self._append_csv(
+            "paper_trades.csv",
+            row,
         )
 
     # ========================================================
-    # STATE LOAD
+    # EQUITY
     # ========================================================
 
-    def load_state(self) -> bool:
+    def _calculate_equity(self, row):
 
-        if not self.state_file.exists():
-            return False
+        return self.engine._calculate_equity(row)
+
+    # ========================================================
+    # PROCESS COMPLETED BAR
+    # ========================================================
+
+    def _process_completed_bar(
+        self,
+        timestamp,
+        row,
+    ):
+
+        self.engine._current_index += 1
+        self.bar_counter = self.engine._current_index
+
+        equity = self._calculate_equity(row)
+
+        # ----------------------------------------------------
+        # Day reset
+        # ----------------------------------------------------
+
+        self.engine._reset_day_if_needed(timestamp, equity)
+
+        self.day_start_equity = self.engine.day_start_equity
+        self.current_day = self.engine.current_day
+
+        # ----------------------------------------------------
+        # Peak equity
+        # ----------------------------------------------------
+
+        if equity > self.engine.peak_equity:
+            self.engine.peak_equity = equity
+
+        self.peak_equity = self.engine.peak_equity
+
+        # ----------------------------------------------------
+        # Global drawdown
+        # ----------------------------------------------------
+
+        if self.engine._global_drawdown_hit(equity):
+
+            if not self.engine.kill_switch:
+
+                print(
+                    f"[{self.symbol}] "
+                    f"!!! GLOBAL DRAWDOWN KILL SWITCH !!!"
+                )
+
+            self.engine.kill_switch = True
+            self.kill_switch = True
+
+        # ----------------------------------------------------
+        # Position management
+        #
+        # Same order as V7-S0:
+        #
+        # 1. stop
+        # 2. trailing stop
+        # ----------------------------------------------------
+
+        if self.engine.position is not None:
+
+            position_before = self.engine.position
+
+            self.engine._manage_position(
+                timestamp,
+                row,
+                equity,
+            )
+
+            self.position = self.engine.position
+
+            # ------------------------------------------------
+            # Trade closed?
+            # ------------------------------------------------
+
+            if (
+                position_before is not None
+                and self.engine.position is None
+            ):
+
+                self._log_new_trades()
+
+        # ----------------------------------------------------
+        # Equity log
+        # ----------------------------------------------------
+
+        self.balance = float(self.engine.balance)
+
+        self.log_equity(
+            timestamp,
+            equity,
+        )
+
+    # ========================================================
+    # ENTRY FOR CURRENT HOUR
+    # ========================================================
+
+    def _process_current_hour(
+        self,
+        timestamp,
+        current_row,
+        previous_row,
+        previous_previous_row,
+    ):
+
+        # ----------------------------------------------------
+        # Only process one entry decision per hour
+        # ----------------------------------------------------
+
+        if (
+            self.last_entry_hour is not None
+            and timestamp <= self.last_entry_hour
+        ):
+            return
+
+        self.last_entry_hour = timestamp
+
+        self.engine._current_index += 1
+        self.bar_counter = self.engine._current_index
+
+        equity = self._calculate_equity(current_row)
+
+        # ----------------------------------------------------
+        # Safety: existing position
+        # ----------------------------------------------------
+
+        if self.engine.position is not None:
+
+            self.log_signal(
+                timestamp,
+                False,
+                previous_row,
+                "position_already_open",
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Kill switch
+        # ----------------------------------------------------
+
+        if self.engine.kill_switch:
+
+            self.log_signal(
+                timestamp,
+                False,
+                previous_row,
+                "global_kill_switch",
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Daily loss protection
+        # ----------------------------------------------------
+
+        if self.engine._daily_loss_limit_hit(equity):
+
+            self.log_signal(
+                timestamp,
+                False,
+                previous_row,
+                "daily_loss_limit",
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Consecutive-loss cooldown
+        # ----------------------------------------------------
+
+        if (
+            self.engine.consecutive_losses
+            >= self.engine.max_consecutive_losses
+        ):
+
+            self.log_signal(
+                timestamp,
+                False,
+                previous_row,
+                "consecutive_loss_limit",
+            )
+
+            return
+
+        if (
+            self.engine._current_index
+            < self.engine.cooldown_until
+        ):
+
+            self.log_signal(
+                timestamp,
+                False,
+                previous_row,
+                "loss_cooldown",
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # V6-C signal
+        #
+        # IMPORTANT:
+        # Signal is calculated from the COMPLETED candle.
+        # Entry is executed on the CURRENT candle open.
+        # ----------------------------------------------------
 
         try:
 
-            with open(
-                self.state_file,
-                "r",
-                encoding="utf-8",
-            ) as f:
-
-                state = json.load(f)
-
-            # ------------------------------------------------
-            # BASIC
-            # ------------------------------------------------
-
-            self.initialized = bool(
-                state.get(
-                    "initialized",
-                    False,
+            signal = bool(
+                buy_signal(
+                    previous_row,
+                    previous_previous_row,
+                    adx_min=self.engine.adx_min,
                 )
             )
 
-            self.last_completed_bar = (
-                self._string_to_timestamp(
-                    state.get(
-                        "last_completed_bar"
-                    )
+        except TypeError:
+
+            signal = bool(
+                buy_signal(
+                    previous_row,
+                    previous_previous_row,
                 )
             )
 
-            self.last_entry_hour = (
-                self._string_to_timestamp(
-                    state.get(
-                        "last_entry_hour"
-                    )
+        except Exception as exc:
+
+            print(
+                f"[{self.symbol}] Signal error: {exc}"
+            )
+
+            signal = False
+
+        self.log_signal(
+            timestamp,
+            signal,
+            previous_row,
+            "V6_C",
+        )
+
+        if not signal:
+            return
+
+        # ----------------------------------------------------
+        # Risk multiplier
+        # ----------------------------------------------------
+
+        risk_multiplier = self.engine._risk_multiplier(
+            equity
+        )
+
+        if risk_multiplier <= 0:
+
+            self.log_signal(
+                timestamp,
+                False,
+                previous_row,
+                "risk_multiplier_zero",
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # ENTER
+        #
+        # Existing V7-S0 engine method.
+        # This preserves:
+        # - slippage
+        # - ATR stop
+        # - position sizing
+        # - fees
+        # ----------------------------------------------------
+
+        entered = self.engine._enter(
+            timestamp,
+            previous_row,
+            current_row,
+            equity,
+        )
+
+        if entered:
+
+            self.position = self.engine.position
+
+            self.balance = float(
+                self.engine.balance
+            )
+
+            print(
+                f"[{self.symbol}] "
+                f"🟢 PAPER BUY | "
+                f"{timestamp} | "
+                f"price={self.position.get('entry_price', 0):.4f} | "
+                f"qty={self.position.get('quantity', 0):.8f}"
+            )
+
+    # ========================================================
+    # TRADE LOGGING
+    # ========================================================
+
+    def _log_new_trades(self):
+
+        trades = getattr(
+            self.engine,
+            "trades",
+            [],
+        )
+
+        while self.logged_trades < len(trades):
+
+            trade = trades[self.logged_trades]
+
+            self.log_trade(trade)
+
+            self.logged_trades += 1
+
+            pnl = float(
+                trade.get(
+                    "pnl",
+                    0.0,
                 )
             )
 
-            self.bar_counter = int(
-                state.get(
-                    "bar_counter",
-                    0,
+            if pnl > 0:
+
+                print(
+                    f"[{self.symbol}] "
+                    f"✅ PAPER SELL | "
+                    f"PnL=${pnl:.4f}"
                 )
-            )
 
-            self.logged_trade_count = int(
-                state.get(
-                    "logged_trade_count",
-                    0,
-                )
-            )
-
-            # ------------------------------------------------
-            # ENGINE ACCOUNT
-            # ------------------------------------------------
-
-            self.engine.balance = float(
-                state.get(
-                    "balance",
-                    self.starting_balance,
-                )
-            )
-
-            self.engine.peak_equity = float(
-                state.get(
-                    "peak_equity",
-                    self.starting_balance,
-                )
-            )
-
-            self.engine.day_start_equity = float(
-                state.get(
-                    "day_start_equity",
-                    self.starting_balance,
-                )
-            )
-
-            # ------------------------------------------------
-            # DAY
-            # ------------------------------------------------
-
-            current_day = state.get(
-                "current_day"
-            )
-
-            if current_day:
-                self.engine.current_day = (
-                    pd.Timestamp(
-                        current_day
-                    ).date()
-                )
             else:
-                self.engine.current_day = None
-
-            # ------------------------------------------------
-            # LOSS CONTROL
-            # ------------------------------------------------
-
-            self.engine.consecutive_losses = int(
-                state.get(
-                    "consecutive_losses",
-                    0,
-                )
-            )
-
-            self.engine.cooldown_until = int(
-                state.get(
-                    "cooldown_until",
-                    -1,
-                )
-            )
-
-            self.engine.kill_switch = bool(
-                state.get(
-                    "kill_switch",
-                    False,
-                )
-            )
-
-            # ------------------------------------------------
-            # RISK STATISTICS
-            # ------------------------------------------------
-
-            self.engine.normal_risk_trades = int(
-                state.get(
-                    "normal_risk_trades",
-                    0,
-                )
-            )
-
-            self.engine.defensive_risk_trades = int(
-                state.get(
-                    "defensive_risk_trades",
-                    0,
-                )
-            )
-
-            self.engine.survival_risk_trades = int(
-                state.get(
-                    "survival_risk_trades",
-                    0,
-                )
-            )
-
-            self.engine.critical_risk_trades = int(
-                state.get(
-                    "critical_risk_trades",
-                    0,
-                )
-            )
-
-            # ------------------------------------------------
-            # POSITION
-            # ------------------------------------------------
-
-            self.engine.position = (
-                state.get(
-                    "position"
-                )
-            )
-
-            # ------------------------------------------------
-            # ENGINE INDEX
-            # ------------------------------------------------
-
-            self.engine._current_index = (
-                self.bar_counter
-            )
-
-            print(
-                f"[{self.symbol}] "
-                f"Paper-State geladen."
-            )
-
-            print(
-                f"[{self.symbol}] "
-                f"Balance: "
-                f"${self.engine.balance:.4f}"
-            )
-
-            print(
-                f"[{self.symbol}] "
-                f"Bar Counter: "
-                f"{self.bar_counter}"
-            )
-
-            if self.engine.position is not None:
 
                 print(
                     f"[{self.symbol}] "
-                    f"OFFENE POSITION geladen."
+                    f"🔴 PAPER SELL | "
+                    f"PnL=${pnl:.4f}"
                 )
 
-            if self.engine.kill_switch:
+    # ========================================================
+    # MAIN PROCESS FUNCTION
+    # ========================================================
 
-                print(
-                    f"[{self.symbol}] "
-                    f"⚠️ KILL SWITCH IST AKTIV."
+    def process(self, hourly_df: pd.DataFrame):
+
+        if hourly_df is None:
+            return
+
+        if hourly_df.empty:
+            return
+
+        df = hourly_df.copy()
+
+        # ----------------------------------------------------
+        # Normalize index
+        # ----------------------------------------------------
+
+        if not isinstance(df.index, pd.DatetimeIndex):
+
+            df.index = pd.to_datetime(
+                df.index,
+                utc=True,
+            )
+
+        else:
+
+            if df.index.tz is None:
+
+                df.index = df.index.tz_localize(
+                    "UTC"
                 )
 
-            return True
+            else:
+
+                df.index = df.index.tz_convert(
+                    "UTC"
+                )
+
+        df = df.sort_index()
+
+        # ----------------------------------------------------
+        # Indicators
+        # ----------------------------------------------------
+
+        try:
+
+            df = calculate_indicators(df)
 
         except Exception as exc:
 
             print(
                 f"[{self.symbol}] "
-                f"FEHLER beim Laden des State: "
-                f"{exc}"
+                f"Indicator calculation failed: {exc}"
             )
 
-            return False
+            return
 
-    # ========================================================
-    # INITIALIZE FROM CURRENT MARKET DATA
-    # ========================================================
-
-    def initialize(
-        self,
-        data: pd.DataFrame,
-    ):
-
-        data = self._prepare_dataframe(
-            data
-        )
-
-        if len(data) < 300:
-
-            raise ValueError(
-                f"[{self.symbol}] "
-                f"Zu wenig Daten zur Initialisierung: "
-                f"{len(data)}"
-            )
-
-        # ----------------------------------------------------
-        # Current 1h candle
-        # ----------------------------------------------------
-
-        current_hour = data.index[-1]
-
-        completed = data.iloc[:-1]
-
-        if len(completed) < 1:
-
-            raise ValueError(
-                f"[{self.symbol}] "
-                "Keine abgeschlossene 1h-Kerze vorhanden."
-            )
-
-        last_completed = completed.index[-1]
-
-        # ----------------------------------------------------
-        # IMPORTANT
-        #
-        # We do NOT replay old trades.
-        #
-        # The paper trader starts from NOW.
-        # ----------------------------------------------------
-
-        self.last_completed_bar = (
-            last_completed
-        )
-
-        self.last_entry_hour = (
-            current_hour
-        )
-
-        self.bar_counter = (
-            len(completed)
-        )
-
-        self.engine._current_index = (
-            self.bar_counter
-        )
-
-        # ----------------------------------------------------
-        # Establish initial day/equity state.
-        # ----------------------------------------------------
-
-        current_price = float(
-            current_hour
-            and data.iloc[-1]["close"]
-        )
-
-        equity = self.engine._calculate_equity(
-            current_price
-        )
-
-        self.engine._reset_day_if_needed(
-            last_completed,
-            equity,
-        )
-
-        self.engine.peak_equity = max(
-            self.engine.peak_equity,
-            equity,
-        )
-
-        self.initialized = True
-
-        self.save_state()
-
-        print(
-            f"[{self.symbol}] "
-            f"Paper-Trader initialisiert."
-        )
-
-        print(
-            f"[{self.symbol}] "
-            f"Letzte abgeschlossene 1h: "
-            f"{last_completed}"
-        )
-
-        print(
-            f"[{self.symbol}] "
-            f"Aktuelle 1h: "
-            f"{current_hour}"
-        )
-
-        print(
-            f"[{self.symbol}] "
-            f"Start-Balance: "
-            f"${self.engine.balance:.4f}"
-        )
-
-    # ========================================================
-    # MAIN PROCESS
-    # ========================================================
-
-    def process(
-        self,
-        data: pd.DataFrame,
-    ):
-
-        data = self._prepare_dataframe(
-            data
-        )
-
-        if len(data) < 300:
+        if len(df) < 250:
 
             print(
                 f"[{self.symbol}] "
-                f"Zu wenig 1h-Daten: "
-                f"{len(data)}"
+                f"Waiting for enough 1h candles: "
+                f"{len(df)}/250"
             )
 
             return
 
-        # ====================================================
-        # INITIAL SETUP
-        # ====================================================
+        # ----------------------------------------------------
+        # Current candle = still forming
+        # Previous candle = completed
+        # ----------------------------------------------------
 
-        if not self.initialized:
+        current_timestamp = df.index[-1]
 
-            self.initialize(
-                data
-            )
+        completed_df = df.iloc[:-1].copy()
 
+        if completed_df.empty:
             return
 
-        current_hour = data.index[-1]
-
-        completed = data.iloc[:-1]
-
-        if len(completed) < 3:
-
-            return
-
-        # ====================================================
-        # PROCESS NEW COMPLETED BARS
-        # ====================================================
+        # ----------------------------------------------------
+        # Process newly completed candles
+        # ----------------------------------------------------
 
         if self.last_completed_bar is None:
 
+            # First startup:
+            #
+            # We do NOT replay history.
+            # We initialize from the current market state.
+
             self.last_completed_bar = (
-                completed.index[-1]
+                completed_df.index[-1]
             )
 
-        new_completed = completed[
-            completed.index
-            >
-            self.last_completed_bar
+            self.engine._current_index = (
+                len(df) - 2
+            )
+
+            self.bar_counter = (
+                self.engine._current_index
+            )
+
+            current_equity = self._calculate_equity(
+                df.iloc[-1]
+            )
+
+            self.balance = float(
+                self.engine.balance
+            )
+
+            self.peak_equity = max(
+                self.peak_equity,
+                current_equity,
+            )
+
+            self.engine.peak_equity = (
+                self.peak_equity
+            )
+
+            self.log_equity(
+                current_timestamp,
+                current_equity,
+            )
+
+            self.save_state()
+
+            print(
+                f"[{self.symbol}] "
+                f"Paper trader initialized at "
+                f"{current_timestamp}"
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Find all completed bars not processed yet
+        # ----------------------------------------------------
+
+        new_completed = completed_df[
+            completed_df.index
+            > self.last_completed_bar
         ]
 
         for timestamp, row in new_completed.iterrows():
@@ -672,853 +878,81 @@ class PaperTrader:
 
             self.last_completed_bar = timestamp
 
-        # ====================================================
-        # CURRENT HOUR ENTRY
-        #
-        # This corresponds to the next-candle execution
-        # of the original S0 engine.
-        # ====================================================
+        # ----------------------------------------------------
+        # Current hour entry
+        # ----------------------------------------------------
 
-        if (
-            self.last_entry_hour is None
-            or
-            current_hour
-            >
-            self.last_entry_hour
-        ):
+        if len(df) >= 3:
 
-            self._process_current_hour_entry(
-                data
+            previous_row = df.iloc[-2]
+
+            previous_previous_row = df.iloc[-3]
+
+            self._process_current_hour(
+                current_timestamp,
+                df.iloc[-1],
+                previous_row,
+                previous_previous_row,
             )
 
-            self.last_entry_hour = (
-                current_hour
-            )
-
-        # ====================================================
-        # SAVE
-        # ====================================================
-
-        self.save_state()
-
-    # ========================================================
-    # COMPLETED BAR
-    # ========================================================
-
-    def _process_completed_bar(
-        self,
-        timestamp,
-        row,
-    ):
-
-        self.bar_counter += 1
-
-        self.engine._current_index = (
-            self.bar_counter
-        )
-
-        current_price = float(
-            row["close"]
-        )
-
-        # ====================================================
-        # EQUITY
-        # ====================================================
-
-        equity = (
-            self.engine._calculate_equity(
-                current_price
-            )
-        )
-
-        # ====================================================
-        # DAILY RESET
-        # ====================================================
-
-        self.engine._reset_day_if_needed(
-            timestamp,
-            equity,
-        )
-
-        # ====================================================
-        # PEAK
-        # ====================================================
-
-        self.engine.peak_equity = max(
-            self.engine.peak_equity,
-            equity,
-        )
-
-        # ====================================================
-        # EQUITY LOG
-        # ====================================================
-
-        self._log_equity(
-            timestamp,
-            equity,
-        )
-
-        # ====================================================
-        # GLOBAL DD
-        # ====================================================
-
-        if self.engine._global_drawdown_hit(
-            equity
-        ):
-
-            self.engine.kill_switch = True
-
-            print(
-                f"[{self.symbol}] "
-                f"🛑 GLOBAL KILL SWITCH "
-                f"bei {timestamp}"
-            )
-
-        # ====================================================
-        # POSITION MANAGEMENT
-        # ====================================================
-
-        if self.engine.position is not None:
-
-            position_before = (
-                self.engine.position
-            )
-
-            stop = float(
-                position_before["stop"]
-            )
-
-            # ------------------------------------------------
-            # STOP FIRST
-            # ------------------------------------------------
-
-            if float(row["low"]) <= stop:
-
-                self.engine._exit(
-                    timestamp,
-                    stop,
-                    "ATR_STOP",
-                )
-
-                self._log_new_trades()
-
-                print(
-                    f"[{self.symbol}] "
-                    f"🔴 EXIT ATR_STOP "
-                    f"@ {stop:.8f}"
-                )
-
-                return
-
-            # ------------------------------------------------
-            # HIGHEST
-            # ------------------------------------------------
-
-            position = (
-                self.engine.position
-            )
-
-            position["highest"] = max(
-                position["highest"],
-                float(row["high"]),
-            )
-
-            # ------------------------------------------------
-            # TRAILING
-            # ------------------------------------------------
-
-            current_atr = float(
-                row["atr_14"]
-            )
-
-            if current_atr > 0:
-
-                candidate = (
-                    position["highest"]
-                    -
-                    current_atr
-                    *
-                    self.engine.trailing_atr_multiplier
-                )
-
-                if candidate > position["stop"]:
-
-                    position["stop"] = (
-                        candidate
-                    )
-
-        # ====================================================
-        # NO FORCED END EXIT
-        #
-        # Unlike the historical backtest, paper trading
-        # never closes a position merely because the loop
-        # reached the end of a dataset.
-        # ====================================================
-
-    # ========================================================
-    # CURRENT HOUR ENTRY
-    # ========================================================
-
-    def _process_current_hour_entry(
-        self,
-        data: pd.DataFrame,
-    ):
-
-        current = data.iloc[-1]
-
-        previous = data.iloc[-2]
-
-        previous_previous = data.iloc[-3]
-
-        timestamp = data.index[-1]
-
-        current_price = float(
-            current["open"]
-        )
-
-        # ====================================================
-        # CURRENT INDEX
-        # ====================================================
-
-        self.bar_counter += 1
-
-        self.engine._current_index = (
-            self.bar_counter
-        )
-
-        # ====================================================
-        # EQUITY
-        #
-        # Entry uses the current 1h opening price.
-        # ====================================================
-
-        equity = (
-            self.engine._calculate_equity(
-                current_price
-            )
-        )
-
-        # ====================================================
-        # DAILY RESET
-        # ====================================================
-
-        self.engine._reset_day_if_needed(
-            timestamp,
-            equity,
-        )
-
-        # ====================================================
-        # PEAK
-        # ====================================================
-
-        self.engine.peak_equity = max(
-            self.engine.peak_equity,
-            equity,
-        )
-
-        # ====================================================
-        # EQUITY LOG
-        # ====================================================
-
-        self._log_equity(
-            timestamp,
-            equity,
-        )
-
-        # ====================================================
-        # ALREADY IN POSITION?
-        # ====================================================
-
-        if self.engine.position is not None:
-
-            return
-
-        # ====================================================
-        # KILL SWITCH
-        # ====================================================
-
-        if self.engine.kill_switch:
-
-            return
-
-        # ====================================================
-        # DAILY LOSS LIMIT
-        # ====================================================
-
-        if self.engine._daily_loss_limit_hit(
-            equity
-        ):
-
-            print(
-                f"[{self.symbol}] "
-                f"⚠️ Daily Loss Limit aktiv."
-            )
-
-            return
-
-        # ====================================================
-        # COOLDOWN
-        #
-        # Important:
-        # V7-S0 uses bar indices.
-        # ====================================================
-
-        if (
-            self.engine._current_index
-            <
-            self.engine.cooldown_until
-        ):
-
-            return
-
-        # ====================================================
-        # SURVIVAL RISK
-        # ====================================================
-
-        risk_multiplier, risk_level = (
-            self.engine._risk_multiplier(
-                equity
-            )
-        )
-
-        if risk_multiplier <= 0:
-
-            return
-
-        # ====================================================
-        # V6-C SIGNAL
-        #
-        # EXACTLY the same signal call as S0.
-        # ====================================================
-
-        signal = buy_signal(
-            previous,
-            previous_previous,
-            variant="V6_C",
-            adx_min=self.engine.adx_min,
-        )
-
-        # ====================================================
-        # SIGNAL LOG
-        # ====================================================
-
-        self._log_signal(
-            timestamp=timestamp,
-            signal=signal,
-            equity=equity,
-            risk_level=risk_level,
-            risk_multiplier=risk_multiplier,
-            previous=previous,
-        )
-
-        if not signal:
-
-            return
-
-        # ====================================================
-        # ENTRY
-        #
-        # Previous candle = signal candle
-        # Current candle = execution candle
-        # Entry price = current 1h open + slippage
-        # ====================================================
-
-        balance_before = (
+        # ----------------------------------------------------
+        # Restore references
+        # ----------------------------------------------------
+
+        self.balance = float(
             self.engine.balance
         )
 
-        self.engine._enter(
-            timestamp,
-            previous,
-            current,
-            equity,
+        self.peak_equity = float(
+            self.engine.peak_equity
         )
 
-        # ====================================================
-        # CHECK WHETHER ENTRY ACTUALLY HAPPENED
-        # ====================================================
-
-        if self.engine.position is not None:
-
-            position = (
-                self.engine.position
-            )
-
-            print(
-                ""
-            )
-
-            print(
-                "================================================"
-            )
-
-            print(
-                f"[{self.symbol}] 🟢 PAPER BUY"
-            )
-
-            print(
-                f"Time:       {timestamp}"
-            )
-
-            print(
-                f"Entry:      "
-                f"{position['entry_price']:.8f}"
-            )
-
-            print(
-                f"Stop:       "
-                f"{position['stop']:.8f}"
-            )
-
-            print(
-                f"Quantity:   "
-                f"{position['quantity']:.8f}"
-            )
-
-            print(
-                f"Risk:       "
-                f"{position['effective_risk'] * 100:.2f}%"
-            )
-
-            print(
-                f"Risk Level: "
-                f"{position['risk_level']}"
-            )
-
-            print(
-                f"Balance:    "
-                f"${balance_before:.4f}"
-                f" -> "
-                f"${self.engine.balance:.4f}"
-            )
-
-            print(
-                "================================================"
-            )
-
-            print(
-                ""
-            )
-
-    # ========================================================
-    # DATA PREPARATION
-    # ========================================================
-
-    def _prepare_dataframe(
-        self,
-        data: pd.DataFrame,
-    ) -> pd.DataFrame:
-
-        df = data.copy()
-
-        # ====================================================
-        # DATETIME INDEX
-        # ====================================================
-
-        if not isinstance(
-            df.index,
-            pd.DatetimeIndex,
-        ):
-
-            if "timestamp" in df.columns:
-
-                df["timestamp"] = (
-                    pd.to_datetime(
-                        df["timestamp"],
-                        utc=True,
-                    )
-                )
-
-                df = df.set_index(
-                    "timestamp"
-                )
-
-            else:
-
-                raise ValueError(
-                    f"[{self.symbol}] "
-                    "DataFrame benötigt "
-                    "DatetimeIndex oder timestamp."
-                )
-
-        else:
-
-            if df.index.tz is None:
-
-                df.index = (
-                    df.index.tz_localize(
-                        "UTC"
-                    )
-                )
-
-            else:
-
-                df.index = (
-                    df.index.tz_convert(
-                        "UTC"
-                    )
-                )
-
-        df = df.sort_index()
-
-        # ====================================================
-        # NUMERIC
-        # ====================================================
-
-        numeric_columns = [
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-        ]
-
-        for column in numeric_columns:
-
-            if column in df.columns:
-
-                df[column] = pd.to_numeric(
-                    df[column],
-                    errors="coerce",
-                )
-
-        # ====================================================
-        # INDICATORS
-        #
-        # This uses the same indicator module as the
-        # historical V6/V7 backtests.
-        # ====================================================
-
-        df = calculate_indicators(
-            df
+        self.day_start_equity = float(
+            self.engine.day_start_equity
         )
 
-        df = df.replace(
-            [float("inf"), float("-inf")],
-            pd.NA,
+        self.current_day = (
+            self.engine.current_day
         )
 
-        return df
-
-    # ========================================================
-    # LOG EQUITY
-    # ========================================================
-
-    def _log_equity(
-        self,
-        timestamp,
-        equity: float,
-    ):
-
-        file_exists = (
-            self.equity_file.exists()
+        self.consecutive_losses = int(
+            self.engine.consecutive_losses
         )
 
-        drawdown = (
-            self.engine._current_drawdown(
-                equity
-            )
-            * 100.0
+        self.cooldown_until = int(
+            self.engine.cooldown_until
         )
 
-        row = {
-            "timestamp":
-                str(timestamp),
-
-            "symbol":
-                self.symbol,
-
-            "equity":
-                float(equity),
-
-            "balance":
-                float(self.engine.balance),
-
-            "drawdown_pct":
-                float(drawdown),
-
-            "kill_switch":
-                bool(self.engine.kill_switch),
-
-            "position":
-                bool(
-                    self.engine.position
-                    is not None
-                ),
-        }
-
-        with open(
-            self.equity_file,
-            "a",
-            newline="",
-            encoding="utf-8",
-        ) as f:
-
-            writer = csv.DictWriter(
-                f,
-                fieldnames=list(
-                    row.keys()
-                ),
-            )
-
-            if not file_exists:
-
-                writer.writeheader()
-
-            writer.writerow(
-                row
-            )
-
-    # ========================================================
-    # LOG SIGNAL
-    # ========================================================
-
-    def _log_signal(
-        self,
-        timestamp,
-        signal,
-        equity,
-        risk_level,
-        risk_multiplier,
-        previous,
-    ):
-
-        file_exists = (
-            self.signal_file.exists()
+        self.kill_switch = bool(
+            self.engine.kill_switch
         )
 
-        row = {
-            "timestamp":
-                str(timestamp),
+        self.position = self.engine.position
 
-            "symbol":
-                self.symbol,
+        # ----------------------------------------------------
+        # Save
+        # ----------------------------------------------------
 
-            "signal":
-                bool(signal),
-
-            "equity":
-                float(equity),
-
-            "risk_level":
-                risk_level,
-
-            "risk_multiplier":
-                float(risk_multiplier),
-
-            "close":
-                float(previous["close"]),
-
-            "atr_14":
-                float(previous["atr_14"])
-                if pd.notna(
-                    previous["atr_14"]
-                )
-                else None,
-
-            "adx_14":
-                float(previous["adx_14"])
-                if pd.notna(
-                    previous["adx_14"]
-                )
-                else None,
-
-            "ema_100":
-                float(previous["ema_100"])
-                if pd.notna(
-                    previous["ema_100"]
-                )
-                else None,
-
-            "ema_200":
-                float(previous["ema_200"])
-                if pd.notna(
-                    previous["ema_200"]
-                )
-                else None,
-        }
-
-        with open(
-            self.signal_file,
-            "a",
-            newline="",
-            encoding="utf-8",
-        ) as f:
-
-            writer = csv.DictWriter(
-                f,
-                fieldnames=list(
-                    row.keys()
-                ),
-            )
-
-            if not file_exists:
-
-                writer.writeheader()
-
-            writer.writerow(
-                row
-            )
-
-    # ========================================================
-    # LOG NEW TRADES
-    # ========================================================
-
-    def _log_new_trades(self):
-
-        while (
-            self.logged_trade_count
-            <
-            len(self.engine.trades)
-        ):
-
-            trade = (
-                self.engine.trades[
-                    self.logged_trade_count
-                ]
-            )
-
-            row = asdict(
-                trade
-            )
-
-            row[
-                "symbol"
-            ] = self.symbol
-
-            row[
-                "variant"
-            ] = self.variant
-
-            file_exists = (
-                self.trade_file.exists()
-            )
-
-            with open(
-                self.trade_file,
-                "a",
-                newline="",
-                encoding="utf-8",
-            ) as f:
-
-                writer = csv.DictWriter(
-                    f,
-                    fieldnames=list(
-                        row.keys()
-                    ),
-                )
-
-                if not file_exists:
-
-                    writer.writeheader()
-
-                writer.writerow(
-                    row
-                )
-
-            self.logged_trade_count += 1
-
-    # ========================================================
-    # HELPERS
-    # ========================================================
-
-    @staticmethod
-    def _timestamp_to_string(
-        timestamp,
-    ):
-
-        if timestamp is None:
-
-            return None
-
-        return pd.Timestamp(
-            timestamp
-        ).isoformat()
-
-    # ========================================================
-
-    @staticmethod
-    def _string_to_timestamp(
-        value,
-    ):
-
-        if not value:
-
-            return None
-
-        timestamp = pd.Timestamp(
-            value
-        )
-
-        if timestamp.tzinfo is None:
-
-            timestamp = timestamp.tz_localize(
-                "UTC"
-            )
-
-        else:
-
-            timestamp = timestamp.tz_convert(
-                "UTC"
-            )
-
-        return timestamp
+        self.save_state()
 
     # ========================================================
     # STATUS
     # ========================================================
 
-    def status(self) -> dict:
+    def status(self):
 
-        position = (
-            self.engine.position
+        position_text = (
+            "OPEN"
+            if self.position is not None
+            else "FLAT"
         )
 
-        return {
-            "symbol":
-                self.symbol,
-
-            "variant":
-                self.variant,
-
-            "balance":
-                float(self.engine.balance),
-
-            "peak_equity":
-                float(self.engine.peak_equity),
-
-            "consecutive_losses":
-                int(
-                    self.engine.consecutive_losses
-                ),
-
-            "cooldown_until":
-                int(
-                    self.engine.cooldown_until
-                ),
-
-            "kill_switch":
-                bool(
-                    self.engine.kill_switch
-                ),
-
-            "position":
-                position,
-
-            "trades":
-                len(
-                    self.engine.trades
-                ),
-
-            "bar_counter":
-                self.bar_counter,
-
-            "last_completed_bar":
-                (
-                    str(
-                        self.last_completed_bar
-                    )
-                    if self.last_completed_bar
-                    else None
-                ),
-        }
+        print(
+            f"[{self.symbol}] "
+            f"STATUS | "
+            f"balance=${self.balance:.4f} | "
+            f"position={position_text} | "
+            f"peak=${self.peak_equity:.4f} | "
+            f"losses={self.consecutive_losses} | "
+            f"kill={self.kill_switch}"
+        )
