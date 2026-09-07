@@ -1,12 +1,36 @@
 # ============================================================
 # 20to100 Trading Bot
-# PAPER MARKET DATA
+# V7-S0 PAPER MARKET DATA
+#
+# IMPORTANT:
+# - PUBLIC MARKET DATA ONLY
+# - NO PRIVATE API
+# - NO REAL ORDERS
+# - 5m data -> 1h signal data
+# - Fetches enough history for V7-S0 indicators
 # ============================================================
 
 from __future__ import annotations
 
 import ccxt
 import pandas as pd
+
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+TIMEFRAME = "5m"
+
+TIMEFRAME_MINUTES = 5
+TIMEFRAME_MS = TIMEFRAME_MINUTES * 60 * 1000
+
+# V7-S0 needs at least 250 hourly candles.
+# 5000 x 5m = approximately 416 hourly candles.
+DEFAULT_LIMIT = 5000
+
+# Most exchanges limit one OHLCV request to around 1000 candles.
+MAX_PER_REQUEST = 1000
 
 
 # ============================================================
@@ -18,6 +42,12 @@ def create_exchange():
     exchange = ccxt.okx({
         "enableRateLimit": True,
     })
+
+    # Public market data only.
+    #
+    # No API key.
+    # No secret.
+    # No private trading permissions.
 
     exchange.load_markets()
 
@@ -31,16 +61,102 @@ def create_exchange():
 def fetch_5m(
     exchange,
     symbol: str,
-    limit: int = 1000,
+    limit: int = DEFAULT_LIMIT,
 ) -> pd.DataFrame:
+    """
+    Fetch approximately `limit` 5m candles.
 
-    candles = exchange.fetch_ohlcv(
-        symbol,
-        timeframe="5m",
-        limit=limit,
+    CCXT/exchanges often limit one request to ~1000 candles,
+    therefore the requested history is fetched in chunks.
+
+    This function ONLY requests public OHLCV data.
+    It does NOT place orders.
+    """
+
+    limit = max(
+        int(limit),
+        MAX_PER_REQUEST,
     )
 
-    if not candles:
+    now_ms = exchange.milliseconds()
+
+    start_ms = (
+        now_ms
+        - (
+            limit
+            * TIMEFRAME_MS
+        )
+    )
+
+    all_candles = []
+
+    remaining = limit
+
+    print(
+        f"[{symbol}] "
+        f"Fetching {limit} x 5m candles..."
+    )
+
+    while remaining > 0:
+
+        request_limit = min(
+            MAX_PER_REQUEST,
+            remaining,
+        )
+
+        try:
+
+            candles = exchange.fetch_ohlcv(
+                symbol,
+                timeframe=TIMEFRAME,
+                since=start_ms,
+                limit=request_limit,
+            )
+
+        except Exception as exc:
+
+            print(
+                f"[{symbol}] "
+                f"OHLCV request failed: {exc}"
+            )
+
+            break
+
+        if not candles:
+            break
+
+        all_candles.extend(
+            candles
+        )
+
+        first_timestamp = candles[0][0]
+        last_timestamp = candles[-1][0]
+
+        next_start = (
+            last_timestamp
+            + TIMEFRAME_MS
+        )
+
+        # Safety against an exchange returning
+        # the same candles repeatedly.
+        if next_start <= start_ms:
+            break
+
+        start_ms = next_start
+
+        remaining -= len(candles)
+
+        # If the exchange returned fewer candles
+        # than requested, there may simply be no
+        # more historical data in that range.
+        if len(candles) < request_limit:
+            break
+
+    # --------------------------------------------------------
+    # No data
+    # --------------------------------------------------------
+
+    if not all_candles:
 
         return pd.DataFrame(
             columns=[
@@ -52,8 +168,12 @@ def fetch_5m(
             ]
         )
 
+    # --------------------------------------------------------
+    # DataFrame
+    # --------------------------------------------------------
+
     df = pd.DataFrame(
-        candles,
+        all_candles,
         columns=[
             "timestamp",
             "open",
@@ -64,6 +184,10 @@ def fetch_5m(
         ],
     )
 
+    # --------------------------------------------------------
+    # Timestamp
+    # --------------------------------------------------------
+
     df["timestamp"] = pd.to_datetime(
         df["timestamp"],
         unit="ms",
@@ -73,6 +197,10 @@ def fetch_5m(
     df = df.set_index(
         "timestamp"
     )
+
+    # --------------------------------------------------------
+    # Numeric conversion
+    # --------------------------------------------------------
 
     numeric_columns = [
         "open",
@@ -91,13 +219,45 @@ def fetch_5m(
 
     df = df.dropna()
 
+    # --------------------------------------------------------
+    # Remove duplicates
+    # --------------------------------------------------------
+
     df = df[
         ~df.index.duplicated(
             keep="last"
         )
     ]
 
-    return df.sort_index()
+    # --------------------------------------------------------
+    # Sort
+    # --------------------------------------------------------
+
+    df = df.sort_index()
+
+    # --------------------------------------------------------
+    # Keep requested amount
+    # --------------------------------------------------------
+
+    if len(df) > limit:
+
+        df = df.iloc[-limit:]
+
+    print(
+        f"[{symbol}] "
+        f"Received {len(df)} x 5m candles"
+    )
+
+    if not df.empty:
+
+        print(
+            f"[{symbol}] "
+            f"Data range: "
+            f"{df.index[0]} -> "
+            f"{df.index[-1]}"
+        )
+
+    return df
 
 
 # ============================================================
@@ -107,15 +267,21 @@ def fetch_5m(
 def resample_5m_to_1h(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
+    """
+    Convert 5m OHLCV data into 1h OHLCV.
+
+    The final hourly candle may still be forming.
+    The PaperTrader deliberately uses:
+        - completed 1h candles for signals
+        - current 1h candle only for current open/entry
+    """
 
     if df.empty:
 
         return df.copy()
 
     hourly = (
-        df.resample(
-            "1h"
-        )
+        df.resample("1h")
         .agg(
             {
                 "open": "first",
@@ -128,4 +294,6 @@ def resample_5m_to_1h(
         .dropna()
     )
 
-    return hourly.sort_index()
+    hourly = hourly.sort_index()
+
+    return hourly
