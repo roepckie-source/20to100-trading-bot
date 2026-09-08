@@ -1,0 +1,124 @@
+name: 20to100 Paper Trading
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  paper-trading:
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 10
+
+    steps:
+
+      # ==========================================================
+      # CHECKOUT
+      # ==========================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+
+      # ==========================================================
+      # PYTHON
+      # ==========================================================
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      # ==========================================================
+      # DEPENDENCIES
+      # ==========================================================
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+
+      # ==========================================================
+      # PAPER SAFETY CHECK
+      # ==========================================================
+
+      - name: Verify paper trading mode
+        run: |
+          python - <<'PY'
+          import config_paper
+
+          print("==================================================")
+          print("PAPER TRADING SAFETY CHECK")
+          print("==================================================")
+          print(f"Exchange:         {config_paper.PAPER_EXCHANGE}")
+          print(f"Symbols:          {config_paper.SYMBOLS}")
+          print(f"Capital:          ${config_paper.STARTING_CAPITAL:.2f}")
+          print(f"Variant:          {config_paper.VARIANT}")
+          print(f"OHLCV limit:      {config_paper.OHLCV_LIMIT}")
+          print(f"Live trading:     {config_paper.LIVE_TRADING}")
+          print("==================================================")
+
+          if config_paper.LIVE_TRADING is not False:
+              raise SystemExit(
+                  "SAFETY ERROR: LIVE_TRADING must be False"
+              )
+
+          if config_paper.VARIANT != "V6_C":
+              raise SystemExit(
+                  "SAFETY ERROR: VARIANT must be V6_C"
+              )
+
+          if config_paper.OHLCV_LIMIT < 5000:
+              raise SystemExit(
+                  "DATA ERROR: OHLCV_LIMIT should be at least 5000"
+              )
+
+          print("SAFETY CHECK PASSED")
+          PY
+
+
+      # ==========================================================
+      # RUN PAPER TRADER
+      # ==========================================================
+
+      - name: Run paper trader
+        run: |
+          python run_paper.py --once
+
+
+      # ==========================================================
+      # SHOW PAPER STATE
+      # ==========================================================
+
+      - name: Show paper trading files
+        if: always()
+        run: |
+          echo
+          echo "=================================================="
+          echo "PAPER TRADING FILES"
+          echo "=================================================="
+
+          find . \
+            -maxdepth 3 \
+            -type f \
+            \( \
+              -name "*paper*" \
+              -o -name "*state*" \
+              -o -name "*.json" \
+              -o -name "*.log" \
+            \) \
+            -not -path "./.git/*" \
+            | sort
+
+          echo
+          echo "=================================================="
+          echo "REPOSITORY STATUS"
+          echo "=================================================="
+
+          git status --short
