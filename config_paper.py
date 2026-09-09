@@ -127,7 +127,6 @@ VARIANT = "V6_C"
 # PAPER SAFETY
 # ============================================================
 
-# ABSOLUTELY NO REAL ORDERS
 LIVE_TRADING = False
 
 
@@ -139,9 +138,19 @@ OHLCV_LIMIT = 5000
 
 
 # ============================================================
-# PAPER TRADING FILES
+# PAPER TRADING DIRECTORIES
 # ============================================================
 
 LOG_DIR = "paper_logs"
 
-STATE_FILE = "paper_logs/paper_state.json"
+STATE_DIR = "paper_logs"
+
+
+# ============================================================
+# PAPER TRADING STATE
+# ============================================================
+
+STATE_FILE = os.path.join(
+    STATE_DIR,
+    "paper_state.json",
+)
