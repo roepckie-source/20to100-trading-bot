@@ -9,46 +9,73 @@ permissions:
 jobs:
   paper-trading:
     runs-on: ubuntu-latest
-
     timeout-minutes: 10
 
     steps:
 
-      # ==========================================================
-      # CHECKOUT
-      # ==========================================================
-
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-
-      # ==========================================================
-      # PYTHON
-      # ==========================================================
-
+      # ============================================================
+      # 2. PYTHON
+      # ============================================================
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-
-      # ==========================================================
-      # DEPENDENCIES
-      # ==========================================================
-
+      # ============================================================
+      # 3. DEPENDENCIES
+      # ============================================================
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ============================================================
+      # 4. RESTORE PAPER STATE
+      # ============================================================
+      - name: Restore paper trading state
+        run: |
+          echo "=================================================="
+          echo "RESTORING PAPER TRADING STATE"
+          echo "=================================================="
 
-      # ==========================================================
-      # PAPER SAFETY CHECK
-      # ==========================================================
+          mkdir -p paper_logs
 
-      - name: Verify paper trading mode
+          if [ -f paper_logs/BTC_USDT_paper_state.json ]; then
+            echo "BTC state found"
+          else
+            echo "BTC state not found - starting fresh"
+          fi
+
+          if [ -f paper_logs/ETH_USDT_paper_state.json ]; then
+            echo "ETH state found"
+          else
+            echo "ETH state not found - starting fresh"
+          fi
+
+          if [ -f paper_logs/SOL_USDT_paper_state.json ]; then
+            echo "SOL state found"
+          else
+            echo "SOL state not found - starting fresh"
+          fi
+
+          if [ -f paper_logs/paper_equity.csv ]; then
+            echo "Equity history found"
+          else
+            echo "Equity history not found - starting fresh"
+          fi
+
+      # ============================================================
+      # 5. SAFETY CHECK
+      # ============================================================
+      - name: Safety check
         run: |
           python - <<'PY'
           import config_paper
@@ -56,69 +83,100 @@ jobs:
           print("==================================================")
           print("PAPER TRADING SAFETY CHECK")
           print("==================================================")
-          print(f"Exchange:         {config_paper.PAPER_EXCHANGE}")
-          print(f"Symbols:          {config_paper.SYMBOLS}")
-          print(f"Capital:          ${config_paper.STARTING_CAPITAL:.2f}")
-          print(f"Variant:          {config_paper.VARIANT}")
-          print(f"OHLCV limit:      {config_paper.OHLCV_LIMIT}")
-          print(f"Live trading:     {config_paper.LIVE_TRADING}")
-          print("==================================================")
 
-          if config_paper.LIVE_TRADING is not False:
-              raise SystemExit(
-                  "SAFETY ERROR: LIVE_TRADING must be False"
-              )
+          assert config_paper.LIVE_TRADING is False, \
+              "LIVE_TRADING MUST BE FALSE"
 
-          if config_paper.VARIANT != "V6_C":
-              raise SystemExit(
-                  "SAFETY ERROR: VARIANT must be V6_C"
-              )
+          assert config_paper.VARIANT == "V6_C", \
+              "Unexpected strategy variant"
 
-          if config_paper.OHLCV_LIMIT < 5000:
-              raise SystemExit(
-                  "DATA ERROR: OHLCV_LIMIT should be at least 5000"
-              )
+          assert config_paper.OHLCV_LIMIT >= 5000, \
+              "OHLCV history too small"
 
+          print("LIVE_TRADING =", config_paper.LIVE_TRADING)
+          print("VARIANT       =", config_paper.VARIANT)
+          print("OHLCV_LIMIT   =", config_paper.OHLCV_LIMIT)
           print("SAFETY CHECK PASSED")
           PY
 
-
-      # ==========================================================
-      # RUN PAPER TRADER
-      # ==========================================================
-
-      - name: Run paper trader
+      # ============================================================
+      # 6. RUN PAPER TRADING
+      # ============================================================
+      - name: Run paper trading
         run: |
           python run_paper.py --once
 
-
-      # ==========================================================
-      # SHOW PAPER STATE
-      # ==========================================================
-
-      - name: Show paper trading files
+      # ============================================================
+      # 7. SHOW STATE
+      # ============================================================
+      - name: Show paper trading state
         if: always()
         run: |
           echo
           echo "=================================================="
-          echo "PAPER TRADING FILES"
+          echo "PAPER TRADING STATE"
           echo "=================================================="
 
-          find . \
-            -maxdepth 3 \
-            -type f \
-            \( \
-              -name "*paper*" \
-              -o -name "*state*" \
-              -o -name "*.json" \
-              -o -name "*.log" \
-            \) \
-            -not -path "./.git/*" \
-            | sort
+          find paper_logs -maxdepth 1 -type f -print | sort
 
           echo
+          echo "--------------------------------------------------"
+          echo "BTC STATE"
+          echo "--------------------------------------------------"
+
+          if [ -f paper_logs/BTC_USDT_paper_state.json ]; then
+            cat paper_logs/BTC_USDT_paper_state.json
+          fi
+
+          echo
+          echo "--------------------------------------------------"
+          echo "ETH STATE"
+          echo "--------------------------------------------------"
+
+          if [ -f paper_logs/ETH_USDT_paper_state.json ]; then
+            cat paper_logs/ETH_USDT_paper_state.json
+          fi
+
+          echo
+          echo "--------------------------------------------------"
+          echo "SOL STATE"
+          echo "--------------------------------------------------"
+
+          if [ -f paper_logs/SOL_USDT_paper_state.json ]; then
+            cat paper_logs/SOL_USDT_paper_state.json
+          fi
+
+      # ============================================================
+      # 8. COMMIT PAPER DATA
+      # ============================================================
+      - name: Commit paper trading data
+        if: success()
+        run: |
           echo "=================================================="
-          echo "REPOSITORY STATUS"
+          echo "SAVING PAPER TRADING DATA"
+          echo "=================================================="
+
+          git config user.name "20to100 Paper Trading Bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add paper_logs/
+
+          if git diff --cached --quiet; then
+            echo "No paper trading changes to commit."
+          else
+            git commit -m "Update paper trading state"
+            git push
+          fi
+
+      # ============================================================
+      # 9. FINAL STATUS
+      # ============================================================
+      - name: Final status
+        if: always()
+        run: |
+          echo
+          echo "=================================================="
+          echo "PAPER TRADING WORKFLOW COMPLETE"
           echo "=================================================="
 
           git status --short
