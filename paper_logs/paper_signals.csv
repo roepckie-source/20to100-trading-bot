@@ -1,0 +1,4 @@
+timestamp,symbol,variant,signal,close,ema_100,ema_200,ema_200_slope,adx_14,atr_14,atr_14_ma50,donchian_high_20,reason
+2026-09-09 10:00:00+00:00,BTC/USDT,V6_C,False,78950.6,,,,,394.51833209798474,,,V6_C
+2026-09-09 10:00:00+00:00,ETH/USDT,V6_C,False,2490.69,,,,,16.00958997749064,,,V6_C
+2026-09-09 10:00:00+00:00,SOL/USDT,V6_C,False,103.51,,,,,0.7963173106813567,,,V6_C
