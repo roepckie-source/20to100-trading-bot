@@ -1,0 +1,4 @@
+timestamp,symbol,balance,equity,peak_equity,drawdown_pct,position_open,kill_switch
+2026-09-09 10:00:00+00:00,BTC/USDT,20.0,20.0,20.0,0.0,False,False
+2026-09-09 10:00:00+00:00,ETH/USDT,20.0,20.0,20.0,0.0,False,False
+2026-09-09 10:00:00+00:00,SOL/USDT,20.0,20.0,20.0,0.0,False,False
