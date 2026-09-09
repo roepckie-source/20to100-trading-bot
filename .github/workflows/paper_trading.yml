@@ -3,8 +3,19 @@ name: 20to100 Paper Trading
 on:
   workflow_dispatch:
 
+  # ============================================================
+  # AUTOMATISCH JEDE STUNDE
+  # ============================================================
+  schedule:
+    - cron: "0 * * * *"
+
 permissions:
   contents: write
+
+# Verhindert parallele Läufe
+concurrency:
+  group: paper-trading
+  cancel-in-progress: false
 
 jobs:
   paper-trading:
@@ -38,39 +49,20 @@ jobs:
           pip install -r requirements.txt
 
       # ============================================================
-      # 4. RESTORE PAPER STATE
+      # 4. PAPER STATE
       # ============================================================
-      - name: Restore paper trading state
+      - name: Prepare paper state
         run: |
           echo "=================================================="
-          echo "RESTORING PAPER TRADING STATE"
+          echo "PAPER TRADING STATE"
           echo "=================================================="
 
           mkdir -p paper_logs
 
-          if [ -f paper_logs/BTC_USDT_paper_state.json ]; then
-            echo "BTC state found"
-          else
-            echo "BTC state not found - starting fresh"
-          fi
+          echo
+          echo "Existing files:"
 
-          if [ -f paper_logs/ETH_USDT_paper_state.json ]; then
-            echo "ETH state found"
-          else
-            echo "ETH state not found - starting fresh"
-          fi
-
-          if [ -f paper_logs/SOL_USDT_paper_state.json ]; then
-            echo "SOL state found"
-          else
-            echo "SOL state not found - starting fresh"
-          fi
-
-          if [ -f paper_logs/paper_equity.csv ]; then
-            echo "Equity history found"
-          else
-            echo "Equity history not found - starting fresh"
-          fi
+          find paper_logs -maxdepth 1 -type f -print | sort || true
 
       # ============================================================
       # 5. SAFETY CHECK
@@ -85,17 +77,23 @@ jobs:
           print("==================================================")
 
           assert config_paper.LIVE_TRADING is False, \
-              "LIVE_TRADING MUST BE FALSE"
+              "SAFETY ERROR: LIVE_TRADING MUST BE FALSE"
 
           assert config_paper.VARIANT == "V6_C", \
-              "Unexpected strategy variant"
+              "SAFETY ERROR: Unexpected strategy variant"
 
           assert config_paper.OHLCV_LIMIT >= 5000, \
-              "OHLCV history too small"
+              "SAFETY ERROR: OHLCV history too small"
 
-          print("LIVE_TRADING =", config_paper.LIVE_TRADING)
-          print("VARIANT       =", config_paper.VARIANT)
-          print("OHLCV_LIMIT   =", config_paper.OHLCV_LIMIT)
+          print("Exchange      :", config_paper.PAPER_EXCHANGE)
+          print("Symbols       :", config_paper.SYMBOLS)
+          print("Variant       :", config_paper.VARIANT)
+          print("Starting cash :", config_paper.STARTING_CAPITAL)
+          print("OHLCV limit   :", config_paper.OHLCV_LIMIT)
+          print("Live trading  :", config_paper.LIVE_TRADING)
+          print("Leverage      : NONE")
+
+          print()
           print("SAFETY CHECK PASSED")
           PY
 
@@ -104,54 +102,69 @@ jobs:
       # ============================================================
       - name: Run paper trading
         run: |
+          echo "=================================================="
+          echo "RUNNING V7-S0 PAPER TRADING"
+          echo "=================================================="
+
           python run_paper.py --once
 
       # ============================================================
       # 7. SHOW STATE
       # ============================================================
-      - name: Show paper trading state
+      - name: Show paper state
         if: always()
         run: |
           echo
           echo "=================================================="
-          echo "PAPER TRADING STATE"
+          echo "CURRENT PAPER STATE"
           echo "=================================================="
 
-          find paper_logs -maxdepth 1 -type f -print | sort
+          for file in \
+            paper_logs/BTC_USDT_paper_state.json \
+            paper_logs/ETH_USDT_paper_state.json \
+            paper_logs/SOL_USDT_paper_state.json
+          do
+            echo
+            echo "--------------------------------------------------"
+            echo "$file"
+            echo "--------------------------------------------------"
 
+            if [ -f "$file" ]; then
+              cat "$file"
+            else
+              echo "FILE NOT FOUND"
+            fi
+          done
+
+      # ============================================================
+      # 8. EQUITY HISTORY
+      # ============================================================
+      - name: Show equity history
+        if: always()
+        run: |
           echo
-          echo "--------------------------------------------------"
-          echo "BTC STATE"
-          echo "--------------------------------------------------"
+          echo "=================================================="
+          echo "EQUITY HISTORY"
+          echo "=================================================="
 
-          if [ -f paper_logs/BTC_USDT_paper_state.json ]; then
-            cat paper_logs/BTC_USDT_paper_state.json
-          fi
+          if [ -f paper_logs/paper_equity.csv ]; then
+            echo "Rows:"
+            wc -l paper_logs/paper_equity.csv
 
-          echo
-          echo "--------------------------------------------------"
-          echo "ETH STATE"
-          echo "--------------------------------------------------"
-
-          if [ -f paper_logs/ETH_USDT_paper_state.json ]; then
-            cat paper_logs/ETH_USDT_paper_state.json
-          fi
-
-          echo
-          echo "--------------------------------------------------"
-          echo "SOL STATE"
-          echo "--------------------------------------------------"
-
-          if [ -f paper_logs/SOL_USDT_paper_state.json ]; then
-            cat paper_logs/SOL_USDT_paper_state.json
+            echo
+            echo "Last 10 entries:"
+            tail -n 10 paper_logs/paper_equity.csv
+          else
+            echo "No equity file found."
           fi
 
       # ============================================================
-      # 8. COMMIT PAPER DATA
+      # 9. SAVE STATE TO GITHUB
       # ============================================================
       - name: Commit paper trading data
         if: success()
         run: |
+          echo
           echo "=================================================="
           echo "SAVING PAPER TRADING DATA"
           echo "=================================================="
@@ -162,21 +175,22 @@ jobs:
           git add paper_logs/
 
           if git diff --cached --quiet; then
-            echo "No paper trading changes to commit."
+            echo "No changes detected."
           else
             git commit -m "Update paper trading state"
             git push
+            echo "Paper trading state saved."
           fi
 
       # ============================================================
-      # 9. FINAL STATUS
+      # 10. FINAL STATUS
       # ============================================================
       - name: Final status
         if: always()
         run: |
           echo
           echo "=================================================="
-          echo "PAPER TRADING WORKFLOW COMPLETE"
+          echo "V7-S0 PAPER TRADING RUN COMPLETE"
           echo "=================================================="
 
           git status --short
