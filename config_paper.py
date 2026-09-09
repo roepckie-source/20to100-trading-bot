@@ -127,6 +127,7 @@ VARIANT = "V6_C"
 # PAPER SAFETY
 # ============================================================
 
+# ABSOLUTELY NO REAL ORDERS
 LIVE_TRADING = False
 
 
@@ -135,3 +136,12 @@ LIVE_TRADING = False
 # ============================================================
 
 OHLCV_LIMIT = 5000
+
+
+# ============================================================
+# PAPER TRADING FILES
+# ============================================================
+
+LOG_DIR = "paper_logs"
+
+STATE_FILE = "paper_logs/paper_state.json"
