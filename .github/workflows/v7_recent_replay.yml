@@ -1,1 +1,99 @@
+name: 20to100 V7-S0 Recent Replay
 
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+
+  recent-replay:
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 20
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Safety check
+        run: |
+          echo "=================================================="
+          echo "V7-S0 RECENT REPLAY SAFETY CHECK"
+          echo "=================================================="
+
+          echo
+          echo "No live trading."
+          echo "No exchange API keys."
+          echo "No real orders."
+
+          test -f v7_recent_replay.py
+          test -f backtest/v7_survival_engine.py
+          test -f strategy/strategy_v6.py
+          test -f strategy/indicators.py
+
+          test -f data/BTC_USDT_5m.csv
+          test -f data/ETH_USDT_5m.csv
+          test -f data/SOL_USDT_5m.csv
+
+          echo
+          echo "Safety check passed."
+
+      - name: Run V7-S0 recent replay
+        run: |
+
+          echo "=================================================="
+          echo "RUNNING V7-S0 RECENT MARKET REPLAY"
+          echo "=================================================="
+
+          echo
+          echo "Strategy: V6-C"
+          echo "Survival: V7-S0"
+          echo "Assets: BTC + ETH + SOL"
+          echo "Timeframe: 5m -> 1h"
+          echo "Period: Last 90 days"
+          echo "Capital: 20 USDT"
+
+          echo
+          echo "=================================================="
+
+          python v7_recent_replay.py
+
+      - name: Show results
+        if: always()
+        run: |
+
+          echo "=================================================="
+          echo "V7-S0 RECENT REPLAY RESULT"
+          echo "=================================================="
+
+          if [ -f v7_recent_replay_results.csv ]; then
+            echo
+            cat v7_recent_replay_results.csv
+          else
+            echo
+            echo "v7_recent_replay_results.csv NOT FOUND"
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+
+        with:
+          name: v7-s0-recent-replay
+          path: |
+            v7_recent_replay_results.csv
+          if-no-files-found: warn
