@@ -1,8 +1,8 @@
 {
   "symbol": "SOL/USDT",
-  "last_completed_bar": "2026-09-10T20:00:00+00:00",
-  "last_entry_hour": "2026-09-10T21:00:00+00:00",
-  "bar_counter": 1700,
+  "last_completed_bar": "2026-09-10T22:00:00+00:00",
+  "last_entry_hour": "2026-09-10T23:00:00+00:00",
+  "bar_counter": 1702,
   "balance": 20.0,
   "peak_equity": 20.0,
   "day_start_equity": 20.0,
@@ -12,5 +12,5 @@
   "kill_switch": false,
   "position": null,
   "logged_trades": 0,
-  "updated_at": "2026-09-10T21:23:07.091726+00:00"
+  "updated_at": "2026-09-10T23:40:56.315643+00:00"
 }
