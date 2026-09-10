@@ -21,9 +21,14 @@ from strategy.strategy_v6 import calculate_indicators
 # - NO REAL ORDERS
 # - NO API KEYS
 #
-# The test uses the same frozen strategy on multiple
-# out-of-sample windows.
+# OUTPUT:
+# - v7_walk_forward_oos_results.csv
+# - v7_walk_forward_oos_trades.csv
+#
+# The second file contains every individual OOS trade plus
+# the indicator state at the signal/entry candle.
 # ============================================================
+
 
 ASSETS = [
     "BTC_USDT_5m",
@@ -31,30 +36,25 @@ ASSETS = [
     "SOL_USDT_5m",
 ]
 
-STARTING_CAPITALS = [20.0, 50.0, 100.0, 250.0]
+STARTING_CAPITALS = [
+    20.0,
+    50.0,
+    100.0,
+    250.0,
+]
 
 VARIANT = "V6_C"
 
-# Existing workflow downloads approximately 400 days.
-REQUIRED_SOURCE_DAYS = 400
-
-# Walk-forward design:
-#
-# 4 independent OOS windows
-# 90 days each
-#
-# Total OOS coverage = 360 days
-#
-# The strategy itself is NOT optimized between folds.
 WARMUP_DAYS = 40
 OOS_DAYS = 90
 FOLDS = 4
 
 OUTPUT_FILE = "v7_walk_forward_oos_results.csv"
+TRADES_OUTPUT_FILE = "v7_walk_forward_oos_trades.csv"
 
 
 # ============================================================
-# PRINT
+# PRINT HELPERS
 # ============================================================
 
 def header(text: str) -> None:
@@ -69,6 +69,7 @@ def header(text: str) -> None:
 # ============================================================
 
 def load_data(asset: str) -> pd.DataFrame:
+
     path = f"data/{asset}.csv"
 
     print()
@@ -98,7 +99,7 @@ def load_data(asset: str) -> pd.DataFrame:
 
     df = df.set_index("timestamp")
 
-    numeric = [
+    numeric_columns = [
         "open",
         "high",
         "low",
@@ -106,15 +107,15 @@ def load_data(asset: str) -> pd.DataFrame:
         "volume",
     ]
 
-    for col in numeric:
+    for column in numeric_columns:
 
-        if col not in df.columns:
+        if column not in df.columns:
             raise ValueError(
-                f"{asset}: missing column {col}"
+                f"{asset}: missing column {column}"
             )
 
-        df[col] = pd.to_numeric(
-            df[col],
+        df[column] = pd.to_numeric(
+            df[column],
             errors="coerce",
         )
 
@@ -217,15 +218,11 @@ def prepare_full_history(
         "on FULL history..."
     )
 
-    # Frozen V6 indicator implementation.
-    #
-    # We deliberately use the exact V6 calculation
-    # already used by V7-S0.
     df_1h = calculate_indicators(
         df_1h.copy()
     )
 
-    required = [
+    required_columns = [
         "open",
         "high",
         "low",
@@ -241,9 +238,9 @@ def prepare_full_history(
     ]
 
     missing = [
-        c
-        for c in required
-        if c not in df_1h.columns
+        column
+        for column in required_columns
+        if column not in df_1h.columns
     ]
 
     if missing:
@@ -262,7 +259,7 @@ def prepare_full_history(
 
 
 # ============================================================
-# ENGINE
+# CREATE ENGINE
 # ============================================================
 
 def create_engine(
@@ -271,22 +268,33 @@ def create_engine(
 
     return V7SurvivalEngine(
         starting_balance=capital,
+
         base_risk_per_trade=0.01,
+
         fee_rate=0.001,
+
         slippage_rate=0.0005,
+
         atr_stop_multiplier=3.0,
+
         trailing_atr_multiplier=3.0,
+
         adx_min=20.0,
+
         variant=VARIANT,
+
         max_daily_loss=0.05,
+
         max_consecutive_losses=3,
+
         loss_cooldown_bars=24,
+
         global_max_drawdown=0.20,
     )
 
 
 # ============================================================
-# FOLD WINDOWS
+# BUILD WALK-FORWARD FOLDS
 # ============================================================
 
 def build_folds(
@@ -303,13 +311,6 @@ def build_folds(
     latest = df.index.max()
 
     folds = []
-
-    # Work backwards from the latest data.
-    #
-    # Fold 1 = most recent 90 days
-    # Fold 2 = preceding 90 days
-    # Fold 3 = preceding 90 days
-    # Fold 4 = preceding 90 days
 
     for fold_number in range(
         1,
@@ -353,10 +354,367 @@ def build_folds(
 
 
 # ============================================================
-# ONE OOS TEST
+# TRADE DIAGNOSTICS
+# ============================================================
+
+def build_trade_rows(
+    *,
+    asset: str,
+    capital: float,
+    fold_number: int,
+    oos_start: pd.Timestamp,
+    oos_end: pd.Timestamp,
+    oos: pd.DataFrame,
+    engine: V7SurvivalEngine,
+) -> list[dict]:
+
+    rows = []
+
+    for trade_number, trade in enumerate(
+        engine.trades,
+        start=1,
+    ):
+
+        entry_time = pd.Timestamp(
+            trade.entry_time
+        )
+
+        exit_time = pd.Timestamp(
+            trade.exit_time
+        )
+
+        # ----------------------------------------------------
+        # Signal candle
+        #
+        # V6-C signal is generated from the preceding
+        # completed 1H candle before entry.
+        # ----------------------------------------------------
+
+        signal_time = (
+            entry_time
+            - pd.Timedelta(
+                hours=1
+            )
+        )
+
+        signal_row = None
+
+        if signal_time in oos.index:
+
+            signal_row = oos.loc[
+                signal_time
+            ]
+
+        else:
+
+            previous_rows = oos.loc[
+                oos.index < entry_time
+            ]
+
+            if not previous_rows.empty:
+
+                signal_row = (
+                    previous_rows.iloc[-1]
+                )
+
+        # ----------------------------------------------------
+        # Default values
+        # ----------------------------------------------------
+
+        entry_atr = None
+        entry_adx = None
+
+        entry_ema100 = None
+        entry_ema200 = None
+
+        entry_ema200_slope = None
+        entry_ema200_slope_reference = None
+
+        entry_atr_ma50 = None
+        entry_donchian_high_20 = None
+
+        signal_close = None
+        signal_high = None
+        signal_low = None
+
+        # ----------------------------------------------------
+        # Indicator state
+        # ----------------------------------------------------
+
+        if signal_row is not None:
+
+            entry_atr = float(
+                signal_row["atr_14"]
+            )
+
+            entry_adx = float(
+                signal_row["adx_14"]
+            )
+
+            entry_ema100 = float(
+                signal_row["ema_100"]
+            )
+
+            entry_ema200 = float(
+                signal_row["ema_200"]
+            )
+
+            entry_ema200_slope = float(
+                signal_row[
+                    "ema_200_slope"
+                ]
+            )
+
+            entry_ema200_slope_reference = float(
+                signal_row[
+                    "ema_200_slope_reference"
+                ]
+            )
+
+            entry_atr_ma50 = float(
+                signal_row[
+                    "atr_14_ma50"
+                ]
+            )
+
+            entry_donchian_high_20 = float(
+                signal_row[
+                    "donchian_high_20"
+                ]
+            )
+
+            signal_close = float(
+                signal_row["close"]
+            )
+
+            signal_high = float(
+                signal_row["high"]
+            )
+
+            signal_low = float(
+                signal_row["low"]
+            )
+
+        # ----------------------------------------------------
+        # Basic trade information
+        # ----------------------------------------------------
+
+        entry_price = float(
+            trade.entry_price
+        )
+
+        exit_price = float(
+            trade.exit_price
+        )
+
+        quantity = float(
+            trade.quantity
+        )
+
+        # ----------------------------------------------------
+        # Initial risk / stop
+        # ----------------------------------------------------
+
+        initial_risk = float(
+            trade.initial_risk_usdt
+        )
+
+        if quantity > 0:
+
+            initial_stop_distance = (
+                initial_risk
+                / quantity
+            )
+
+        else:
+
+            initial_stop_distance = None
+
+        if initial_stop_distance is not None:
+
+            initial_stop_price = (
+                entry_price
+                - initial_stop_distance
+            )
+
+        else:
+
+            initial_stop_price = None
+
+        # ----------------------------------------------------
+        # Holding time
+        # ----------------------------------------------------
+
+        held_hours = (
+            exit_time
+            - entry_time
+        ).total_seconds() / 3600.0
+
+        held_bars = (
+            int(
+                round(
+                    held_hours
+                )
+            )
+            if held_hours >= 0
+            else None
+        )
+
+        # ----------------------------------------------------
+        # Result classification
+        # ----------------------------------------------------
+
+        net_profit = float(
+            trade.net_profit
+        )
+
+        if net_profit > 0:
+
+            result_class = "WIN"
+
+        elif net_profit < 0:
+
+            result_class = "LOSS"
+
+        else:
+
+            result_class = "FLAT"
+
+        # ----------------------------------------------------
+        # Complete diagnostic row
+        # ----------------------------------------------------
+
+        rows.append(
+            {
+                "strategy": "V7_S0",
+                "variant": VARIANT,
+
+                "asset": asset,
+
+                "fold": fold_number,
+
+                "starting_capital": capital,
+
+                "trade_number": trade_number,
+
+                "oos_start": str(
+                    oos_start
+                ),
+
+                "oos_end": str(
+                    oos_end
+                ),
+
+                "signal_time": str(
+                    signal_time
+                ),
+
+                "entry_time": str(
+                    entry_time
+                ),
+
+                "exit_time": str(
+                    exit_time
+                ),
+
+                "entry_price": entry_price,
+
+                "exit_price": exit_price,
+
+                "quantity": quantity,
+
+                # Indicators
+                "entry_atr_14": entry_atr,
+
+                "entry_adx_14": entry_adx,
+
+                "entry_ema_100": entry_ema100,
+
+                "entry_ema_200": entry_ema200,
+
+                "entry_ema_200_slope":
+                    entry_ema200_slope,
+
+                "entry_ema_200_slope_reference":
+                    entry_ema200_slope_reference,
+
+                "entry_atr_14_ma50":
+                    entry_atr_ma50,
+
+                "entry_donchian_high_20":
+                    entry_donchian_high_20,
+
+                # Signal candle
+                "signal_close":
+                    signal_close,
+
+                "signal_high":
+                    signal_high,
+
+                "signal_low":
+                    signal_low,
+
+                # Risk
+                "initial_stop_price":
+                    initial_stop_price,
+
+                "initial_risk_usdt":
+                    initial_risk,
+
+                # Result
+                "gross_profit":
+                    float(
+                        trade.gross_profit
+                    ),
+
+                "fees":
+                    float(
+                        trade.fees
+                    ),
+
+                "slippage_cost":
+                    float(
+                        trade.slippage_cost
+                    ),
+
+                "net_profit":
+                    net_profit,
+
+                "r_multiple":
+                    float(
+                        trade.r_multiple
+                    ),
+
+                "win":
+                    bool(
+                        net_profit > 0
+                    ),
+
+                "exit_reason":
+                    str(
+                        trade.exit_reason
+                    ),
+
+                "held_hours":
+                    held_hours,
+
+                "held_bars":
+                    held_bars,
+
+                "result_class":
+                    result_class,
+            }
+        )
+
+    return rows
+
+
+# ============================================================
+# RUN ONE OOS FOLD
 # ============================================================
 
 def run_oos(
+    *,
     asset: str,
     capital: float,
     df: pd.DataFrame,
@@ -364,30 +722,44 @@ def run_oos(
     warmup_start: pd.Timestamp,
     oos_start: pd.Timestamp,
     oos_end: pd.Timestamp,
-) -> dict:
+) -> tuple[
+    dict,
+    list[dict],
+]:
 
     # --------------------------------------------------------
-    # The strategy remains completely frozen.
+    # IMPORTANT
     #
-    # No parameters are fitted.
-    # No optimization occurs.
+    # The strategy is completely frozen here.
     #
-    # The indicator history is already calculated on the full
-    # dataset. The engine starts fresh at the OOS boundary so
-    # no position or risk state can leak from another fold.
+    # No optimization.
+    # No parameter fitting.
+    # No strategy changes.
     # --------------------------------------------------------
 
     oos = df.loc[
-        (df.index >= oos_start)
-        & (df.index <= oos_end)
+        (
+            df.index
+            >= oos_start
+        )
+        &
+        (
+            df.index
+            <= oos_end
+        )
     ].copy()
 
     if len(oos) < 50:
 
         raise ValueError(
-            f"{asset} fold {fold_number}: "
+            f"{asset} fold "
+            f"{fold_number}: "
             f"only {len(oos)} OOS rows"
         )
+
+    # Fresh engine for every OOS fold.
+    # No position/risk state can leak
+    # between folds.
 
     engine = create_engine(
         capital
@@ -397,112 +769,163 @@ def run_oos(
         oos
     )
 
-    return {
-        "strategy": "V7_S0",
-        "variant": VARIANT,
-        "asset": asset,
-        "fold": fold_number,
-        "warmup_days": WARMUP_DAYS,
-        "oos_days": OOS_DAYS,
-        "starting_capital": capital,
-        "oos_start": str(
-            oos.index.min()
-        ),
-        "oos_end": str(
-            oos.index.max()
-        ),
-        "bars": len(oos),
+    trade_rows = build_trade_rows(
+        asset=asset,
+        capital=capital,
+        fold_number=fold_number,
+        oos_start=oos_start,
+        oos_end=oos_end,
+        oos=oos,
+        engine=engine,
+    )
 
-        "final_balance": float(
-            result.get(
-                "final_balance",
-                capital,
-            )
-        ),
+    # --------------------------------------------------------
+    # Result row
+    # --------------------------------------------------------
 
-        "return_pct": float(
-            result.get(
-                "return_pct",
-                0.0,
-            )
-        ),
+    result_row = {
 
-        "trades": int(
-            result.get(
-                "trades",
-                0,
-            )
-        ),
+        "strategy":
+            "V7_S0",
 
-        "wins": int(
-            result.get(
-                "wins",
-                0,
-            )
-        ),
+        "variant":
+            VARIANT,
 
-        "losses": int(
-            result.get(
-                "losses",
-                0,
-            )
-        ),
+        "asset":
+            asset,
 
-        "win_rate_pct": float(
-            result.get(
-                "win_rate",
+        "fold":
+            fold_number,
+
+        "warmup_days":
+            WARMUP_DAYS,
+
+        "oos_days":
+            OOS_DAYS,
+
+        "starting_capital":
+            capital,
+
+        "oos_start":
+            str(
+                oos.index.min()
+            ),
+
+        "oos_end":
+            str(
+                oos.index.max()
+            ),
+
+        "bars":
+            len(oos),
+
+        "final_balance":
+            float(
                 result.get(
-                    "win_rate_pct",
-                    0.0,
-                ),
-            )
-        ),
+                    "final_balance",
+                    capital,
+                )
+            ),
 
-        "profit_factor": float(
-            result.get(
-                "profit_factor",
+        "return_pct":
+            float(
                 result.get(
-                    "pf",
+                    "return_pct",
                     0.0,
-                ),
-            )
-        ),
+                )
+            ),
 
-        "expectancy": float(
-            result.get(
-                "expectancy",
-                0.0,
-            )
-        ),
+        "trades":
+            int(
+                result.get(
+                    "trades",
+                    0,
+                )
+            ),
 
-        "max_drawdown_pct": float(
-            result.get(
-                "max_drawdown_pct",
-                0.0,
-            )
-        ),
+        "wins":
+            int(
+                result.get(
+                    "wins",
+                    0,
+                )
+            ),
 
-        "fees": float(
-            result.get(
-                "fees",
-                0.0,
-            )
-        ),
+        "losses":
+            int(
+                result.get(
+                    "losses",
+                    0,
+                )
+            ),
 
-        "slippage_cost": float(
-            result.get(
-                "slippage_cost",
-                0.0,
-            )
-        ),
+        "win_rate_pct":
+            float(
+                result.get(
+                    "win_rate",
+                    result.get(
+                        "win_rate_pct",
+                        0.0,
+                    ),
+                )
+            ),
 
-        "kill_switch": bool(
-            result.get(
-                "kill_switch",
-                False,
-            )
-        ),
+        "profit_factor":
+            float(
+                result.get(
+                    "profit_factor",
+                    result.get(
+                        "pf",
+                        0.0,
+                    ),
+                )
+            ),
+
+        "expectancy":
+            float(
+                result.get(
+                    "expectancy",
+                    0.0,
+                )
+            ),
+
+        "max_drawdown_pct":
+            float(
+                result.get(
+                    "max_drawdown_pct",
+                    0.0,
+                )
+            ),
+
+        "fees":
+            float(
+                result.get(
+                    "fees",
+                    0.0,
+                )
+            ),
+
+        "slippage_cost":
+            float(
+                result.get(
+                    "slippage_cost",
+                    0.0,
+                )
+            ),
+
+        "kill_switch":
+            bool(
+                result.get(
+                    "kill_switch",
+                    False,
+                )
+            ),
     }
+
+    return (
+        result_row,
+        trade_rows,
+    )
 
 
 # ============================================================
@@ -562,25 +985,50 @@ def main() -> int:
     )
 
     print()
+
     print(
         "NO PARAMETER OPTIMIZATION."
     )
+
     print(
         "NO STRATEGY CHANGES."
     )
+
     print(
         "NO LIVE TRADING."
     )
+
     print(
         "NO REAL ORDERS."
     )
+
     print(
         "NO API KEYS."
     )
 
+    print()
+
+    print(
+        "Detailed trade diagnostics:"
+    )
+
+    print(
+        f"    {TRADES_OUTPUT_FILE}"
+    )
+
+    # --------------------------------------------------------
+    # Storage
+    # --------------------------------------------------------
+
     results = []
 
+    all_trades = []
+
     failures = []
+
+    # --------------------------------------------------------
+    # Assets
+    # --------------------------------------------------------
 
     for asset in ASSETS:
 
@@ -595,11 +1043,16 @@ def main() -> int:
             )
 
             print()
+
             print(
                 f"Available 1H history: "
                 f"{df.index.min()} -> "
                 f"{df.index.max()}"
             )
+
+            # ------------------------------------------------
+            # Folds
+            # ------------------------------------------------
 
             for (
                 fold_number,
@@ -609,6 +1062,7 @@ def main() -> int:
             ) in folds:
 
                 print()
+
                 print(
                     "-" * 78
                 )
@@ -634,13 +1088,18 @@ def main() -> int:
                     "-" * 78
                 )
 
-                for capital in (
-                    STARTING_CAPITALS
-                ):
+                # --------------------------------------------
+                # Capitals
+                # --------------------------------------------
+
+                for capital in STARTING_CAPITALS:
 
                     try:
 
-                        row = run_oos(
+                        (
+                            row,
+                            trade_rows,
+                        ) = run_oos(
                             asset=asset,
                             capital=capital,
                             df=df,
@@ -652,6 +1111,10 @@ def main() -> int:
 
                         results.append(
                             row
+                        )
+
+                        all_trades.extend(
+                            trade_rows
                         )
 
                         print(
@@ -666,23 +1129,31 @@ def main() -> int:
                             f"PF "
                             f"{row['profit_factor']:.4f} | "
                             f"DD "
-                            f"{row['max_drawdown_pct']:.4f}%"
+                            f"{row['max_drawdown_pct']:.4f}% | "
+                            f"TradeRows "
+                            f"{len(trade_rows)}"
                         )
 
                     except Exception as exc:
 
                         failures.append(
                             {
-                                "asset": asset,
-                                "fold": fold_number,
-                                "capital": capital,
-                                "error": str(
-                                    exc
-                                ),
+                                "asset":
+                                    asset,
+
+                                "fold":
+                                    fold_number,
+
+                                "capital":
+                                    capital,
+
+                                "error":
+                                    str(exc),
                             }
                         )
 
                         print()
+
                         print(
                             "OOS TEST FAILED"
                         )
@@ -713,45 +1184,81 @@ def main() -> int:
 
             failures.append(
                 {
-                    "asset": asset,
-                    "fold": 0,
-                    "capital": 0.0,
-                    "error": str(exc),
+                    "asset":
+                        asset,
+
+                    "fold":
+                        0,
+
+                    "capital":
+                        0.0,
+
+                    "error":
+                        str(exc),
                 }
             )
 
             print()
+
             print(
                 "ASSET PREPARATION FAILED"
             )
 
             print(
-                f"Asset: {asset}"
+                f"Asset: "
+                f"{asset}"
             )
 
             print(
-                f"Error: {exc}"
+                f"Error: "
+                f"{exc}"
             )
 
             traceback.print_exc()
 
+    # --------------------------------------------------------
+    # No results
+    # --------------------------------------------------------
+
     if not results:
 
         print()
+
         print(
             "NO OOS RESULTS PRODUCED."
         )
 
         return 1
 
+    # --------------------------------------------------------
+    # Create dataframes
+    # --------------------------------------------------------
+
     result_df = pd.DataFrame(
         results
     )
+
+    trade_df = pd.DataFrame(
+        all_trades
+    )
+
+    # --------------------------------------------------------
+    # Write CSVs
+    # --------------------------------------------------------
 
     result_df.to_csv(
         OUTPUT_FILE,
         index=False,
     )
+
+    trade_df.to_csv(
+        TRADES_OUTPUT_FILE,
+        index=False,
+    )
+
+    # ========================================================
+    # FINAL REPORT
+    # ========================================================
 
     header(
         "OOS FINAL REPORT"
@@ -764,6 +1271,269 @@ def main() -> int:
     )
 
     # ========================================================
+    # TRADE DIAGNOSTICS
+    # ========================================================
+
+    header(
+        "TRADE DIAGNOSTICS"
+    )
+
+    print(
+        f"Detailed trade rows: "
+        f"{len(trade_df)}"
+    )
+
+    if not trade_df.empty:
+
+        total_wins = int(
+            trade_df["win"].sum()
+        )
+
+        total_losses = int(
+            (
+                trade_df[
+                    "net_profit"
+                ]
+                < 0
+            ).sum()
+        )
+
+        print(
+            f"Wins:   "
+            f"{total_wins}"
+        )
+
+        print(
+            f"Losses: "
+            f"{total_losses}"
+        )
+
+        # ----------------------------------------------------
+        # Losses by asset
+        # ----------------------------------------------------
+
+        print()
+
+        print(
+            "Losses by asset:"
+        )
+
+        losses_by_asset = (
+            trade_df[
+                trade_df[
+                    "net_profit"
+                ] < 0
+            ]
+            .groupby(
+                "asset"
+            )
+            .size()
+            .sort_values(
+                ascending=False
+            )
+        )
+
+        print(
+            losses_by_asset.to_string()
+        )
+
+        # ----------------------------------------------------
+        # Losses by exit reason
+        # ----------------------------------------------------
+
+        print()
+
+        print(
+            "Losses by exit reason:"
+        )
+
+        losses_by_exit = (
+            trade_df[
+                trade_df[
+                    "net_profit"
+                ] < 0
+            ]
+            .groupby(
+                "exit_reason"
+            )
+            .size()
+            .sort_values(
+                ascending=False
+            )
+        )
+
+        print(
+            losses_by_exit.to_string()
+        )
+
+        # ----------------------------------------------------
+        # Losses by asset + exit
+        # ----------------------------------------------------
+
+        print()
+
+        print(
+            "Losses by asset / exit reason:"
+        )
+
+        losses_matrix = (
+            trade_df[
+                trade_df[
+                    "net_profit"
+                ] < 0
+            ]
+            .groupby(
+                [
+                    "asset",
+                    "exit_reason",
+                ]
+            )
+            .size()
+        )
+
+        print(
+            losses_matrix.to_string()
+        )
+
+        # ----------------------------------------------------
+        # Average R
+        # ----------------------------------------------------
+
+        print()
+
+        print(
+            "Average R by asset:"
+        )
+
+        avg_r = (
+            trade_df
+            .groupby(
+                "asset"
+            )[
+                "r_multiple"
+            ]
+            .mean()
+        )
+
+        print(
+            avg_r.to_string()
+        )
+
+        # ----------------------------------------------------
+        # Average R by result
+        # ----------------------------------------------------
+
+        print()
+
+        print(
+            "Average R by result:"
+        )
+
+        avg_r_result = (
+            trade_df
+            .groupby(
+                "result_class"
+            )[
+                "r_multiple"
+            ]
+            .mean()
+        )
+
+        print(
+            avg_r_result.to_string()
+        )
+
+        # ----------------------------------------------------
+        # Exit reasons overall
+        # ----------------------------------------------------
+
+        print()
+
+        print(
+            "All trades by exit reason:"
+        )
+
+        exit_summary = (
+            trade_df
+            .groupby(
+                "exit_reason"
+            )
+            .agg(
+                trades=(
+                    "net_profit",
+                    "count",
+                ),
+                net_profit=(
+                    "net_profit",
+                    "sum",
+                ),
+                avg_r=(
+                    "r_multiple",
+                    "mean",
+                ),
+            )
+            .sort_values(
+                "net_profit"
+            )
+        )
+
+        print(
+            exit_summary.to_string()
+        )
+
+        # ----------------------------------------------------
+        # ADX diagnostics
+        # ----------------------------------------------------
+
+        if "entry_adx_14" in trade_df:
+
+            print()
+
+            print(
+                "Average entry ADX:"
+            )
+
+            adx_summary = (
+                trade_df
+                .groupby(
+                    "result_class"
+                )[
+                    "entry_adx_14"
+                ]
+                .mean()
+            )
+
+            print(
+                adx_summary.to_string()
+            )
+
+        # ----------------------------------------------------
+        # ATR diagnostics
+        # ----------------------------------------------------
+
+        if "entry_atr_14" in trade_df:
+
+            print()
+
+            print(
+                "Average entry ATR:"
+            )
+
+            atr_summary = (
+                trade_df
+                .groupby(
+                    "result_class"
+                )[
+                    "entry_atr_14"
+                ]
+                .mean()
+            )
+
+            print(
+                atr_summary.to_string()
+            )
+
+    # ========================================================
     # ROBUSTNESS SUMMARY
     # ========================================================
 
@@ -774,19 +1544,23 @@ def main() -> int:
     for asset in ASSETS:
 
         asset_df = result_df[
-            result_df["asset"]
-            == asset
+            result_df[
+                "asset"
+            ] == asset
         ]
 
         if asset_df.empty:
             continue
 
-        # Capital does not change percentage returns because
-        # risk is percentage based. Use the first capital for
-        # the fold-level summary.
+        # One result per fold.
+        # Capital does not change the percentage return
+        # for this engine, so first row is representative.
+
         fold_returns = (
             asset_df
-            .groupby("fold")[
+            .groupby(
+                "fold"
+            )[
                 "return_pct"
             ]
             .first()
@@ -807,6 +1581,7 @@ def main() -> int:
         )
 
         print()
+
         print(
             asset
         )
@@ -824,20 +1599,32 @@ def main() -> int:
 
         print(
             "Fold returns: "
-            + ", ".join(
-                f"{x:.4f}%"
-                for x in
-                fold_returns.tolist()
+            +
+            ", ".join(
+                f"{value:.4f}%"
+                for value
+                in fold_returns.tolist()
             )
         )
 
+    # ========================================================
+    # OUTPUT
+    # ========================================================
+
     print()
+
     print(
         f"Results written to: "
         f"{OUTPUT_FILE}"
     )
 
+    print(
+        f"Trade diagnostics written to: "
+        f"{TRADES_OUTPUT_FILE}"
+    )
+
     print()
+
     print(
         "=" * 78
     )
@@ -845,8 +1632,7 @@ def main() -> int:
     if failures:
 
         print(
-            "OOS TEST FINISHED "
-            "WITH FAILURES"
+            "OOS TEST FINISHED WITH FAILURES"
         )
 
         print(
@@ -884,7 +1670,12 @@ def main() -> int:
     return 0
 
 
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
 if __name__ == "__main__":
+
     sys.exit(
         main()
     )
