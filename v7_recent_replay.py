@@ -30,7 +30,7 @@ STARTING_CAPITALS = [
 
 VARIANT = "V6_C"
 
-RECENT_DAYS = 90
+RECENT_DAYS = 365
 
 OUTPUT_FILE = "v7_recent_replay_results.csv"
 
