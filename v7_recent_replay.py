@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from backtest.v7_survival_engine import V7SurvivalEngine
-from strategy.indicators import calculate_indicators
+from strategy.strategy_v6 import calculate_indicators
 
 
 # ============================================================
@@ -93,7 +93,9 @@ def load_data(asset: str) -> pd.DataFrame:
             errors="coerce",
         )
 
-        df = df.dropna(subset=["timestamp"])
+        df = df.dropna(
+            subset=["timestamp"]
+        )
 
         df = df.set_index("timestamp")
 
@@ -105,12 +107,15 @@ def load_data(asset: str) -> pd.DataFrame:
             errors="coerce",
         )
 
-        df = df[~df.index.isna()]
+        df = df[
+            ~df.index.isna()
+        ]
 
     else:
 
         raise ValueError(
-            f"{asset}: no timestamp column and no DatetimeIndex"
+            f"{asset}: no timestamp column "
+            f"and no DatetimeIndex"
         )
 
     # --------------------------------------------------------
@@ -135,13 +140,26 @@ def load_data(asset: str) -> pd.DataFrame:
             )
 
     # --------------------------------------------------------
+    # CHECK VOLUME
+    # --------------------------------------------------------
+
+    if "volume" not in df.columns:
+
+        raise ValueError(
+            f"{asset}: required column 'volume' "
+            f"is missing from source data"
+        )
+
+    # --------------------------------------------------------
     # CLEAN
     # --------------------------------------------------------
 
     df = df.sort_index()
 
     df = df.loc[
-        ~df.index.duplicated(keep="last")
+        ~df.index.duplicated(
+            keep="last"
+        )
     ]
 
     df = df.dropna(
@@ -159,7 +177,8 @@ def load_data(asset: str) -> pd.DataFrame:
 
     print(
         f"Data range: "
-        f"{df.index.min()} -> {df.index.max()}"
+        f"{df.index.min()} -> "
+        f"{df.index.max()}"
     )
 
     return df
@@ -169,7 +188,9 @@ def load_data(asset: str) -> pd.DataFrame:
 # RESAMPLE 5M -> 1H
 # ============================================================
 
-def resample_to_1h(df: pd.DataFrame) -> pd.DataFrame:
+def resample_to_1h(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
 
     required = [
         "open",
@@ -180,8 +201,9 @@ def resample_to_1h(df: pd.DataFrame) -> pd.DataFrame:
     ]
 
     missing = [
-        c for c in required
-        if c not in df.columns
+        column
+        for column in required
+        if column not in df.columns
     ]
 
     if missing:
@@ -210,8 +232,22 @@ def resample_to_1h(df: pd.DataFrame) -> pd.DataFrame:
                 "volume": "sum",
             }
         )
-        .dropna()
+        .dropna(
+            subset=[
+                "open",
+                "high",
+                "low",
+                "close",
+            ]
+        )
     )
+
+    if result.empty:
+
+        raise ValueError(
+            "5M -> 1H resampling produced "
+            "no candles"
+        )
 
     return result
 
@@ -220,7 +256,9 @@ def resample_to_1h(df: pd.DataFrame) -> pd.DataFrame:
 # PREPARE INDICATORS
 # ============================================================
 
-def prepare_data(asset: str) -> pd.DataFrame:
+def prepare_data(
+    asset: str,
+) -> pd.DataFrame:
 
     print_header(
         f"PREPARING {asset}"
@@ -232,22 +270,29 @@ def prepare_data(asset: str) -> pd.DataFrame:
         f"5m candles: {len(df_5m):,}"
     )
 
-    df_1h = resample_to_1h(df_5m)
+    df_1h = resample_to_1h(
+        df_5m
+    )
 
     print(
         f"1h candles: {len(df_1h):,}"
     )
 
     # --------------------------------------------------------
-    # IMPORTANT:
-    # Calculate indicators on FULL history first.
+    # IMPORTANT
     #
-    # This avoids destroying indicator warm-up data.
-    # Only AFTER indicators are calculated do we select
-    # the recent 90-day replay period.
+    # Calculate the V6 indicators on the FULL
+    # available history first.
+    #
+    # Only AFTER the indicators are calculated
+    # do we select the recent 90-day replay period.
+    #
+    # This preserves indicator warm-up data.
     # --------------------------------------------------------
 
-    print("Calculating indicators...")
+    print(
+        "Calculating V6 indicators..."
+    )
 
     df_1h = calculate_indicators(
         df_1h.copy()
@@ -270,6 +315,11 @@ def prepare_data(asset: str) -> pd.DataFrame:
             f"{missing}"
         )
 
+    print(
+        "PASS: all required V7-S0 "
+        "engine columns are present"
+    )
+
     # --------------------------------------------------------
     # RECENT 90 DAYS
     # --------------------------------------------------------
@@ -278,7 +328,9 @@ def prepare_data(asset: str) -> pd.DataFrame:
 
     start_timestamp = (
         latest_timestamp
-        - pd.Timedelta(days=RECENT_DAYS)
+        - pd.Timedelta(
+            days=RECENT_DAYS
+        )
     )
 
     df_recent = df_1h.loc[
@@ -335,7 +387,10 @@ def check_engine_api() -> None:
         engine_init_text
     )
 
-    if "base_risk_per_trade" not in engine_init_text:
+    if (
+        "base_risk_per_trade"
+        not in engine_init_text
+    ):
 
         raise RuntimeError(
             "V7SurvivalEngine does not expose "
@@ -363,7 +418,9 @@ def run_one(
         f"{asset} | ${capital:.2f}"
     )
 
-    df = prepare_data(asset)
+    df = prepare_data(
+        asset
+    )
 
     engine = V7SurvivalEngine(
         starting_balance=capital,
@@ -396,9 +453,14 @@ def run_one(
     # RUN
     # --------------------------------------------------------
 
-    result = engine.run(df)
+    result = engine.run(
+        df
+    )
 
-    if not isinstance(result, dict):
+    if not isinstance(
+        result,
+        dict,
+    ):
 
         raise TypeError(
             "Engine result is not a dictionary"
@@ -530,9 +592,17 @@ def run_one(
     # --------------------------------------------------------
 
     print()
-    print("-" * 70)
-    print("RESULT")
-    print("-" * 70)
+    print(
+        "-" * 70
+    )
+
+    print(
+        "RESULT"
+    )
+
+    print(
+        "-" * 70
+    )
 
     print(
         f"Asset:          {asset}"
@@ -590,7 +660,9 @@ def run_one(
         f"Kill switch:    {kill_switch}"
     )
 
-    print("-" * 70)
+    print(
+        "-" * 70
+    )
 
     return row
 
@@ -610,12 +682,17 @@ def main() -> int:
     )
 
     print()
+
     print(
         "Strategy:       V7-S0"
     )
 
     print(
         "Entry:          V6-C"
+    )
+
+    print(
+        "Indicators:     V6"
     )
 
     print(
@@ -699,9 +776,17 @@ def main() -> int:
             except Exception as exc:
 
                 print()
-                print("=" * 70)
-                print("BACKTEST FAILED")
-                print("=" * 70)
+                print(
+                    "=" * 70
+                )
+
+                print(
+                    "BACKTEST FAILED"
+                )
+
+                print(
+                    "=" * 70
+                )
 
                 print(
                     f"Asset:   {asset}"
@@ -732,9 +817,17 @@ def main() -> int:
     if not results:
 
         print()
-        print("=" * 70)
-        print("NO RESULTS PRODUCED")
-        print("=" * 70)
+        print(
+            "=" * 70
+        )
+
+        print(
+            "NO RESULTS PRODUCED"
+        )
+
+        print(
+            "=" * 70
+        )
 
         return 1
 
@@ -822,6 +915,10 @@ def main() -> int:
             "NO LIVE TRADING."
         )
 
+        print(
+            "NO REAL ORDERS."
+        )
+
         return 1
 
     print(
@@ -842,6 +939,10 @@ def main() -> int:
 
     return 0
 
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
 
