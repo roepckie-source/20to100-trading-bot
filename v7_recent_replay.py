@@ -1,24 +1,9 @@
-# ============================================================
-# 20to100 Trading Bot
-# V7-S0 RECENT MARKET REPLAY - ROBUST
-#
-# V6-C Entry
-# V7-S0 Survival Layer
-#
-# 5m -> 1h
-# Last 90 calendar days
-#
-# NO optimization
-# NO strategy changes
-# NO live trading
-# ============================================================
-
 from __future__ import annotations
 
-import inspect
+import os
 import sys
 import traceback
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -26,8 +11,9 @@ from backtest.v7_survival_engine import V7SurvivalEngine
 from strategy.indicators import calculate_indicators
 
 
-ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
+# ============================================================
+# CONFIG
+# ============================================================
 
 ASSETS = [
     "BTC_USDT_5m",
@@ -35,32 +21,25 @@ ASSETS = [
     "SOL_USDT_5m",
 ]
 
-STARTING_BALANCE = 20.0
-BASE_RISK_PER_TRADE = 0.01
-
-FEE_RATE = 0.001
-SLIPPAGE_RATE = 0.0005
-
-ATR_STOP_MULTIPLIER = 3.0
-TRAILING_ATR_MULTIPLIER = 3.0
-
-ADX_MIN = 20.0
-
-MAX_DAILY_LOSS = 0.05
-
-MAX_CONSECUTIVE_LOSSES = 3
-LOSS_COOLDOWN_BARS = 24
-
-GLOBAL_MAX_DRAWDOWN = 0.20
+STARTING_CAPITALS = [
+    20.0,
+    50.0,
+    100.0,
+    250.0,
+]
 
 VARIANT = "V6_C"
 
 RECENT_DAYS = 90
 
-RESULTS_FILE = ROOT / "v7_recent_replay_results.csv"
+OUTPUT_FILE = "v7_recent_replay_results.csv"
 
 
-ENGINE_REQUIRED_COLUMNS = [
+# ============================================================
+# REQUIRED ENGINE API
+# ============================================================
+
+REQUIRED_ENGINE_COLUMNS = [
     "open",
     "high",
     "low",
@@ -77,39 +56,120 @@ ENGINE_REQUIRED_COLUMNS = [
 
 
 # ============================================================
-# LOAD DATA
+# HELPERS
 # ============================================================
 
-def load_data(asset_name: str) -> pd.DataFrame:
-
-    path = DATA_DIR / f"{asset_name}.csv"
-
+def print_header(text: str) -> None:
     print()
     print("=" * 70)
-    print(f"LOADING {asset_name}")
+    print(text)
     print("=" * 70)
 
-    if not path.exists():
+
+def load_data(asset: str) -> pd.DataFrame:
+    path = f"data/{asset}.csv"
+
+    print()
+    print(f"Loading: {path}")
+
+    if not os.path.isfile(path):
         raise FileNotFoundError(
-            f"Dataset not found: {path}"
+            f"Required data file not found: {path}"
         )
 
     df = pd.read_csv(path)
 
-    if "timestamp" not in df.columns:
-        raise ValueError(
-            f"{asset_name}: missing timestamp column"
+    print(f"Raw rows: {len(df):,}")
+
+    # --------------------------------------------------------
+    # TIMESTAMP
+    # --------------------------------------------------------
+
+    if "timestamp" in df.columns:
+
+        df["timestamp"] = pd.to_datetime(
+            df["timestamp"],
+            utc=True,
+            errors="coerce",
         )
 
-    df["timestamp"] = pd.to_datetime(
-        df["timestamp"],
-        errors="coerce",
-        utc=True,
-    )
+        df = df.dropna(subset=["timestamp"])
+
+        df = df.set_index("timestamp")
+
+    elif isinstance(df.index, pd.DatetimeIndex):
+
+        df.index = pd.to_datetime(
+            df.index,
+            utc=True,
+            errors="coerce",
+        )
+
+        df = df[~df.index.isna()]
+
+    else:
+
+        raise ValueError(
+            f"{asset}: no timestamp column and no DatetimeIndex"
+        )
+
+    # --------------------------------------------------------
+    # NUMERIC COLUMNS
+    # --------------------------------------------------------
+
+    numeric_columns = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    ]
+
+    for column in numeric_columns:
+
+        if column in df.columns:
+
+            df[column] = pd.to_numeric(
+                df[column],
+                errors="coerce",
+            )
+
+    # --------------------------------------------------------
+    # CLEAN
+    # --------------------------------------------------------
+
+    df = df.sort_index()
+
+    df = df.loc[
+        ~df.index.duplicated(keep="last")
+    ]
 
     df = df.dropna(
-        subset=["timestamp"]
-    ).copy()
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
+    )
+
+    print(
+        f"Clean rows: {len(df):,}"
+    )
+
+    print(
+        f"Data range: "
+        f"{df.index.min()} -> {df.index.max()}"
+    )
+
+    return df
+
+
+# ============================================================
+# RESAMPLE 5M -> 1H
+# ============================================================
+
+def resample_to_1h(df: pd.DataFrame) -> pd.DataFrame:
 
     required = [
         "open",
@@ -118,62 +178,26 @@ def load_data(asset_name: str) -> pd.DataFrame:
         "close",
     ]
 
-    for column in required:
+    missing = [
+        c for c in required
+        if c not in df.columns
+    ]
 
-        if column not in df.columns:
-            raise ValueError(
-                f"{asset_name}: missing column {column}"
-            )
-
-        df[column] = pd.to_numeric(
-            df[column],
-            errors="coerce",
+    if missing:
+        raise ValueError(
+            f"Missing OHLC columns: {missing}"
         )
 
-    df = df.dropna(
-        subset=required
-    ).copy()
-
-    df = df.sort_values(
-        "timestamp"
-    )
-
-    df = df.drop_duplicates(
-        subset=["timestamp"],
-        keep="last",
-    )
-
-    df = df.set_index(
-        "timestamp"
-    )
-
-    df = df[required].copy()
-
-    print(
-        f"5m rows: {len(df):,}"
-    )
-
-    print(
-        f"Data start: {df.index.min()}"
-    )
-
-    print(
-        f"Data end:   {df.index.max()}"
-    )
-
-    return df
-
-
-# ============================================================
-# RESAMPLE
-# ============================================================
-
-def resample_to_1h(
-    df: pd.DataFrame,
-) -> pd.DataFrame:
-
-    hourly = (
-        df.resample("1h")
+    result = (
+        df[
+            [
+                "open",
+                "high",
+                "low",
+                "close",
+            ]
+        ]
+        .resample("1h")
         .agg(
             {
                 "open": "first",
@@ -185,519 +209,384 @@ def resample_to_1h(
         .dropna()
     )
 
-    if hourly.empty:
-        raise RuntimeError(
-            "5m -> 1h resampling produced no data"
-        )
-
-    return hourly
+    return result
 
 
 # ============================================================
-# INDICATORS
+# PREPARE INDICATORS
 # ============================================================
 
-def prepare_data(
-    df_5m: pd.DataFrame,
-) -> pd.DataFrame:
+def prepare_data(asset: str) -> pd.DataFrame:
 
-    hourly = resample_to_1h(
-        df_5m
+    print_header(
+        f"PREPARING {asset}"
     )
+
+    df_5m = load_data(asset)
 
     print(
-        f"1h rows: {len(hourly):,}"
+        f"5m candles: {len(df_5m):,}"
     )
 
-    if len(hourly) < 400:
+    df_1h = resample_to_1h(df_5m)
 
-        raise ValueError(
-            f"Not enough hourly data: "
-            f"{len(hourly)}"
-        )
-
-    # VERY IMPORTANT:
-    #
-    # Indicators are calculated on the FULL
-    # historical dataset BEFORE selecting the
-    # last 90 days.
-    #
-    # This preserves EMA / ATR / Donchian
-    # warm-up history.
-
-    hourly = calculate_indicators(
-        hourly.copy()
+    print(
+        f"1h candles: {len(df_1h):,}"
     )
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Calculate indicators on FULL history first.
+    #
+    # This avoids destroying indicator warm-up data.
+    # Only AFTER indicators are calculated do we select
+    # the recent 90-day replay period.
+    # --------------------------------------------------------
+
+    print("Calculating indicators...")
+
+    df_1h = calculate_indicators(
+        df_1h.copy()
+    )
+
+    # --------------------------------------------------------
+    # CHECK ENGINE COLUMNS
+    # --------------------------------------------------------
 
     missing = [
         column
-        for column in ENGINE_REQUIRED_COLUMNS
-        if column not in hourly.columns
+        for column in REQUIRED_ENGINE_COLUMNS
+        if column not in df_1h.columns
     ]
 
     if missing:
 
         raise ValueError(
-            "Missing indicator columns: "
+            f"{asset}: missing engine columns: "
             f"{missing}"
         )
 
-    return hourly
+    # --------------------------------------------------------
+    # RECENT 90 DAYS
+    # --------------------------------------------------------
 
+    latest_timestamp = df_1h.index.max()
 
-# ============================================================
-# SELECT RECENT PERIOD
-# ============================================================
-
-def select_recent(
-    df_1h: pd.DataFrame,
-):
-
-    end_time = df_1h.index.max()
-
-    start_time = (
-        end_time
-        - pd.Timedelta(
-            days=RECENT_DAYS
-        )
+    start_timestamp = (
+        latest_timestamp
+        - pd.Timedelta(days=RECENT_DAYS)
     )
 
-    recent = df_1h[
-        (
-            df_1h.index >= start_time
-        )
-        &
-        (
-            df_1h.index <= end_time
-        )
+    df_recent = df_1h.loc[
+        df_1h.index >= start_timestamp
     ].copy()
 
-    if len(recent) < 100:
-
-        raise ValueError(
-            f"Only {len(recent)} recent "
-            f"hourly rows available"
-        )
-
-    # Check required indicator data
-
-    bad = (
-        recent[
-            ENGINE_REQUIRED_COLUMNS
-        ]
-        .isna()
-        .sum()
+    print()
+    print(
+        f"Recent replay period:"
     )
 
-    bad = bad[
-        bad > 0
-    ]
+    print(
+        f"START: {df_recent.index.min()}"
+    )
 
-    if not bad.empty:
+    print(
+        f"END:   {df_recent.index.max()}"
+    )
+
+    print(
+        f"ROWS:  {len(df_recent):,}"
+    )
+
+    if len(df_recent) < 100:
 
         raise ValueError(
-            "NaN values in replay data: "
-            f"{bad.to_dict()}"
+            f"{asset}: only "
+            f"{len(df_recent)} recent rows"
         )
 
-    return (
-        recent,
-        start_time,
-        end_time,
-    )
+    return df_recent
 
 
 # ============================================================
-# ENGINE
+# ENGINE API CHECK
 # ============================================================
 
-def build_engine():
+def check_engine_api() -> None:
 
-    signature = inspect.signature(
-        V7SurvivalEngine.__init__
+    print_header(
+        "CHECKING V7-S0 ENGINE API"
     )
 
-    parameters = signature.parameters
+    engine_init_text = (
+        V7SurvivalEngine.__init__.__code__
+        .co_varnames
+    )
 
-    # This is the important compatibility check.
-    #
-    # Current V7-S0 uses:
-    #
-    # base_risk_per_trade
-    #
-    # NOT:
-    #
-    # risk_per_trade
+    print(
+        "Constructor arguments:"
+    )
 
-    if (
-        "base_risk_per_trade"
-        not in parameters
-    ):
+    print(
+        engine_init_text
+    )
+
+    if "base_risk_per_trade" not in engine_init_text:
 
         raise RuntimeError(
-            "V7SurvivalEngine API mismatch: "
-            "base_risk_per_trade not found."
+            "V7SurvivalEngine does not expose "
+            "'base_risk_per_trade'. "
+            "The replay script is incompatible "
+            "with the current engine."
         )
 
-    return V7SurvivalEngine(
-
-        starting_balance=(
-            STARTING_BALANCE
-        ),
-
-        base_risk_per_trade=(
-            BASE_RISK_PER_TRADE
-        ),
-
-        fee_rate=(
-            FEE_RATE
-        ),
-
-        slippage_rate=(
-            SLIPPAGE_RATE
-        ),
-
-        atr_stop_multiplier=(
-            ATR_STOP_MULTIPLIER
-        ),
-
-        trailing_atr_multiplier=(
-            TRAILING_ATR_MULTIPLIER
-        ),
-
-        adx_min=(
-            ADX_MIN
-        ),
-
-        variant=(
-            VARIANT
-        ),
-
-        max_daily_loss=(
-            MAX_DAILY_LOSS
-        ),
-
-        max_consecutive_losses=(
-            MAX_CONSECUTIVE_LOSSES
-        ),
-
-        loss_cooldown_bars=(
-            LOSS_COOLDOWN_BARS
-        ),
-
-        global_max_drawdown=(
-            GLOBAL_MAX_DRAWDOWN
-        ),
+    print(
+        "PASS: base_risk_per_trade found"
     )
 
 
 # ============================================================
-# RUN ONE ASSET
+# RUN ONE BACKTEST
 # ============================================================
 
-def run_recent_replay(
-    asset_name: str,
+def run_one(
+    asset: str,
+    capital: float,
 ) -> dict:
 
-    df_5m = load_data(
-        asset_name
+    print_header(
+        f"V7-S0 RECENT REPLAY | "
+        f"{asset} | ${capital:.2f}"
     )
 
-    df_1h = prepare_data(
-        df_5m
-    )
+    df = prepare_data(asset)
 
-    (
-        recent,
-        start_time,
-        end_time,
-    ) = select_recent(
-        df_1h
-    )
-
-    print()
-    print(
-        f"Replay target start: "
-        f"{start_time}"
-    )
-
-    print(
-        f"Replay target end:   "
-        f"{end_time}"
+    engine = V7SurvivalEngine(
+        starting_balance=capital,
+        base_risk_per_trade=0.01,
+        fee_rate=0.001,
+        slippage_rate=0.0005,
+        atr_stop_multiplier=3.0,
+        trailing_atr_multiplier=3.0,
+        adx_min=20.0,
+        variant=VARIANT,
+        max_daily_loss=0.05,
+        max_consecutive_losses=3,
+        loss_cooldown_bars=24,
+        global_max_drawdown=0.20,
     )
 
     print(
-        f"Replay actual start: "
-        f"{recent.index.min()}"
+        f"Starting capital: ${capital:.2f}"
     )
 
     print(
-        f"Replay actual end:   "
-        f"{recent.index.max()}"
+        f"Variant: {VARIANT}"
     )
 
     print(
-        f"Replay bars:         "
-        f"{len(recent):,}"
+        f"Rows: {len(df):,}"
     )
 
-    print()
-    print(
-        "Starting V7-S0 engine..."
-    )
+    # --------------------------------------------------------
+    # RUN
+    # --------------------------------------------------------
 
-    engine = build_engine()
+    result = engine.run(df)
 
-    result = engine.run(
-        recent
-    )
+    if not isinstance(result, dict):
 
-    if not isinstance(
-        result,
-        dict
-    ):
-
-        raise RuntimeError(
-            "Engine returned "
-            f"{type(result).__name__}, "
-            "expected dict"
+        raise TypeError(
+            "Engine result is not a dictionary"
         )
 
-    required_result_keys = [
-
-        "final_balance",
-        "return_pct",
-        "trades",
-        "wins",
-        "losses",
-        "win_rate",
-        "profit_factor",
-        "expectancy",
-        "max_drawdown_pct",
-        "fees",
-        "slippage_cost",
-        "kill_switch",
-
-    ]
-
-    missing = [
-        key
-        for key in required_result_keys
-        if key not in result
-    ]
-
-    if missing:
-
-        raise RuntimeError(
-            "Engine result missing keys: "
-            f"{missing}"
-        )
+    # --------------------------------------------------------
+    # EXTRACT
+    # --------------------------------------------------------
 
     final_balance = float(
-        result[
-            "final_balance"
-        ]
+        result.get(
+            "final_balance",
+            capital,
+        )
     )
 
     return_pct = float(
-        result[
-            "return_pct"
-        ]
+        result.get(
+            "return_pct",
+            0.0,
+        )
     )
 
     trades = int(
-        result[
-            "trades"
-        ]
+        result.get(
+            "trades",
+            0,
+        )
     )
 
     wins = int(
-        result[
-            "wins"
-        ]
+        result.get(
+            "wins",
+            0,
+        )
     )
 
     losses = int(
-        result[
-            "losses"
-        ]
+        result.get(
+            "losses",
+            0,
+        )
     )
 
     win_rate = float(
-        result[
-            "win_rate"
-        ]
+        result.get(
+            "win_rate",
+            0.0,
+        )
     )
 
     profit_factor = float(
-        result[
-            "profit_factor"
-        ]
+        result.get(
+            "profit_factor",
+            result.get(
+                "pf",
+                0.0,
+            ),
+        )
     )
 
     expectancy = float(
-        result[
-            "expectancy"
-        ]
+        result.get(
+            "expectancy",
+            0.0,
+        )
     )
 
-    max_drawdown = float(
-        result[
-            "max_drawdown_pct"
-        ]
+    max_drawdown_pct = float(
+        result.get(
+            "max_drawdown_pct",
+            0.0,
+        )
     )
 
     fees = float(
-        result[
-            "fees"
-        ]
+        result.get(
+            "fees",
+            0.0,
+        )
     )
 
-    slippage = float(
-        result[
-            "slippage_cost"
-        ]
+    slippage_cost = float(
+        result.get(
+            "slippage_cost",
+            0.0,
+        )
     )
 
     kill_switch = bool(
-        result[
-            "kill_switch"
-        ]
+        result.get(
+            "kill_switch",
+            False,
+        )
     )
+
+    # --------------------------------------------------------
+    # RESULT
+    # --------------------------------------------------------
 
     row = {
-
-        "asset":
-            asset_name,
-
-        "variant":
-            VARIANT,
-
-        "start":
-            recent.index.min(),
-
-        "end":
-            recent.index.max(),
-
-        "bars":
-            len(recent),
-
-        "starting_balance":
-            STARTING_BALANCE,
-
-        "final_balance":
-            final_balance,
-
-        "profit":
-            final_balance
-            - STARTING_BALANCE,
-
-        "return_pct":
-            return_pct,
-
-        "trades":
-            trades,
-
-        "wins":
-            wins,
-
-        "losses":
-            losses,
-
-        "win_rate_pct":
-            win_rate,
-
-        "profit_factor":
-            profit_factor,
-
-        "expectancy":
-            expectancy,
-
-        "max_drawdown_pct":
-            max_drawdown,
-
-        "fees":
-            fees,
-
-        "slippage_cost":
-            slippage,
-
-        "kill_switch":
-            kill_switch,
+        "strategy": "V7_S0",
+        "variant": VARIANT,
+        "asset": asset,
+        "starting_capital": capital,
+        "final_balance": final_balance,
+        "return_pct": return_pct,
+        "trades": trades,
+        "wins": wins,
+        "losses": losses,
+        "win_rate_pct": win_rate,
+        "profit_factor": profit_factor,
+        "expectancy": expectancy,
+        "max_drawdown_pct": max_drawdown_pct,
+        "fees": fees,
+        "slippage_cost": slippage_cost,
+        "kill_switch": kill_switch,
+        "start_date": str(
+            df.index.min()
+        ),
+        "end_date": str(
+            df.index.max()
+        ),
+        "bars": len(df),
     }
 
+    # --------------------------------------------------------
+    # PRINT RESULT
+    # --------------------------------------------------------
+
     print()
+    print("-" * 70)
+    print("RESULT")
+    print("-" * 70)
+
     print(
-        "-" * 70
+        f"Asset:          {asset}"
     )
 
     print(
-        f"RESULT {asset_name}"
+        f"Capital:        ${capital:.2f}"
     )
 
     print(
-        "-" * 70
+        f"Final balance:  ${final_balance:.4f}"
     )
 
     print(
-        f"Final balance : "
-        f"{final_balance:.6f}"
+        f"Return:         {return_pct:.4f}%"
     )
 
     print(
-        f"Profit        : "
-        f"{final_balance - STARTING_BALANCE:.6f}"
+        f"Trades:         {trades}"
     )
 
     print(
-        f"Return        : "
-        f"{return_pct:.4f}%"
+        f"Wins:           {wins}"
     )
 
     print(
-        f"Trades        : "
-        f"{trades}"
+        f"Losses:         {losses}"
     )
 
     print(
-        f"Wins / Losses : "
-        f"{wins} / {losses}"
+        f"Win rate:       {win_rate:.2f}%"
     )
 
     print(
-        f"Win rate      : "
-        f"{win_rate:.2f}%"
+        f"Profit factor:  {profit_factor:.4f}"
     )
 
     print(
-        f"Profit Factor : "
-        f"{profit_factor:.4f}"
+        f"Expectancy:     {expectancy:.6f}"
     )
 
     print(
-        f"Expectancy    : "
-        f"{expectancy:.6f}"
+        f"Max drawdown:   {max_drawdown_pct:.4f}%"
     )
 
     print(
-        f"Max Drawdown  : "
-        f"{max_drawdown:.4f}%"
+        f"Fees:           ${fees:.6f}"
     )
 
     print(
-        f"Fees          : "
-        f"{fees:.6f}"
+        f"Slippage:       ${slippage_cost:.6f}"
     )
 
     print(
-        f"Slippage      : "
-        f"{slippage:.6f}"
+        f"Kill switch:    {kill_switch}"
     )
 
-    print(
-        f"Kill Switch   : "
-        f"{kill_switch}"
-    )
+    print("-" * 70)
 
     return row
 
@@ -708,279 +597,248 @@ def run_recent_replay(
 
 def main() -> int:
 
-    print()
-    print(
-        "=" * 70
+    print_header(
+        "V7-S0 RECENT 90-DAY REPLAY"
     )
 
     print(
-        "20to100 TRADING BOT"
-    )
-
-    print(
-        "V7-S0 RECENT MARKET REPLAY"
-    )
-
-    print(
-        "=" * 70
-    )
-
-    print(
-        "Strategy : V6-C"
-    )
-
-    print(
-        "Layer    : V7-S0"
-    )
-
-    print(
-        "Assets   : BTC + ETH + SOL"
-    )
-
-    print(
-        "TF       : 5m -> 1h"
-    )
-
-    print(
-        f"Period   : "
-        f"Last {RECENT_DAYS} days"
-    )
-
-    print(
-        f"Capital  : "
-        f"{STARTING_BALANCE:.2f} USDT"
+        "SURVIVE FIRST. GROW SECOND."
     )
 
     print()
     print(
-        "NO LIVE TRADING"
+        "Strategy:       V7-S0"
     )
 
     print(
-        "NO EXCHANGE API KEYS"
+        "Entry:          V6-C"
     )
 
     print(
-        "NO REAL ORDERS"
+        "Timeframe:      1H"
     )
 
     print(
-        "=" * 70
+        "Source data:    5M"
     )
+
+    print(
+        "Replay period:  90 days"
+    )
+
+    print(
+        "Assets:         BTC / ETH / SOL"
+    )
+
+    print(
+        "Capital:        $20 / $50 / $100 / $250"
+    )
+
+    print(
+        "Live trading:   NO"
+    )
+
+    print(
+        "Real orders:    NO"
+    )
+
+    print(
+        "API keys:       NO"
+    )
+
+    # --------------------------------------------------------
+    # ENGINE CHECK
+    # --------------------------------------------------------
+
+    try:
+
+        check_engine_api()
+
+    except Exception as exc:
+
+        print()
+        print(
+            "ENGINE API CHECK FAILED"
+        )
+
+        print(
+            repr(exc)
+        )
+
+        traceback.print_exc()
+
+        return 1
+
+    # --------------------------------------------------------
+    # RUN ALL
+    # --------------------------------------------------------
 
     results = []
+
     failures = []
 
     for asset in ASSETS:
 
-        try:
+        for capital in STARTING_CAPITALS:
 
-            result = run_recent_replay(
-                asset
-            )
+            try:
 
-            results.append(
-                result
-            )
+                result = run_one(
+                    asset,
+                    capital,
+                )
 
-        except Exception as exc:
+                results.append(
+                    result
+                )
 
-            failures.append(
-                asset
-            )
+            except Exception as exc:
 
-            print()
-            print(
-                "!" * 70
-            )
+                print()
+                print("=" * 70)
+                print("BACKTEST FAILED")
+                print("=" * 70)
 
-            print(
-                f"FAILED {asset}"
-            )
+                print(
+                    f"Asset:   {asset}"
+                )
 
-            print(
-                f"{type(exc).__name__}: "
-                f"{exc}"
-            )
+                print(
+                    f"Capital: ${capital:.2f}"
+                )
 
-            print()
-            traceback.print_exc()
+                print(
+                    f"Error:   {exc}"
+                )
 
-            print(
-                "!" * 70
-            )
+                traceback.print_exc()
 
-    # ========================================================
-    # RESULTS
-    # ========================================================
+                failures.append(
+                    {
+                        "asset": asset,
+                        "capital": capital,
+                        "error": str(exc),
+                    }
+                )
 
-    if results:
+    # --------------------------------------------------------
+    # NO RESULTS
+    # --------------------------------------------------------
 
-        results_df = pd.DataFrame(
-            results
-        )
-
-        results_df.to_csv(
-            RESULTS_FILE,
-            index=False,
-        )
+    if not results:
 
         print()
-        print(
-            "=" * 70
-        )
+        print("=" * 70)
+        print("NO RESULTS PRODUCED")
+        print("=" * 70)
 
-        print(
-            "V7-S0 RECENT REPLAY SUMMARY"
-        )
+        return 1
 
-        print(
-            "=" * 70
-        )
+    # --------------------------------------------------------
+    # SAVE CSV
+    # --------------------------------------------------------
 
-        print(
-            results_df.to_string(
-                index=False
-            )
-        )
+    result_df = pd.DataFrame(
+        results
+    )
 
-        valid_returns = pd.to_numeric(
-            results_df[
-                "return_pct"
-            ],
-            errors="coerce",
-        )
+    result_df.to_csv(
+        OUTPUT_FILE,
+        index=False,
+    )
 
-        valid_pf = pd.to_numeric(
-            results_df[
-                "profit_factor"
-            ],
-            errors="coerce",
-        )
+    print_header(
+        "FINAL DATA REPORT"
+    )
 
-        valid_dd = pd.to_numeric(
-            results_df[
-                "max_drawdown_pct"
-            ],
-            errors="coerce",
+    print(
+        result_df.to_string(
+            index=False
         )
+    )
 
-        print()
-        print(
-            "=" * 70
-        )
+    print()
+    print(
+        f"Results written to: "
+        f"{OUTPUT_FILE}"
+    )
 
-        print(
-            "AGGREGATE"
-        )
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
 
-        print(
-            "=" * 70
-        )
+    print_header(
+        "SUMMARY"
+    )
 
-        print(
-            f"Assets successful : "
-            f"{len(results)}/{len(ASSETS)}"
-        )
+    print(
+        f"Successful tests: "
+        f"{len(results)}"
+    )
 
-        print(
-            f"Average return    : "
-            f"{valid_returns.mean():.4f}%"
-        )
-
-        print(
-            f"Median return     : "
-            f"{valid_returns.median():.4f}%"
-        )
-
-        print(
-            f"Average PF        : "
-            f"{valid_pf.mean():.4f}"
-        )
-
-        print(
-            f"Median PF         : "
-            f"{valid_pf.median():.4f}"
-        )
-
-        print(
-            f"Positive assets   : "
-            f"{int((valid_returns > 0).sum())}"
-            f"/{len(valid_returns)}"
-        )
-
-        print(
-            f"Worst return      : "
-            f"{valid_returns.min():.4f}%"
-        )
-
-        print(
-            f"Best return       : "
-            f"{valid_returns.max():.4f}%"
-        )
-
-        print(
-            f"Worst drawdown    : "
-            f"{valid_dd.min():.4f}%"
-        )
-
-        print()
-        print(
-            f"Results saved to: "
-            f"{RESULTS_FILE}"
-        )
-
-    # ========================================================
-    # HARD FAILURE
-    # ========================================================
+    print(
+        f"Failed tests:     "
+        f"{len(failures)}"
+    )
 
     if failures:
 
         print()
-        print(
-            "=" * 70
-        )
 
-        print(
-            "V7-S0 RECENT REPLAY FAILED"
-        )
+        for failure in failures:
 
-        print(
-            "=" * 70
-        )
+            print(
+                f"FAILED: "
+                f"{failure['asset']} "
+                f"${failure['capital']:.2f}"
+            )
 
-        print(
-            "Failed assets: "
-            + ", ".join(failures)
-        )
+            print(
+                f"        {failure['error']}"
+            )
 
-        return 1
-
-    if len(results) != len(ASSETS):
-
-        print(
-            "ERROR: incomplete asset coverage"
-        )
-
-        return 1
+    # --------------------------------------------------------
+    # SAFETY
+    # --------------------------------------------------------
 
     print()
     print(
-        "=" * 70
+        "=================================================="
+    )
+
+    if failures:
+
+        print(
+            "REPLAY FINISHED WITH FAILURES"
+        )
+
+        print(
+            "NO LIVE TRADING."
+        )
+
+        return 1
+
+    print(
+        "V7-S0 RECENT REPLAY COMPLETED"
     )
 
     print(
-        "V7-S0 RECENT REPLAY PASSED"
+        "NO LIVE TRADING."
     )
 
     print(
-        "=" * 70
+        "NO REAL ORDERS."
+    )
+
+    print(
+        "=================================================="
     )
 
     return 0
 
 
 if __name__ == "__main__":
+
     sys.exit(
         main()
     )
