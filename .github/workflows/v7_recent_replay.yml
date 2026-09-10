@@ -106,7 +106,7 @@ jobs:
 
           TIMEFRAME = "5m"
 
-          DAYS = 120
+          DAYS = 400
 
           SYMBOLS = {
               "BTC/USDT": "BTC_USDT_5m.csv",
