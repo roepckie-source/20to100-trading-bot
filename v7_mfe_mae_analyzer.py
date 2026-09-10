@@ -30,7 +30,12 @@ def load_5m(asset):
     Load 5-minute OHLCV data for one asset.
     """
 
-    path = DATA_DIR / asset
+    filename = asset
+
+    if not filename.endswith(".csv"):
+        filename += ".csv"
+
+    path = DATA_DIR / filename
 
     if not path.exists():
         raise FileNotFoundError(
@@ -749,5 +754,4 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
-
     main()
