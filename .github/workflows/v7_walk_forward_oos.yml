@@ -8,7 +8,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -22,7 +21,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas numpy ccxt
 
-      - name: Download 400 days of market data
+      - name: Download market data
         run: |
           python download_data.py
 
@@ -39,8 +38,10 @@ jobs:
 
           python v7_walk_forward_oos.py
 
-      - name: Upload OOS results
+      - name: Upload OOS results and trade diagnostics
         uses: actions/upload-artifact@v4
         with:
           name: v7-walk-forward-oos-results
-          path: v7_walk_forward_oos_results.csv
+          path: |
+            v7_walk_forward_oos_results.csv
+            v7_walk_forward_oos_trades.csv
