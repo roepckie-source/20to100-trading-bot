@@ -1,6 +1,7 @@
-name: 20to100 V7-S0 Recent Replay
+name: V7-S0 Recent 90-Day Replay
 
 on:
+
   workflow_dispatch:
 
 permissions:
@@ -8,9 +9,7 @@ permissions:
 
 jobs:
 
-  recent-replay:
-
-    name: V7-S0 90-Day Replay
+  v7-recent-replay:
 
     runs-on: ubuntu-latest
 
@@ -22,7 +21,7 @@ jobs:
       # CHECKOUT
       # ==================================================
 
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
 
@@ -38,7 +37,7 @@ jobs:
 
 
       # ==================================================
-      # DEPENDENCIES
+      # INSTALL
       # ==================================================
 
       - name: Install dependencies
@@ -46,7 +45,11 @@ jobs:
 
           python -m pip install --upgrade pip
 
-          pip install -r requirements.txt
+          pip install \
+            pandas \
+            numpy \
+            requests \
+            ccxt
 
 
       # ==================================================
@@ -58,7 +61,7 @@ jobs:
 
         run: |
 
-          set -euo pipefail
+          set -u
 
           echo "=================================================="
           echo "V7-S0 RECENT REPLAY SAFETY CHECK"
@@ -70,18 +73,82 @@ jobs:
           echo "NO REAL ORDERS."
 
           echo
-          echo "Checking files..."
+          echo "Checking required files..."
+          echo
 
-          test -f v7_recent_replay.py
-          test -f backtest/v7_survival_engine.py
-          test -f strategy/strategy_v6.py
-          test -f strategy/indicators.py
+          FAILED=0
 
-          test -f data/BTC_USDT_5m.csv
-          test -f data/ETH_USDT_5m.csv
-          test -f data/SOL_USDT_5m.csv
+          check_file() {
 
-          echo "All required files found."
+            FILE="$1"
+
+            if [ -f "$FILE" ]; then
+
+              echo "PASS: $FILE"
+
+            else
+
+              echo "FAIL: $FILE"
+
+              FAILED=1
+
+            fi
+
+          }
+
+          # ------------------------------------------------
+          # PYTHON FILES
+          # ------------------------------------------------
+
+          check_file "v7_recent_replay.py"
+
+          check_file "backtest/v7_survival_engine.py"
+
+          check_file "strategy/strategy_v6.py"
+
+          check_file "strategy/indicators.py"
+
+          # ------------------------------------------------
+          # DATA FILES
+          # ------------------------------------------------
+
+          check_file "data/BTC_USDT_5m.csv"
+
+          check_file "data/ETH_USDT_5m.csv"
+
+          check_file "data/SOL_USDT_5m.csv"
+
+          echo
+          echo "=================================================="
+
+          if [ "$FAILED" -ne 0 ]; then
+
+            echo "SAFETY CHECK FAILED"
+
+            echo
+
+            echo "Repository tree:"
+
+            echo
+
+            find . \
+              -maxdepth 4 \
+              -type f \
+              | sort
+
+            echo
+
+            echo "=================================================="
+
+            exit 1
+
+          fi
+
+          echo "ALL REQUIRED FILES FOUND"
+
+          echo "SAFETY CHECK PASSED"
+
+          echo "=================================================="
 
 
       # ==================================================
@@ -89,43 +156,36 @@ jobs:
       # ==================================================
 
       - name: Check V7-S0 engine API
-        shell: bash
-
         run: |
-
-          set -euo pipefail
 
           python - <<'PY'
 
           import inspect
 
-          from backtest.v7_survival_engine import (
-              V7SurvivalEngine
+          from backtest.v7_survival_engine import V7SurvivalEngine
+
+          print("V7-S0 ENGINE SIGNATURE")
+          print("======================")
+
+          print(
+              inspect.signature(
+                  V7SurvivalEngine
+              )
           )
 
           signature = inspect.signature(
-              V7SurvivalEngine.__init__
+              V7SurvivalEngine
           )
 
-          print(
-              "V7SurvivalEngine signature:"
-          )
-
-          print(signature)
-
-          if (
-              "base_risk_per_trade"
-              not in signature.parameters
-          ):
+          if "base_risk_per_trade" not in signature.parameters:
 
               raise SystemExit(
-                  "ERROR: "
-                  "base_risk_per_trade "
-                  "not available"
+                  "ERROR: base_risk_per_trade missing"
               )
 
+          print()
           print(
-              "ENGINE API CHECK: PASS"
+              "PASS: base_risk_per_trade exists"
           )
 
           PY
@@ -135,68 +195,129 @@ jobs:
       # RUN REPLAY
       # ==================================================
 
-      - name: Run V7-S0 recent replay
+      - name: Run V7-S0 90-day replay
         shell: bash
 
         run: |
 
           set -o pipefail
 
-          echo "=================================================="
-          echo "RUNNING V7-S0 RECENT 90-DAY REPLAY"
-          echo "=================================================="
-
           python -u v7_recent_replay.py \
-            2>&1 | tee v7_recent_replay.log
+            | tee v7_recent_replay.log
 
 
       # ==================================================
-      # SHOW RESULTS
+      # VERIFY RESULT
       # ==================================================
 
-      - name: Show replay results
-        if: always()
-
+      - name: Verify result CSV
         shell: bash
 
         run: |
 
           echo "=================================================="
-          echo "V7-S0 RECENT REPLAY RESULT"
+          echo "VERIFYING RESULT"
           echo "=================================================="
 
-          if [ -f v7_recent_replay_results.csv ]; then
+          if [ ! -f "v7_recent_replay_results.csv" ]; then
 
             echo
-            echo "RESULT CSV:"
-            echo
-
-            cat v7_recent_replay_results.csv
-
-          else
-
-            echo
+            echo "ERROR:"
             echo "NO RESULT CSV PRODUCED."
+
+            exit 1
 
           fi
 
+          echo
+          echo "Result file exists."
+
+          echo
+          echo "CSV:"
+          echo
+
+          cat v7_recent_replay_results.csv
+
+          echo
+          echo "=================================================="
+
 
       # ==================================================
-      # DIAGNOSTICS
+      # RESULT COUNT
       # ==================================================
 
-      - name: Upload replay diagnostics
+      - name: Validate result count
+        shell: bash
+
+        run: |
+
+          python - <<'PY'
+
+          import pandas as pd
+
+          file = "v7_recent_replay_results.csv"
+
+          df = pd.read_csv(file)
+
+          print()
+          print("RESULT COUNT")
+          print("============")
+
+          print(
+              f"Rows: {len(df)}"
+          )
+
+          expected = 12
+
+          if len(df) != expected:
+
+              raise SystemExit(
+                  f"ERROR: expected {expected} "
+                  f"results but got {len(df)}"
+              )
+
+          print(
+              "PASS: 12 result rows found"
+          )
+
+          print()
+          print(
+              df[
+                  [
+                      "asset",
+                      "starting_capital",
+                      "final_balance",
+                      "return_pct",
+                      "trades",
+                      "profit_factor",
+                      "max_drawdown_pct",
+                      "kill_switch",
+                  ]
+              ].to_string(
+                  index=False
+              )
+          )
+
+          PY
+
+
+      # ==================================================
+      # UPLOAD RESULTS
+      # ==================================================
+
+      - name: Upload replay results
         if: always()
 
         uses: actions/upload-artifact@v4
 
         with:
 
-          name: v7-s0-recent-replay-diagnostics
+          name: v7-s0-recent-replay
 
           path: |
 
-            v7_recent_replay.log
             v7_recent_replay_results.csv
+
+            v7_recent_replay.log
 
           if-no-files-found: warn
