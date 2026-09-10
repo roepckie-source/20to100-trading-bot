@@ -1,8 +1,14 @@
 name: V7-S0 Recent 90-Day Replay
 
 on:
-
   workflow_dispatch:
+
+  push:
+    paths:
+      - "v7_recent_replay.py"
+      - "backtest/**"
+      - "strategy/**"
+      - ".github/workflows/v7_recent_replay.yml"
 
 permissions:
   contents: read
@@ -17,28 +23,27 @@ jobs:
 
     steps:
 
-      # ==================================================
+      # ============================================================
       # CHECKOUT
-      # ==================================================
+      # ============================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # ==================================================
+      # ============================================================
       # PYTHON
-      # ==================================================
+      # ============================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
-
         with:
           python-version: "3.12"
 
 
-      # ==================================================
-      # INSTALL
-      # ==================================================
+      # ============================================================
+      # INSTALL DEPENDENCIES
+      # ============================================================
 
       - name: Install dependencies
         run: |
@@ -52,11 +57,482 @@ jobs:
             ccxt
 
 
-      # ==================================================
-      # SAFETY CHECK
-      # ==================================================
+      # ============================================================
+      # DOWNLOAD RECENT MARKET DATA
+      #
+      # 120 DAYS 5M
+      #
+      # BTC + ETH + SOL
+      #
+      # NO API KEYS
+      # PUBLIC OHLCV ONLY
+      # NO ORDERS
+      # ============================================================
 
-      - name: Safety check
+      - name: Download recent market data
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+          echo "=================================================="
+          echo "V7-S0 MARKET DATA DOWNLOAD"
+          echo "=================================================="
+
+          echo
+          echo "Exchange:       OKX"
+          echo "Timeframe:      5m"
+          echo "History:        120 days"
+          echo "Assets:         BTC / ETH / SOL"
+          echo
+          echo "NO API KEYS."
+          echo "NO LIVE TRADING."
+          echo "NO REAL ORDERS."
+          echo
+
+          mkdir -p data
+
+          python - <<'PY'
+
+          import time
+          from pathlib import Path
+
+          import ccxt
+          import pandas as pd
+
+
+          DATA_DIR = Path("data")
+
+          TIMEFRAME = "5m"
+
+          DAYS = 120
+
+          SYMBOLS = {
+              "BTC/USDT": "BTC_USDT_5m.csv",
+              "ETH/USDT": "ETH_USDT_5m.csv",
+              "SOL/USDT": "SOL_USDT_5m.csv",
+          }
+
+
+          print("=" * 70)
+          print("INITIALIZING OKX")
+          print("=" * 70)
+
+
+          exchange = ccxt.okx({
+              "enableRateLimit": True,
+              "timeout": 30000,
+          })
+
+
+          exchange.load_markets()
+
+
+          timeframe_ms = (
+              exchange.parse_timeframe(TIMEFRAME)
+              * 1000
+          )
+
+
+          now = exchange.milliseconds()
+
+
+          requested_since = (
+              now
+              -
+              DAYS
+              * 24
+              * 60
+              * 60
+              * 1000
+          )
+
+
+          expected_candles = (
+              DAYS
+              * 24
+              * 12
+          )
+
+
+          min_expected_candles = int(
+              expected_candles * 0.95
+          )
+
+
+          print()
+          print(
+              f"Expected candles per asset: "
+              f"{expected_candles:,}"
+          )
+
+          print(
+              f"Minimum accepted: "
+              f"{min_expected_candles:,}"
+          )
+
+          print()
+
+
+          for symbol, filename in SYMBOLS.items():
+
+              print()
+              print("=" * 70)
+              print(f"DOWNLOADING {symbol}")
+              print("=" * 70)
+
+              since = requested_since
+
+              candles = []
+
+              request_count = 0
+
+
+              while since < now:
+
+                  request_count += 1
+
+                  try:
+
+                      batch = exchange.fetch_ohlcv(
+                          symbol,
+                          timeframe=TIMEFRAME,
+                          since=since,
+                          limit=1000,
+                      )
+
+                  except Exception as exc:
+
+                      print(
+                          f"Download error: {exc}"
+                      )
+
+                      print(
+                          "Waiting 5 seconds..."
+                      )
+
+                      time.sleep(5)
+
+                      continue
+
+
+                  if not batch:
+
+                      print(
+                          "No more candles returned."
+                      )
+
+                      break
+
+
+                  candles.extend(batch)
+
+
+                  last_timestamp = batch[-1][0]
+
+
+                  print(
+                      f"[{request_count:04d}] "
+                      f"{symbol} "
+                      f"-> {len(batch)} candles "
+                      f"until "
+                      f"{pd.to_datetime(last_timestamp, unit='ms', utc=True)}"
+                  )
+
+
+                  next_since = (
+                      last_timestamp
+                      +
+                      timeframe_ms
+                  )
+
+
+                  if next_since <= since:
+
+                      raise RuntimeError(
+                          f"Pagination stalled for {symbol}"
+                      )
+
+
+                  since = next_since
+
+
+                  time.sleep(
+                      max(
+                          exchange.rateLimit / 1000,
+                          0.05,
+                      )
+                  )
+
+
+              if not candles:
+
+                  raise RuntimeError(
+                      f"No data received for {symbol}"
+                  )
+
+
+              df = pd.DataFrame(
+                  candles,
+                  columns=[
+                      "timestamp",
+                      "open",
+                      "high",
+                      "low",
+                      "close",
+                      "volume",
+                  ],
+              )
+
+
+              # --------------------------------------------------
+              # CLEAN
+              # --------------------------------------------------
+
+              df["timestamp"] = pd.to_datetime(
+                  df["timestamp"],
+                  unit="ms",
+                  utc=True,
+              )
+
+
+              numeric_columns = [
+                  "open",
+                  "high",
+                  "low",
+                  "close",
+                  "volume",
+              ]
+
+
+              for column in numeric_columns:
+
+                  df[column] = pd.to_numeric(
+                      df[column],
+                      errors="coerce",
+                  )
+
+
+              df = (
+                  df
+                  .dropna(
+                      subset=numeric_columns
+                  )
+                  .drop_duplicates(
+                      subset=["timestamp"]
+                  )
+                  .sort_values(
+                      "timestamp"
+                  )
+                  .reset_index(
+                      drop=True
+                  )
+              )
+
+
+              # --------------------------------------------------
+              # PRICE VALIDATION
+              # --------------------------------------------------
+
+              df = df[
+                  (df["open"] > 0)
+                  &
+                  (df["high"] > 0)
+                  &
+                  (df["low"] > 0)
+                  &
+                  (df["close"] > 0)
+              ]
+
+
+              df = df[
+                  df["high"] >= df["low"]
+              ]
+
+
+              # --------------------------------------------------
+              # CANDLE COUNT
+              # --------------------------------------------------
+
+              print()
+
+              print(
+                  f"Final candles: "
+                  f"{len(df):,}"
+              )
+
+              print(
+                  f"Start: "
+                  f"{df['timestamp'].min()}"
+              )
+
+              print(
+                  f"End:   "
+                  f"{df['timestamp'].max()}"
+              )
+
+
+              if len(df) < min_expected_candles:
+
+                  raise RuntimeError(
+                      f"{symbol}: too few candles. "
+                      f"Got {len(df):,}, "
+                      f"expected at least "
+                      f"{min_expected_candles:,}."
+                  )
+
+
+              # --------------------------------------------------
+              # GAP CHECK
+              # --------------------------------------------------
+
+              timestamps = (
+                  df["timestamp"]
+                  .sort_values()
+              )
+
+
+              deltas = (
+                  timestamps
+                  .diff()
+                  .dropna()
+              )
+
+
+              expected_delta = pd.Timedelta(
+                  milliseconds=timeframe_ms
+              )
+
+
+              gaps = deltas[
+                  deltas > expected_delta
+              ]
+
+
+              print(
+                  f"Data gaps: "
+                  f"{len(gaps)}"
+              )
+
+
+              if len(gaps) > 0:
+
+                  print(
+                      "WARNING: gaps detected."
+                  )
+
+
+              # --------------------------------------------------
+              # SAVE
+              # --------------------------------------------------
+
+              filepath = (
+                  DATA_DIR
+                  /
+                  filename
+              )
+
+
+              df.to_csv(
+                  filepath,
+                  index=False,
+              )
+
+
+              print()
+
+              print(
+                  f"Saved: {filepath}"
+              )
+
+
+          print()
+          print("=" * 70)
+          print("MARKET DATA DOWNLOAD COMPLETE")
+          print("=" * 70)
+
+          PY
+
+
+      # ============================================================
+      # VERIFY DOWNLOADED DATA
+      # ============================================================
+
+      - name: Verify market data
+        shell: bash
+
+        run: |
+
+          set -u
+
+          echo "=================================================="
+          echo "VERIFYING MARKET DATA"
+          echo "=================================================="
+
+
+          FAILED=0
+
+
+          check_file() {
+
+            FILE="$1"
+
+
+            if [ -f "$FILE" ]; then
+
+              echo "PASS: $FILE"
+
+            else
+
+              echo "FAIL: $FILE"
+
+              FAILED=1
+
+            fi
+
+          }
+
+
+          check_file "data/BTC_USDT_5m.csv"
+
+          check_file "data/ETH_USDT_5m.csv"
+
+          check_file "data/SOL_USDT_5m.csv"
+
+
+          echo
+
+
+          if [ "$FAILED" -ne 0 ]; then
+
+            echo "MARKET DATA VERIFICATION FAILED"
+
+            exit 1
+
+          fi
+
+
+          echo "ALL MARKET DATA FILES FOUND"
+
+
+          echo
+          echo "DATA DIRECTORY:"
+          echo
+
+
+          ls -lh data/
+
+
+          echo
+          echo "=================================================="
+
+
+      # ============================================================
+      # V7-S0 SAFETY CHECK
+      # ============================================================
+
+      - name: V7-S0 Safety check
         shell: bash
 
         run: |
@@ -71,8 +547,8 @@ jobs:
           echo "NO LIVE TRADING."
           echo "NO EXCHANGE API KEYS."
           echo "NO REAL ORDERS."
-
           echo
+
           echo "Checking required files..."
           echo
 
@@ -82,6 +558,7 @@ jobs:
           check_file() {
 
             FILE="$1"
+
 
             if [ -f "$FILE" ]; then
 
@@ -94,6 +571,7 @@ jobs:
               FAILED=1
 
             fi
+
           }
 
 
@@ -122,28 +600,12 @@ jobs:
 
 
           echo
-
           echo "=================================================="
 
 
           if [ "$FAILED" -ne 0 ]; then
 
             echo "SAFETY CHECK FAILED"
-
-            echo
-
-            echo "Repository tree:"
-
-            echo
-
-            find . \
-              -maxdepth 4 \
-              -type f \
-              | sort
-
-            echo
-
-            echo "=================================================="
 
             exit 1
 
@@ -157,9 +619,9 @@ jobs:
           echo "=================================================="
 
 
-      # ==================================================
+      # ============================================================
       # ENGINE API CHECK
-      # ==================================================
+      # ============================================================
 
       - name: Check V7-S0 engine API
         run: |
@@ -171,16 +633,10 @@ jobs:
           from backtest.v7_survival_engine import V7SurvivalEngine
 
 
-          print("V7-S0 ENGINE SIGNATURE")
-
-          print("======================")
-
-
-          print(
-              inspect.signature(
-                  V7SurvivalEngine
-              )
-          )
+          print()
+          print("==================================================")
+          print("V7-S0 ENGINE API CHECK")
+          print("==================================================")
 
 
           signature = inspect.signature(
@@ -188,7 +644,20 @@ jobs:
           )
 
 
-          if "base_risk_per_trade" not in signature.parameters:
+          print()
+          print(
+              "Constructor:"
+          )
+
+          print(
+              signature
+          )
+
+
+          if (
+              "base_risk_per_trade"
+              not in signature.parameters
+          ):
 
               raise SystemExit(
                   "ERROR: base_risk_per_trade missing"
@@ -201,12 +670,16 @@ jobs:
               "PASS: base_risk_per_trade exists"
           )
 
+          print(
+              "=================================================="
+          )
+
           PY
 
 
-      # ==================================================
-      # RUN REPLAY
-      # ==================================================
+      # ============================================================
+      # RUN V7-S0
+      # ============================================================
 
       - name: Run V7-S0 90-day replay
         shell: bash
@@ -215,33 +688,36 @@ jobs:
 
           set -o pipefail
 
+          echo "=================================================="
+          echo "RUNNING V7-S0 90-DAY REPLAY"
+          echo "=================================================="
+
+          echo
+
           python -u v7_recent_replay.py \
             | tee v7_recent_replay.log
 
 
-      # ==================================================
-      # VERIFY RESULT
-      # ==================================================
+      # ============================================================
+      # VERIFY RESULT FILE
+      # ============================================================
 
-      - name: Verify result CSV
+      - name: Verify replay result
         shell: bash
 
         run: |
 
           echo "=================================================="
-
-          echo "VERIFYING RESULT"
-
+          echo "VERIFYING V7-S0 RESULT"
           echo "=================================================="
 
 
           if [ ! -f "v7_recent_replay_results.csv" ]; then
 
             echo
-
             echo "ERROR:"
-
             echo "NO RESULT CSV PRODUCED."
+            echo
 
             exit 1
 
@@ -249,25 +725,20 @@ jobs:
 
 
           echo
-
           echo "Result file exists."
-
           echo
 
-          echo "CSV:"
-
-          echo
 
           cat v7_recent_replay_results.csv
 
-          echo
 
+          echo
           echo "=================================================="
 
 
-      # ==================================================
-      # RESULT COUNT
-      # ==================================================
+      # ============================================================
+      # VALIDATE 12 TESTS
+      # ============================================================
 
       - name: Validate result count
         shell: bash
@@ -279,30 +750,32 @@ jobs:
           import pandas as pd
 
 
-          file = "v7_recent_replay_results.csv"
+          FILE = "v7_recent_replay_results.csv"
 
-          df = pd.read_csv(file)
+
+          df = pd.read_csv(FILE)
 
 
           print()
+          print("==================================================")
+          print("V7-S0 RESULT VALIDATION")
+          print("==================================================")
 
-          print("RESULT COUNT")
 
-          print("============")
-
+          print()
 
           print(
               f"Rows: {len(df)}"
           )
 
 
-          expected = 12
+          EXPECTED = 12
 
 
-          if len(df) != expected:
+          if len(df) != EXPECTED:
 
               raise SystemExit(
-                  f"ERROR: expected {expected} "
+                  f"ERROR: expected {EXPECTED} "
                   f"results but got {len(df)}"
               )
 
@@ -312,8 +785,148 @@ jobs:
           )
 
 
-          print()
+          # --------------------------------------------------
+          # REQUIRED COLUMNS
+          # --------------------------------------------------
 
+          required_columns = [
+
+              "strategy",
+              "variant",
+              "asset",
+              "starting_capital",
+              "final_balance",
+              "return_pct",
+              "trades",
+              "wins",
+              "losses",
+              "win_rate_pct",
+              "profit_factor",
+              "expectancy",
+              "max_drawdown_pct",
+              "fees",
+              "slippage_cost",
+              "kill_switch",
+              "start_date",
+              "end_date",
+              "bars",
+
+          ]
+
+
+          missing = [
+
+              column
+
+              for column in required_columns
+
+              if column not in df.columns
+
+          ]
+
+
+          if missing:
+
+              raise SystemExit(
+                  "ERROR: missing result columns: "
+                  + str(missing)
+              )
+
+
+          print(
+              "PASS: all required result columns found"
+          )
+
+
+          # --------------------------------------------------
+          # ASSET CHECK
+          # --------------------------------------------------
+
+          expected_assets = {
+              "BTC_USDT_5m",
+              "ETH_USDT_5m",
+              "SOL_USDT_5m",
+          }
+
+
+          actual_assets = set(
+              df["asset"].unique()
+          )
+
+
+          if actual_assets != expected_assets:
+
+              raise SystemExit(
+                  "ERROR: unexpected assets: "
+                  + str(actual_assets)
+              )
+
+
+          print(
+              "PASS: BTC / ETH / SOL found"
+          )
+
+
+          # --------------------------------------------------
+          # CAPITAL CHECK
+          # --------------------------------------------------
+
+          expected_capitals = {
+              20.0,
+              50.0,
+              100.0,
+              250.0,
+          }
+
+
+          actual_capitals = set(
+              float(x)
+              for x in df["starting_capital"]
+              .unique()
+          )
+
+
+          if actual_capitals != expected_capitals:
+
+              raise SystemExit(
+                  "ERROR: unexpected capital values: "
+                  + str(actual_capitals)
+              )
+
+
+          print(
+              "PASS: $20 / $50 / $100 / $250 found"
+          )
+
+
+          # --------------------------------------------------
+          # FAILURE CHECK
+          # --------------------------------------------------
+
+          if df["final_balance"].isna().any():
+
+              raise SystemExit(
+                  "ERROR: NaN final balance found"
+              )
+
+
+          if df["return_pct"].isna().any():
+
+              raise SystemExit(
+                  "ERROR: NaN return found"
+              )
+
+
+          print(
+              "PASS: no invalid final balances"
+          )
+
+
+          # --------------------------------------------------
+          # REPORT
+          # --------------------------------------------------
+
+          print()
 
           print(
               df[
@@ -323,6 +936,9 @@ jobs:
                       "final_balance",
                       "return_pct",
                       "trades",
+                      "wins",
+                      "losses",
+                      "win_rate_pct",
                       "profit_factor",
                       "max_drawdown_pct",
                       "kill_switch",
@@ -332,12 +948,53 @@ jobs:
               )
           )
 
+
+          print()
+
+          print(
+              "=================================================="
+          )
+
+          print(
+              "V7-S0 RESULT VALIDATION PASSED"
+          )
+
+          print(
+              "=================================================="
+
+          )
+
           PY
 
 
-      # ==================================================
+      # ============================================================
+      # FINAL SAFETY REPORT
+      # ============================================================
+
+      - name: Final safety report
+        if: always()
+
+        run: |
+
+          echo
+          echo "=================================================="
+          echo "V7-S0 FINAL SAFETY REPORT"
+          echo "=================================================="
+
+          echo
+          echo "LIVE TRADING:       NO"
+          echo "REAL ORDERS:        NO"
+          echo "API KEYS:           NO"
+          echo "EXCHANGE ORDERS:    NO"
+          echo "MODE:               HISTORICAL REPLAY"
+          echo
+
+          echo "=================================================="
+
+
+      # ============================================================
       # UPLOAD RESULTS
-      # ==================================================
+      # ============================================================
 
       - name: Upload replay results
         if: always()
