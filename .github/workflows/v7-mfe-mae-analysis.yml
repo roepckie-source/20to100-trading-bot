@@ -1,1 +1,155 @@
+name: V7-S0 MFE MAE Analysis
 
+on:
+  workflow_dispatch:
+
+jobs:
+  mfe-mae-analysis:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ======================================================
+      # CHECKOUT
+      # ======================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ======================================================
+      # PYTHON
+      # ======================================================
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+
+      # ======================================================
+      # DEPENDENCIES
+      # ======================================================
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy ccxt
+
+
+      # ======================================================
+      # SAFETY HEADER
+      # ======================================================
+
+      - name: Safety check
+        run: |
+
+          echo "=================================================="
+          echo "V7-S0 MFE / MAE TRADE DIAGNOSTICS"
+          echo "=================================================="
+
+          echo ""
+          echo "NO LIVE TRADING."
+          echo "NO REAL ORDERS."
+          echo "NO API KEYS."
+          echo "NO PARAMETER OPTIMIZATION."
+          echo "NO STRATEGY CHANGES."
+          echo ""
+
+          echo "=================================================="
+
+
+      # ======================================================
+      # DOWNLOAD MARKET DATA
+      # ======================================================
+
+      - name: Download 5M market data
+        run: |
+
+          echo "=================================================="
+          echo "DOWNLOADING 5M MARKET DATA"
+          echo "=================================================="
+
+          python download_data.py
+
+          echo ""
+          echo "DATA FILES:"
+          ls -lh data/
+
+
+      # ======================================================
+      # CHECK REQUIRED FILES
+      # ======================================================
+
+      - name: Check required files
+        run: |
+
+          echo "=================================================="
+          echo "CHECKING REQUIRED FILES"
+          echo "=================================================="
+
+          test -f v7_mfe_mae_analyzer.py
+
+          test -f v7_walk_forward_oos_trades.csv
+
+          test -f data/BTC_USDT_5m.csv
+          test -f data/ETH_USDT_5m.csv
+          test -f data/SOL_USDT_5m.csv
+
+          echo ""
+          echo "PASS: required files exist"
+
+
+      # ======================================================
+      # RUN ANALYZER
+      # ======================================================
+
+      - name: Run MFE MAE analyzer
+        run: |
+
+          echo "=================================================="
+          echo "RUNNING V7-S0 MFE / MAE ANALYSIS"
+          echo "=================================================="
+
+          python v7_mfe_mae_analyzer.py
+
+
+      # ======================================================
+      # SHOW RESULTS
+      # ======================================================
+
+      - name: Show generated results
+        run: |
+
+          echo "=================================================="
+          echo "GENERATED FILES"
+          echo "=================================================="
+
+          ls -lh \
+            v7_walk_forward_oos_trades_mfe_mae.csv \
+            v7_mfe_mae_summary.csv
+
+          echo ""
+          echo "=================================================="
+          echo "MFE / MAE SUMMARY"
+          echo "=================================================="
+
+          cat v7_mfe_mae_summary.csv
+
+
+      # ======================================================
+      # UPLOAD ARTIFACTS
+      # ======================================================
+
+      - name: Upload MFE MAE results
+        uses: actions/upload-artifact@v4
+
+        with:
+
+          name: v7-mfe-mae-analysis
+
+          path: |
+
+            v7_walk_forward_oos_trades_mfe_mae.csv
+            v7_mfe_mae_summary.csv
