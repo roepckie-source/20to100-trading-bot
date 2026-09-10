@@ -1,1 +1,46 @@
+name: V7-S0 Walk-Forward OOS
 
+on:
+  workflow_dispatch:
+
+jobs:
+  walk-forward-oos:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy ccxt
+
+      - name: Download 400 days of market data
+        run: |
+          python download_data.py
+
+      - name: Run V7-S0 Walk-Forward OOS
+        run: |
+          echo "=================================================="
+          echo "V7-S0 FIXED-LOGIC WALK-FORWARD OOS"
+          echo "=================================================="
+          echo "NO LIVE TRADING."
+          echo "NO REAL ORDERS."
+          echo "NO API KEYS."
+          echo "NO PARAMETER OPTIMIZATION."
+          echo "=================================================="
+
+          python v7_walk_forward_oos.py
+
+      - name: Upload OOS results
+        uses: actions/upload-artifact@v4
+        with:
+          name: v7-walk-forward-oos-results
+          path: v7_walk_forward_oos_results.csv
