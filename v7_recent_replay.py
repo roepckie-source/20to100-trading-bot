@@ -1,43 +1,30 @@
 # ============================================================
 # 20to100 Trading Bot
-# V7-S0 RECENT MARKET REPLAY
+# V7-S0 RECENT MARKET REPLAY - ROBUST
 #
-# Purpose:
-#   Fast validation of V7-S0 in the most recent market period.
+# V6-C Entry
+# V7-S0 Survival Layer
 #
-# Strategy:
-#   V6-C entry
-#   V7-S0 survival/risk layer
+# 5m -> 1h
+# Last 90 calendar days
 #
-# Assets:
-#   BTC / ETH / SOL
-#
-# Timeframe:
-#   5m market data -> 1h strategy timeframe
-#
-# Period:
-#   Last 90 calendar days available in the dataset
-#
-# IMPORTANT:
-#   Uses the EXISTING V7SurvivalEngine.
-#   No parameter optimization.
-#   No strategy changes.
+# NO optimization
+# NO strategy changes
+# NO live trading
 # ============================================================
 
 from __future__ import annotations
 
+import inspect
+import sys
+import traceback
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from backtest.v7_survival_engine import V7SurvivalEngine
 from strategy.indicators import calculate_indicators
 
-
-# ============================================================
-# CONFIG
-# ============================================================
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -49,7 +36,6 @@ ASSETS = [
 ]
 
 STARTING_BALANCE = 20.0
-
 BASE_RISK_PER_TRADE = 0.01
 
 FEE_RATE = 0.001
@@ -74,6 +60,22 @@ RECENT_DAYS = 90
 RESULTS_FILE = ROOT / "v7_recent_replay_results.csv"
 
 
+ENGINE_REQUIRED_COLUMNS = [
+    "open",
+    "high",
+    "low",
+    "close",
+    "atr_14",
+    "adx_14",
+    "ema_100",
+    "ema_200",
+    "ema_200_slope",
+    "ema_200_slope_reference",
+    "atr_14_ma50",
+    "donchian_high_20",
+]
+
+
 # ============================================================
 # LOAD DATA
 # ============================================================
@@ -82,15 +84,15 @@ def load_data(asset_name: str) -> pd.DataFrame:
 
     path = DATA_DIR / f"{asset_name}.csv"
 
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Dataset not found: {path}"
-        )
-
     print()
     print("=" * 70)
     print(f"LOADING {asset_name}")
     print("=" * 70)
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Dataset not found: {path}"
+        )
 
     df = pd.read_csv(path)
 
@@ -163,73 +165,93 @@ def load_data(asset_name: str) -> pd.DataFrame:
 
 
 # ============================================================
-# RESAMPLE 5m -> 1h
+# RESAMPLE
 # ============================================================
 
 def resample_to_1h(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
 
-    hourly = df.resample(
-        "1h"
-    ).agg(
-        {
-            "open": "first",
-            "high": "max",
-            "low": "min",
-            "close": "last",
-        }
+    hourly = (
+        df.resample("1h")
+        .agg(
+            {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+            }
+        )
+        .dropna()
     )
 
-    hourly = hourly.dropna()
+    if hourly.empty:
+        raise RuntimeError(
+            "5m -> 1h resampling produced no data"
+        )
 
     return hourly
 
 
 # ============================================================
-# PREPARE DATA
+# INDICATORS
 # ============================================================
 
 def prepare_data(
-    df: pd.DataFrame,
+    df_5m: pd.DataFrame,
 ) -> pd.DataFrame:
 
     hourly = resample_to_1h(
-        df
+        df_5m
     )
 
-    if len(hourly) < 300:
+    print(
+        f"1h rows: {len(hourly):,}"
+    )
+
+    if len(hourly) < 400:
 
         raise ValueError(
-            "Not enough hourly data."
+            f"Not enough hourly data: "
+            f"{len(hourly)}"
         )
+
+    # VERY IMPORTANT:
+    #
+    # Indicators are calculated on the FULL
+    # historical dataset BEFORE selecting the
+    # last 90 days.
+    #
+    # This preserves EMA / ATR / Donchian
+    # warm-up history.
 
     hourly = calculate_indicators(
         hourly.copy()
     )
 
+    missing = [
+        column
+        for column in ENGINE_REQUIRED_COLUMNS
+        if column not in hourly.columns
+    ]
+
+    if missing:
+
+        raise ValueError(
+            "Missing indicator columns: "
+            f"{missing}"
+        )
+
     return hourly
 
 
 # ============================================================
-# RUN ONE RECENT REPLAY
+# SELECT RECENT PERIOD
 # ============================================================
 
-def run_recent_replay(
-    asset_name: str,
-) -> dict:
-
-    df_5m = load_data(
-        asset_name
-    )
-
-    df_1h = prepare_data(
-        df_5m
-    )
-
-    # --------------------------------------------------------
-    # Select last 90 calendar days
-    # --------------------------------------------------------
+def select_recent(
+    df_1h: pd.DataFrame,
+):
 
     end_time = df_1h.index.max()
 
@@ -241,52 +263,99 @@ def run_recent_replay(
     )
 
     recent = df_1h[
-        (df_1h.index >= start_time)
-        & (df_1h.index <= end_time)
+        (
+            df_1h.index >= start_time
+        )
+        &
+        (
+            df_1h.index <= end_time
+        )
     ].copy()
 
     if len(recent) < 100:
 
         raise ValueError(
-            f"{asset_name}: "
-            f"not enough recent hourly data "
-            f"({len(recent)} rows)"
+            f"Only {len(recent)} recent "
+            f"hourly rows available"
         )
 
-    print()
-    print(
-        f"1h rows: {len(df_1h):,}"
+    # Check required indicator data
+
+    bad = (
+        recent[
+            ENGINE_REQUIRED_COLUMNS
+        ]
+        .isna()
+        .sum()
     )
 
-    print(
-        f"Replay start: {recent.index.min()}"
+    bad = bad[
+        bad > 0
+    ]
+
+    if not bad.empty:
+
+        raise ValueError(
+            "NaN values in replay data: "
+            f"{bad.to_dict()}"
+        )
+
+    return (
+        recent,
+        start_time,
+        end_time,
     )
 
-    print(
-        f"Replay end:   {recent.index.max()}"
+
+# ============================================================
+# ENGINE
+# ============================================================
+
+def build_engine():
+
+    signature = inspect.signature(
+        V7SurvivalEngine.__init__
     )
 
-    print(
-        f"Replay bars:  {len(recent):,}"
-    )
+    parameters = signature.parameters
 
-    # --------------------------------------------------------
-    # V7-S0 ENGINE
+    # This is the important compatibility check.
     #
-    # IMPORTANT:
-    # base_risk_per_trade is the correct current
-    # V7SurvivalEngine argument.
-    # --------------------------------------------------------
+    # Current V7-S0 uses:
+    #
+    # base_risk_per_trade
+    #
+    # NOT:
+    #
+    # risk_per_trade
 
-    engine = V7SurvivalEngine(
+    if (
+        "base_risk_per_trade"
+        not in parameters
+    ):
 
-        starting_balance=STARTING_BALANCE,
+        raise RuntimeError(
+            "V7SurvivalEngine API mismatch: "
+            "base_risk_per_trade not found."
+        )
 
-        base_risk_per_trade=BASE_RISK_PER_TRADE,
+    return V7SurvivalEngine(
 
-        fee_rate=FEE_RATE,
+        starting_balance=(
+            STARTING_BALANCE
+        ),
 
-        slippage_rate=SLIPPAGE_RATE,
+        base_risk_per_trade=(
+            BASE_RISK_PER_TRADE
+        ),
+
+        fee_rate=(
+            FEE_RATE
+        ),
+
+        slippage_rate=(
+            SLIPPAGE_RATE
+        ),
 
         atr_stop_multiplier=(
             ATR_STOP_MULTIPLIER
@@ -296,11 +365,17 @@ def run_recent_replay(
             TRAILING_ATR_MULTIPLIER
         ),
 
-        adx_min=ADX_MIN,
+        adx_min=(
+            ADX_MIN
+        ),
 
-        variant=VARIANT,
+        variant=(
+            VARIANT
+        ),
 
-        max_daily_loss=MAX_DAILY_LOSS,
+        max_daily_loss=(
+            MAX_DAILY_LOSS
+        ),
 
         max_consecutive_losses=(
             MAX_CONSECUTIVE_LOSSES
@@ -315,130 +390,207 @@ def run_recent_replay(
         ),
     )
 
-    # --------------------------------------------------------
-    # RUN ENGINE
-    # --------------------------------------------------------
+
+# ============================================================
+# RUN ONE ASSET
+# ============================================================
+
+def run_recent_replay(
+    asset_name: str,
+) -> dict:
+
+    df_5m = load_data(
+        asset_name
+    )
+
+    df_1h = prepare_data(
+        df_5m
+    )
+
+    (
+        recent,
+        start_time,
+        end_time,
+    ) = select_recent(
+        df_1h
+    )
+
+    print()
+    print(
+        f"Replay target start: "
+        f"{start_time}"
+    )
+
+    print(
+        f"Replay target end:   "
+        f"{end_time}"
+    )
+
+    print(
+        f"Replay actual start: "
+        f"{recent.index.min()}"
+    )
+
+    print(
+        f"Replay actual end:   "
+        f"{recent.index.max()}"
+    )
+
+    print(
+        f"Replay bars:         "
+        f"{len(recent):,}"
+    )
+
+    print()
+    print(
+        "Starting V7-S0 engine..."
+    )
+
+    engine = build_engine()
 
     result = engine.run(
         recent
     )
 
-    if result is None:
+    if not isinstance(
+        result,
+        dict
+    ):
 
         raise RuntimeError(
-            f"{asset_name}: "
-            "engine returned no result"
+            "Engine returned "
+            f"{type(result).__name__}, "
+            "expected dict"
         )
 
-    # --------------------------------------------------------
-    # Extract metrics safely
-    # --------------------------------------------------------
+    required_result_keys = [
+
+        "final_balance",
+        "return_pct",
+        "trades",
+        "wins",
+        "losses",
+        "win_rate",
+        "profit_factor",
+        "expectancy",
+        "max_drawdown_pct",
+        "fees",
+        "slippage_cost",
+        "kill_switch",
+
+    ]
+
+    missing = [
+        key
+        for key in required_result_keys
+        if key not in result
+    ]
+
+    if missing:
+
+        raise RuntimeError(
+            "Engine result missing keys: "
+            f"{missing}"
+        )
 
     final_balance = float(
-        result.get(
-            "final_balance",
-            np.nan,
-        )
+        result[
+            "final_balance"
+        ]
     )
 
     return_pct = float(
-        result.get(
-            "return_pct",
-            np.nan,
-        )
+        result[
+            "return_pct"
+        ]
     )
 
     trades = int(
-        result.get(
-            "trades",
-            0,
-        )
+        result[
+            "trades"
+        ]
     )
 
     wins = int(
-        result.get(
-            "wins",
-            0,
-        )
+        result[
+            "wins"
+        ]
     )
 
     losses = int(
-        result.get(
-            "losses",
-            0,
-        )
+        result[
+            "losses"
+        ]
     )
 
     win_rate = float(
-        result.get(
-            "win_rate",
-            np.nan,
-        )
+        result[
+            "win_rate"
+        ]
     )
 
     profit_factor = float(
-        result.get(
-            "profit_factor",
-            np.nan,
-        )
+        result[
+            "profit_factor"
+        ]
     )
 
     expectancy = float(
-        result.get(
-            "expectancy",
-            np.nan,
-        )
+        result[
+            "expectancy"
+        ]
     )
 
     max_drawdown = float(
-        result.get(
-            "max_drawdown_pct",
-            np.nan,
-        )
+        result[
+            "max_drawdown_pct"
+        ]
     )
 
     fees = float(
-        result.get(
-            "fees",
-            0.0,
-        )
+        result[
+            "fees"
+        ]
     )
 
     slippage = float(
-        result.get(
-            "slippage",
-            0.0,
-        )
+        result[
+            "slippage_cost"
+        ]
     )
 
     kill_switch = bool(
-        result.get(
-            "kill_switch",
-            False,
-        )
+        result[
+            "kill_switch"
+        ]
     )
-
-    # --------------------------------------------------------
-    # Result
-    # --------------------------------------------------------
 
     row = {
 
-        "asset": asset_name,
+        "asset":
+            asset_name,
 
-        "variant": VARIANT,
+        "variant":
+            VARIANT,
 
-        "start": recent.index.min(),
+        "start":
+            recent.index.min(),
 
-        "end": recent.index.max(),
+        "end":
+            recent.index.max(),
 
-        "bars": len(recent),
+        "bars":
+            len(recent),
 
         "starting_balance":
             STARTING_BALANCE,
 
         "final_balance":
             final_balance,
+
+        "profit":
+            final_balance
+            - STARTING_BALANCE,
 
         "return_pct":
             return_pct,
@@ -467,30 +619,34 @@ def run_recent_replay(
         "fees":
             fees,
 
-        "slippage":
+        "slippage_cost":
             slippage,
 
         "kill_switch":
             kill_switch,
     }
 
-    # --------------------------------------------------------
-    # Console report
-    # --------------------------------------------------------
-
     print()
-    print("-" * 70)
-    print(f"RESULT {asset_name}")
-    print("-" * 70)
+    print(
+        "-" * 70
+    )
 
     print(
-        f"Start balance : "
-        f"{STARTING_BALANCE:.4f}"
+        f"RESULT {asset_name}"
+    )
+
+    print(
+        "-" * 70
     )
 
     print(
         f"Final balance : "
-        f"{final_balance:.4f}"
+        f"{final_balance:.6f}"
+    )
+
+    print(
+        f"Profit        : "
+        f"{final_balance - STARTING_BALANCE:.6f}"
     )
 
     print(
@@ -550,53 +706,70 @@ def run_recent_replay(
 # MAIN
 # ============================================================
 
-def main():
+def main() -> int:
 
     print()
-    print("=" * 70)
-    print("20to100 TRADING BOT")
-    print("V7-S0 RECENT MARKET REPLAY")
-    print("=" * 70)
-
-    print()
-    print("Strategy : V6-C")
-    print("Layer    : V7-S0")
-    print("Assets   : BTC + ETH + SOL")
-    print("TF       : 5m -> 1h")
     print(
-        f"Period   : Last {RECENT_DAYS} days"
-    )
-    print(
-        f"Capital  : {STARTING_BALANCE:.2f} USDT"
+        "=" * 70
     )
 
-    print()
-    print("Risk configuration:")
     print(
-        f"Base risk       : "
-        f"{BASE_RISK_PER_TRADE * 100:.2f}%"
+        "20to100 TRADING BOT"
     )
+
     print(
-        f"Daily loss      : "
-        f"{MAX_DAILY_LOSS * 100:.2f}%"
+        "V7-S0 RECENT MARKET REPLAY"
     )
+
     print(
-        f"Max loss streak : "
-        f"{MAX_CONSECUTIVE_LOSSES}"
+        "=" * 70
     )
+
     print(
-        f"Cooldown bars   : "
-        f"{LOSS_COOLDOWN_BARS}"
+        "Strategy : V6-C"
     )
+
     print(
-        f"Global DD       : "
-        f"{GLOBAL_MAX_DRAWDOWN * 100:.2f}%"
+        "Layer    : V7-S0"
+    )
+
+    print(
+        "Assets   : BTC + ETH + SOL"
+    )
+
+    print(
+        "TF       : 5m -> 1h"
+    )
+
+    print(
+        f"Period   : "
+        f"Last {RECENT_DAYS} days"
+    )
+
+    print(
+        f"Capital  : "
+        f"{STARTING_BALANCE:.2f} USDT"
     )
 
     print()
-    print("=" * 70)
+    print(
+        "NO LIVE TRADING"
+    )
+
+    print(
+        "NO EXCHANGE API KEYS"
+    )
+
+    print(
+        "NO REAL ORDERS"
+    )
+
+    print(
+        "=" * 70
+    )
 
     results = []
+    failures = []
 
     for asset in ASSETS:
 
@@ -612,15 +785,34 @@ def main():
 
         except Exception as exc:
 
-            print()
-            print(
-                f"ERROR {asset}: "
-                f"{type(exc).__name__}: {exc}"
+            failures.append(
+                asset
             )
 
-    # --------------------------------------------------------
-    # Save results
-    # --------------------------------------------------------
+            print()
+            print(
+                "!" * 70
+            )
+
+            print(
+                f"FAILED {asset}"
+            )
+
+            print(
+                f"{type(exc).__name__}: "
+                f"{exc}"
+            )
+
+            print()
+            traceback.print_exc()
+
+            print(
+                "!" * 70
+            )
+
+    # ========================================================
+    # RESULTS
+    # ========================================================
 
     if results:
 
@@ -634,9 +826,17 @@ def main():
         )
 
         print()
-        print("=" * 70)
-        print("V7-S0 RECENT REPLAY SUMMARY")
-        print("=" * 70)
+        print(
+            "=" * 70
+        )
+
+        print(
+            "V7-S0 RECENT REPLAY SUMMARY"
+        )
+
+        print(
+            "=" * 70
+        )
 
         print(
             results_df.to_string(
@@ -644,73 +844,83 @@ def main():
             )
         )
 
-        # ----------------------------------------------------
-        # Aggregate statistics
-        # ----------------------------------------------------
-
         valid_returns = pd.to_numeric(
-            results_df["return_pct"],
+            results_df[
+                "return_pct"
+            ],
             errors="coerce",
         )
 
         valid_pf = pd.to_numeric(
-            results_df["profit_factor"],
+            results_df[
+                "profit_factor"
+            ],
             errors="coerce",
         )
 
         valid_dd = pd.to_numeric(
-            results_df["max_drawdown_pct"],
+            results_df[
+                "max_drawdown_pct"
+            ],
             errors="coerce",
         )
 
         print()
-        print("=" * 70)
-        print("AGGREGATE")
-        print("=" * 70)
-
         print(
-            f"Assets tested       : "
-            f"{len(results_df)}"
+            "=" * 70
         )
 
         print(
-            f"Average return      : "
+            "AGGREGATE"
+        )
+
+        print(
+            "=" * 70
+        )
+
+        print(
+            f"Assets successful : "
+            f"{len(results)}/{len(ASSETS)}"
+        )
+
+        print(
+            f"Average return    : "
             f"{valid_returns.mean():.4f}%"
         )
 
         print(
-            f"Median return       : "
+            f"Median return     : "
             f"{valid_returns.median():.4f}%"
         )
 
         print(
-            f"Average PF          : "
+            f"Average PF        : "
             f"{valid_pf.mean():.4f}"
         )
 
         print(
-            f"Median PF           : "
+            f"Median PF         : "
             f"{valid_pf.median():.4f}"
         )
 
         print(
-            f"Positive assets     : "
-            f"{(valid_returns > 0).sum()}"
+            f"Positive assets   : "
+            f"{int((valid_returns > 0).sum())}"
             f"/{len(valid_returns)}"
         )
 
         print(
-            f"Worst return       : "
+            f"Worst return      : "
             f"{valid_returns.min():.4f}%"
         )
 
         print(
-            f"Best return        : "
+            f"Best return       : "
             f"{valid_returns.max():.4f}%"
         )
 
         print(
-            f"Worst drawdown     : "
+            f"Worst drawdown    : "
             f"{valid_dd.min():.4f}%"
         )
 
@@ -720,22 +930,57 @@ def main():
             f"{RESULTS_FILE}"
         )
 
-    else:
+    # ========================================================
+    # HARD FAILURE
+    # ========================================================
+
+    if failures:
 
         print()
-        print("=" * 70)
-        print("NO RESULTS")
-        print("=" * 70)
-
-        raise RuntimeError(
-            "No asset produced a valid result."
+        print(
+            "=" * 70
         )
 
+        print(
+            "V7-S0 RECENT REPLAY FAILED"
+        )
 
-# ============================================================
-# ENTRY POINT
-# ============================================================
+        print(
+            "=" * 70
+        )
+
+        print(
+            "Failed assets: "
+            + ", ".join(failures)
+        )
+
+        return 1
+
+    if len(results) != len(ASSETS):
+
+        print(
+            "ERROR: incomplete asset coverage"
+        )
+
+        return 1
+
+    print()
+    print(
+        "=" * 70
+    )
+
+    print(
+        "V7-S0 RECENT REPLAY PASSED"
+    )
+
+    print(
+        "=" * 70
+    )
+
+    return 0
+
 
 if __name__ == "__main__":
-
-    main()
+    sys.exit(
+        main()
+    )
