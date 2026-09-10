@@ -3,6 +3,10 @@ name: V7-S0 MFE MAE Analysis
 on:
   workflow_dispatch:
 
+permissions:
+  actions: read
+  contents: read
+
 jobs:
   mfe-mae-analysis:
 
@@ -76,6 +80,47 @@ jobs:
           echo ""
           echo "DATA FILES:"
           ls -lh data/
+
+
+      # ======================================================
+      # DOWNLOAD PREVIOUS WALK-FORWARD OOS ARTIFACT
+      # ======================================================
+
+      - name: Download Walk-Forward OOS results
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+
+          echo "=================================================="
+          echo "DOWNLOADING WALK-FORWARD OOS RESULTS"
+          echo "=================================================="
+
+          echo "Searching for latest successful V7-S0 Walk-Forward OOS run..."
+
+          RUN_ID=$(gh run list \
+            --workflow "v7_walk_forward_oos.yml" \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
+
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "❌ No successful V7-S0 Walk-Forward OOS run found."
+            exit 1
+          fi
+
+          echo "✅ Found successful run:"
+          echo "$RUN_ID"
+
+          echo ""
+          echo "Downloading artifact..."
+
+          gh run download "$RUN_ID" \
+            --name v7-walk-forward-oos-results
+
+          echo ""
+          echo "Downloaded files:"
+          find . -maxdepth 2 -type f | sort
 
 
       # ======================================================
