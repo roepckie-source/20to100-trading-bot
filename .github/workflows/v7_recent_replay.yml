@@ -10,35 +10,67 @@ jobs:
 
   recent-replay:
 
+    name: V7-S0 90-Day Replay
+
     runs-on: ubuntu-latest
 
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
+
+      # ==================================================
+      # CHECKOUT
+      # ==================================================
 
       - name: Checkout
         uses: actions/checkout@v4
 
+
+      # ==================================================
+      # PYTHON
+      # ==================================================
+
       - name: Setup Python
         uses: actions/setup-python@v5
+
         with:
           python-version: "3.12"
 
+
+      # ==================================================
+      # DEPENDENCIES
+      # ==================================================
+
       - name: Install dependencies
         run: |
+
           python -m pip install --upgrade pip
+
           pip install -r requirements.txt
 
+
+      # ==================================================
+      # SAFETY CHECK
+      # ==================================================
+
       - name: Safety check
+        shell: bash
+
         run: |
+
+          set -euo pipefail
+
           echo "=================================================="
           echo "V7-S0 RECENT REPLAY SAFETY CHECK"
           echo "=================================================="
 
           echo
-          echo "No live trading."
-          echo "No exchange API keys."
-          echo "No real orders."
+          echo "NO LIVE TRADING."
+          echo "NO EXCHANGE API KEYS."
+          echo "NO REAL ORDERS."
+
+          echo
+          echo "Checking files..."
 
           test -f v7_recent_replay.py
           test -f backtest/v7_survival_engine.py
@@ -49,31 +81,84 @@ jobs:
           test -f data/ETH_USDT_5m.csv
           test -f data/SOL_USDT_5m.csv
 
-          echo
-          echo "Safety check passed."
+          echo "All required files found."
 
-      - name: Run V7-S0 recent replay
+
+      # ==================================================
+      # ENGINE API CHECK
+      # ==================================================
+
+      - name: Check V7-S0 engine API
+        shell: bash
+
         run: |
 
+          set -euo pipefail
+
+          python - <<'PY'
+
+          import inspect
+
+          from backtest.v7_survival_engine import (
+              V7SurvivalEngine
+          )
+
+          signature = inspect.signature(
+              V7SurvivalEngine.__init__
+          )
+
+          print(
+              "V7SurvivalEngine signature:"
+          )
+
+          print(signature)
+
+          if (
+              "base_risk_per_trade"
+              not in signature.parameters
+          ):
+
+              raise SystemExit(
+                  "ERROR: "
+                  "base_risk_per_trade "
+                  "not available"
+              )
+
+          print(
+              "ENGINE API CHECK: PASS"
+          )
+
+          PY
+
+
+      # ==================================================
+      # RUN REPLAY
+      # ==================================================
+
+      - name: Run V7-S0 recent replay
+        shell: bash
+
+        run: |
+
+          set -o pipefail
+
           echo "=================================================="
-          echo "RUNNING V7-S0 RECENT MARKET REPLAY"
+          echo "RUNNING V7-S0 RECENT 90-DAY REPLAY"
           echo "=================================================="
 
-          echo
-          echo "Strategy: V6-C"
-          echo "Survival: V7-S0"
-          echo "Assets: BTC + ETH + SOL"
-          echo "Timeframe: 5m -> 1h"
-          echo "Period: Last 90 days"
-          echo "Capital: 20 USDT"
+          python -u v7_recent_replay.py \
+            2>&1 | tee v7_recent_replay.log
 
-          echo
-          echo "=================================================="
 
-          python v7_recent_replay.py
+      # ==================================================
+      # SHOW RESULTS
+      # ==================================================
 
-      - name: Show results
+      - name: Show replay results
         if: always()
+
+        shell: bash
+
         run: |
 
           echo "=================================================="
@@ -81,19 +166,37 @@ jobs:
           echo "=================================================="
 
           if [ -f v7_recent_replay_results.csv ]; then
+
             echo
+            echo "RESULT CSV:"
+            echo
+
             cat v7_recent_replay_results.csv
+
           else
+
             echo
-            echo "v7_recent_replay_results.csv NOT FOUND"
+            echo "NO RESULT CSV PRODUCED."
+
           fi
 
-      - name: Upload results
+
+      # ==================================================
+      # DIAGNOSTICS
+      # ==================================================
+
+      - name: Upload replay diagnostics
         if: always()
+
         uses: actions/upload-artifact@v4
 
         with:
-          name: v7-s0-recent-replay
+
+          name: v7-s0-recent-replay-diagnostics
+
           path: |
+
+            v7_recent_replay.log
             v7_recent_replay_results.csv
+
           if-no-files-found: warn
