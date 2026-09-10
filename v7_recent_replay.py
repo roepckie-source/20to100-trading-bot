@@ -176,6 +176,7 @@ def resample_to_1h(df: pd.DataFrame) -> pd.DataFrame:
         "high",
         "low",
         "close",
+        "volume",
     ]
 
     missing = [
@@ -184,8 +185,9 @@ def resample_to_1h(df: pd.DataFrame) -> pd.DataFrame:
     ]
 
     if missing:
+
         raise ValueError(
-            f"Missing OHLC columns: {missing}"
+            f"Missing OHLCV columns: {missing}"
         )
 
     result = (
@@ -195,6 +197,7 @@ def resample_to_1h(df: pd.DataFrame) -> pd.DataFrame:
                 "high",
                 "low",
                 "close",
+                "volume",
             ]
         ]
         .resample("1h")
@@ -204,6 +207,7 @@ def resample_to_1h(df: pd.DataFrame) -> pd.DataFrame:
                 "high": "max",
                 "low": "min",
                 "close": "last",
+                "volume": "sum",
             }
         )
         .dropna()
@@ -283,7 +287,7 @@ def prepare_data(asset: str) -> pd.DataFrame:
 
     print()
     print(
-        f"Recent replay period:"
+        "Recent replay period:"
     )
 
     print(
@@ -758,6 +762,7 @@ def main() -> int:
     )
 
     print()
+
     print(
         f"Results written to: "
         f"{OUTPUT_FILE}"
@@ -802,6 +807,7 @@ def main() -> int:
     # --------------------------------------------------------
 
     print()
+
     print(
         "=================================================="
     )
