@@ -1,8 +1,8 @@
 {
   "symbol": "BTC/USDT",
-  "last_completed_bar": "2026-09-11T07:00:00+00:00",
-  "last_entry_hour": "2026-09-11T08:00:00+00:00",
-  "bar_counter": 1711,
+  "last_completed_bar": "2026-09-11T09:00:00+00:00",
+  "last_entry_hour": "2026-09-11T10:00:00+00:00",
+  "bar_counter": 1713,
   "balance": 20.0,
   "peak_equity": 20.0,
   "day_start_equity": 20.0,
@@ -12,5 +12,5 @@
   "kill_switch": false,
   "position": null,
   "logged_trades": 0,
-  "updated_at": "2026-09-11T08:18:15.931361+00:00"
+  "updated_at": "2026-09-11T10:36:39.134851+00:00"
 }
