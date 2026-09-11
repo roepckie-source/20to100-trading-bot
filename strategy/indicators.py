@@ -1,8 +1,13 @@
 # ==========================================
 # 20to100 Trading Bot
 # Technical Indicators
+#
+# V6 / V7-S0 compatible
 # ==========================================
 
+from __future__ import annotations
+
+import numpy as np
 import pandas as pd
 
 from config import (
@@ -19,7 +24,11 @@ def calculate_indicators(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
 
-    df = df.copy()
+    out = df.copy()
+
+    # ==========================================
+    # REQUIRED INPUT
+    # ==========================================
 
     required = [
         "open",
@@ -32,7 +41,7 @@ def calculate_indicators(
     missing = [
         column
         for column in required
-        if column not in df.columns
+        if column not in out.columns
     ]
 
     if missing:
@@ -40,12 +49,12 @@ def calculate_indicators(
             f"Missing columns: {missing}"
         )
 
-    # --------------------------------------
-    # EMA
-    # --------------------------------------
+    # ==========================================
+    # BASIC EMA
+    # ==========================================
 
-    df["ema_9"] = (
-        df["close"]
+    out["ema_9"] = (
+        out["close"]
         .ewm(
             span=EMA_FAST,
             adjust=False,
@@ -53,8 +62,8 @@ def calculate_indicators(
         .mean()
     )
 
-    df["ema_21"] = (
-        df["close"]
+    out["ema_21"] = (
+        out["close"]
         .ewm(
             span=EMA_MEDIUM,
             adjust=False,
@@ -62,8 +71,8 @@ def calculate_indicators(
         .mean()
     )
 
-    df["ema_50"] = (
-        df["close"]
+    out["ema_50"] = (
+        out["close"]
         .ewm(
             span=EMA_SLOW,
             adjust=False,
@@ -71,14 +80,243 @@ def calculate_indicators(
         .mean()
     )
 
-    # --------------------------------------
+    # ==========================================
+    # V6 EMA 100
+    # ==========================================
+
+    out["ema_100"] = (
+        out["close"]
+        .ewm(
+            span=100,
+            adjust=False,
+        )
+        .mean()
+    )
+
+    # ==========================================
+    # V6 EMA 200
+    # ==========================================
+
+    out["ema_200"] = (
+        out["close"]
+        .ewm(
+            span=200,
+            adjust=False,
+        )
+        .mean()
+    )
+
+    # ==========================================
+    # V6 EMA 200 SLOPE
+    #
+    # 10-Candle percentage change
+    # ==========================================
+
+    out["ema_200_slope"] = (
+        out["ema_200"]
+        .pct_change(10)
+    )
+
+    # ==========================================
+    # V6 ADAPTIVE EMA SLOPE REFERENCE
+    #
+    # 50-Candle median
+    #
+    # shift(1) prevents the current slope
+    # from influencing its own reference.
+    # ==========================================
+
+    out["ema_200_slope_reference"] = (
+        out["ema_200_slope"]
+        .rolling(50)
+        .median()
+        .shift(1)
+    )
+
+    # ==========================================
+    # V6 DONCHIAN 20
+    #
+    # Previous 20-Candle High
+    #
+    # shift(1) prevents current candle
+    # from being part of the breakout level.
+    # ==========================================
+
+    out["donchian_high_20"] = (
+        out["high"]
+        .rolling(20)
+        .max()
+        .shift(1)
+    )
+
+    # ==========================================
+    # TRUE RANGE
+    # ==========================================
+
+    previous_close = (
+        out["close"]
+        .shift(1)
+    )
+
+    tr = pd.concat(
+        [
+            out["high"] - out["low"],
+
+            (
+                out["high"]
+                - previous_close
+            ).abs(),
+
+            (
+                out["low"]
+                - previous_close
+            ).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    # ==========================================
+    # ATR 14
+    # ==========================================
+
+    out["atr_14"] = (
+        tr
+        .ewm(
+            alpha=1 / 14,
+            adjust=False,
+        )
+        .mean()
+    )
+
+    # ==========================================
+    # ATR 50 REFERENCE
+    #
+    # Current ATR is NOT included in the
+    # reference used for the current candle.
+    # ==========================================
+
+    out["atr_14_ma50"] = (
+        out["atr_14"]
+        .rolling(50)
+        .mean()
+        .shift(1)
+    )
+
+    # ==========================================
+    # ADX 14
+    # ==========================================
+
+    up_move = (
+        out["high"]
+        .diff()
+    )
+
+    down_move = (
+        -out["low"]
+        .diff()
+    )
+
+    plus_dm = pd.Series(
+        np.where(
+            (up_move > down_move)
+            &
+            (up_move > 0),
+            up_move,
+            0.0,
+        ),
+        index=out.index,
+    )
+
+    minus_dm = pd.Series(
+        np.where(
+            (down_move > up_move)
+            &
+            (down_move > 0),
+            down_move,
+            0.0,
+        ),
+        index=out.index,
+    )
+
+    adx_atr = (
+        tr
+        .ewm(
+            alpha=1 / 14,
+            adjust=False,
+        )
+        .mean()
+    )
+
+    plus_di = (
+        100
+        *
+        plus_dm
+        .ewm(
+            alpha=1 / 14,
+            adjust=False,
+        )
+        .mean()
+        /
+        adx_atr
+    )
+
+    minus_di = (
+        100
+        *
+        minus_dm
+        .ewm(
+            alpha=1 / 14,
+            adjust=False,
+        )
+        .mean()
+        /
+        adx_atr
+    )
+
+    di_sum = (
+        plus_di
+        + minus_di
+    ).replace(
+        0,
+        np.nan,
+    )
+
+    dx = (
+        100
+        *
+        (
+            plus_di
+            - minus_di
+        ).abs()
+        /
+        di_sum
+    )
+
+    out["adx_14"] = (
+        dx
+        .ewm(
+            alpha=1 / 14,
+            adjust=False,
+        )
+        .mean()
+    )
+
+    # ==========================================
     # RSI - Wilder
-    # --------------------------------------
+    # ==========================================
 
-    delta = df["close"].diff()
+    delta = (
+        out["close"]
+        .diff()
+    )
 
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    gain = delta.clip(
+        lower=0
+    )
+
+    loss = -delta.clip(
+        upper=0
+    )
 
     avg_gain = (
         gain
@@ -100,62 +338,90 @@ def calculate_indicators(
         .mean()
     )
 
-    rs = avg_gain / avg_loss
+    rs = (
+        avg_gain
+        / avg_loss
+    )
 
-    df["rsi_14"] = (
-        100 -
+    out["rsi_14"] = (
+        100
+        -
         (
-            100 /
+            100
+            /
             (1 + rs)
         )
     )
 
-    # --------------------------------------
-    # ATR - Wilder
-    # --------------------------------------
+    # ==========================================
+    # V6 BULLISH TREND REGIME
+    # ==========================================
 
-    previous_close = df["close"].shift(1)
-
-    tr = pd.concat(
-        [
-            df["high"] - df["low"],
-            (
-                df["high"] -
-                previous_close
-            ).abs(),
-            (
-                df["low"] -
-                previous_close
-            ).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-
-    df["atr_14"] = (
-        tr
-        .ewm(
-            alpha=1 / ATR_PERIOD,
-            adjust=False,
-            min_periods=ATR_PERIOD,
+    out["trend_regime"] = (
+        (
+            out["ema_100"]
+            >
+            out["ema_200"]
         )
-        .mean()
+        &
+        (
+            out["ema_200_slope"]
+            > 0
+        )
+        &
+        (
+            out["close"]
+            >
+            out["ema_200"]
+        )
     )
 
-    # --------------------------------------
-    # Volume
-    # --------------------------------------
+    # ==========================================
+    # VOLUME
+    # ==========================================
 
-    df["volume_sma_20"] = (
-        df["volume"]
+    out["volume_sma_20"] = (
+        out["volume"]
         .rolling(
             VOLUME_PERIOD
         )
         .mean()
     )
 
-    df["volume_ratio"] = (
-        df["volume"] /
-        df["volume_sma_20"]
+    out["volume_ratio"] = (
+        out["volume"]
+        /
+        out["volume_sma_20"]
     )
 
-    return df
+    # ==========================================
+    # FINAL COLUMN CHECK
+    #
+    # These columns are required by V6-C
+    # and V7-S0.
+    # ==========================================
+
+    v6_required = [
+        "ema_100",
+        "ema_200",
+        "ema_200_slope",
+        "ema_200_slope_reference",
+        "donchian_high_20",
+        "atr_14",
+        "atr_14_ma50",
+        "adx_14",
+    ]
+
+    missing_v6 = [
+        column
+        for column in v6_required
+        if column not in out.columns
+    ]
+
+    if missing_v6:
+        raise ValueError(
+            "V6 indicator calculation failed. "
+            f"Missing columns: {missing_v6}"
+        )
+
+    return out
