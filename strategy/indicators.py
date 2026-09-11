@@ -108,7 +108,6 @@ def calculate_indicators(
 
     # ==========================================
     # V6 EMA 200 SLOPE
-    #
     # 10-Candle percentage change
     # ==========================================
 
@@ -119,11 +118,6 @@ def calculate_indicators(
 
     # ==========================================
     # V6 ADAPTIVE EMA SLOPE REFERENCE
-    #
-    # 50-Candle median
-    #
-    # shift(1) prevents the current slope
-    # from influencing its own reference.
     # ==========================================
 
     out["ema_200_slope_reference"] = (
@@ -135,11 +129,7 @@ def calculate_indicators(
 
     # ==========================================
     # V6 DONCHIAN 20
-    #
     # Previous 20-Candle High
-    #
-    # shift(1) prevents current candle
-    # from being part of the breakout level.
     # ==========================================
 
     out["donchian_high_20"] = (
@@ -161,12 +151,10 @@ def calculate_indicators(
     tr = pd.concat(
         [
             out["high"] - out["low"],
-
             (
                 out["high"]
                 - previous_close
             ).abs(),
-
             (
                 out["low"]
                 - previous_close
@@ -190,9 +178,6 @@ def calculate_indicators(
 
     # ==========================================
     # ATR 50 REFERENCE
-    #
-    # Current ATR is NOT included in the
-    # reference used for the current candle.
     # ==========================================
 
     out["atr_14_ma50"] = (
@@ -396,9 +381,6 @@ def calculate_indicators(
 
     # ==========================================
     # FINAL COLUMN CHECK
-    #
-    # These columns are required by V6-C
-    # and V7-S0.
     # ==========================================
 
     v6_required = [
