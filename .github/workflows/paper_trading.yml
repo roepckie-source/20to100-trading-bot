@@ -3,16 +3,10 @@ name: 20to100 Paper Trading
 on:
   workflow_dispatch:
 
-  # ============================================================
-  # AUTOMATISCH ALLE 5 MINUTEN
-  # ============================================================
-  schedule:
-    - cron: "2/5 * * * *"
-
 permissions:
   contents: write
 
-# Verhindert parallele Läufe
+# Verhindert parallele Paper-Trading-Sessions
 concurrency:
   group: paper-trading
   cancel-in-progress: false
@@ -20,7 +14,9 @@ concurrency:
 jobs:
   paper-trading:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+
+    # 6 Stunden maximale Laufzeit
+    timeout-minutes: 360
 
     steps:
 
@@ -54,14 +50,13 @@ jobs:
       - name: Prepare paper state
         run: |
           echo "=================================================="
-          echo "PAPER TRADING STATE"
+          echo "V7-S0 CONTINUOUS PAPER TRADING"
           echo "=================================================="
 
           mkdir -p paper_logs
 
           echo
-          echo "Existing files:"
-
+          echo "Existing paper state:"
           find paper_logs -maxdepth 1 -type f -print | sort || true
 
       # ============================================================
@@ -92,31 +87,72 @@ jobs:
           print("OHLCV limit   :", config_paper.OHLCV_LIMIT)
           print("Live trading  :", config_paper.LIVE_TRADING)
           print("Leverage      : NONE")
+          print("Loop interval : 5 minutes")
+          print("Session limit : 6 hours")
 
           print()
           print("SAFETY CHECK PASSED")
           PY
 
       # ============================================================
-      # 6. RUN PAPER TRADING
+      # 6. CONTINUOUS PAPER TRADING
       # ============================================================
-      - name: Run paper trading
+      - name: Run continuous paper trading
         run: |
           echo "=================================================="
-          echo "RUNNING V7-S0 PAPER TRADING"
+          echo "STARTING CONTINUOUS V7-S0 PAPER TRADING"
+          echo "=================================================="
+          echo
+          echo "One paper run every 5 minutes."
+          echo "No live trading."
+          echo "Session duration: 6 hours."
+          echo
+
+          END_TIME=$(( $(date +%s) + 21600 ))
+
+          RUN_NUMBER=0
+
+          while [ "$(date +%s)" -lt "$END_TIME" ]; do
+
+            RUN_NUMBER=$((RUN_NUMBER + 1))
+
+            echo
+            echo "=================================================="
+            echo "PAPER ITERATION #$RUN_NUMBER"
+            echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "=================================================="
+
+            python run_paper.py --once
+
+            echo
+            echo "Iteration #$RUN_NUMBER complete."
+
+            NOW=$(date +%s)
+
+            if [ "$NOW" -ge "$END_TIME" ]; then
+              break
+            fi
+
+            echo
+            echo "Waiting 5 minutes until next paper iteration..."
+            sleep 300
+
+          done
+
+          echo
+          echo "=================================================="
+          echo "6-HOUR PAPER SESSION COMPLETE"
           echo "=================================================="
 
-          python run_paper.py --once
-
       # ============================================================
-      # 7. SHOW STATE
+      # 7. SHOW FINAL STATE
       # ============================================================
       - name: Show paper state
         if: always()
         run: |
           echo
           echo "=================================================="
-          echo "CURRENT PAPER STATE"
+          echo "FINAL PAPER STATE"
           echo "=================================================="
 
           for file in \
@@ -152,17 +188,39 @@ jobs:
             wc -l paper_logs/paper_equity.csv
 
             echo
-            echo "Last 10 entries:"
-            tail -n 10 paper_logs/paper_equity.csv
+            echo "Last 20 entries:"
+            tail -n 20 paper_logs/paper_equity.csv
           else
             echo "No equity file found."
           fi
 
       # ============================================================
-      # 9. SAVE STATE TO GITHUB
+      # 9. SHOW SIGNAL HISTORY
+      # ============================================================
+      - name: Show signal history
+        if: always()
+        run: |
+          echo
+          echo "=================================================="
+          echo "SIGNAL HISTORY"
+          echo "=================================================="
+
+          if [ -f paper_logs/paper_signals.csv ]; then
+            echo "Rows:"
+            wc -l paper_logs/paper_signals.csv
+
+            echo
+            echo "Last 20 signals:"
+            tail -n 20 paper_logs/paper_signals.csv
+          else
+            echo "No signal file found."
+          fi
+
+      # ============================================================
+      # 10. SAVE STATE TO GITHUB
       # ============================================================
       - name: Commit paper trading data
-        if: success()
+        if: always()
         run: |
           echo
           echo "=================================================="
@@ -177,20 +235,20 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes detected."
           else
-            git commit -m "Update paper trading state"
+            git commit -m "Update continuous paper trading state"
             git push
             echo "Paper trading state saved."
           fi
 
       # ============================================================
-      # 10. FINAL STATUS
+      # 11. FINAL STATUS
       # ============================================================
       - name: Final status
         if: always()
         run: |
           echo
           echo "=================================================="
-          echo "V7-S0 PAPER TRADING RUN COMPLETE"
+          echo "V7-S0 CONTINUOUS PAPER TRADING COMPLETE"
           echo "=================================================="
 
           git status --short
