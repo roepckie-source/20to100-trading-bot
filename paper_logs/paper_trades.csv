@@ -1,0 +1,2 @@
+entry_time,exit_time,entry_price,exit_price,quantity,initial_risk_usdt,gross_profit,fees,slippage_cost,net_profit,r_multiple,exit_reason,symbol,variant
+2026-09-11 14:00:00+00:00,2026-09-11 15:00:00+00:00,2631.1149,2569.2883941135387,0.002305826225769366,0.2,-0.14256117872068652,0.0119912263001444,0.005995579008672042,-0.1545524050208309,-0.7727620251041545,ATR_STOP,ETH/USDT,V6_C
