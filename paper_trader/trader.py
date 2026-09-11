@@ -1016,15 +1016,6 @@ class PaperTrader:
                 )
             )
 
-        except TypeError:
-
-            signal = bool(
-                buy_signal(
-                    previous_row,
-                    previous_previous_row,
-                )
-            )
-
         except Exception as exc:
 
             print(
