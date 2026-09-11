@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
 
   # ============================================================
-  # AUTOMATISCH JEDE STUNDE
+  # AUTOMATISCH ALLE 5 MINUTEN
   # ============================================================
   schedule:
-    - cron: "0 * * * *"
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: write
