@@ -1,8 +1,8 @@
 {
   "symbol": "ETH/USDT",
-  "last_completed_bar": "2026-09-12T00:00:00+00:00",
-  "last_entry_hour": "2026-09-12T01:00:00+00:00",
-  "bar_counter": 1728,
+  "last_completed_bar": "2026-09-12T09:00:00+00:00",
+  "last_entry_hour": "2026-09-12T10:00:00+00:00",
+  "bar_counter": 1737,
   "balance": 19.84544759497917,
   "peak_equity": 20.0,
   "day_start_equity": 19.84544759497917,
@@ -12,5 +12,5 @@
   "kill_switch": false,
   "position": null,
   "logged_trades": 1,
-  "updated_at": "2026-09-12T01:54:50.710102+00:00"
+  "updated_at": "2026-09-12T10:38:42.572832+00:00"
 }
