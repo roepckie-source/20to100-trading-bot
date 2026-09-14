@@ -1,1 +1,52 @@
+name: Live Arbitrage Bot
 
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: live-arbitrage-single-run
+  cancel-in-progress: false
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install ccxt
+
+      - name: Run rebalancer
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET: ${{ secrets.OKX_SECRET }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          MEXC_API_KEY: ${{ secrets.MEXC_API_KEY }}
+          MEXC_SECRET: ${{ secrets.MEXC_SECRET }}
+          BITRUE_API_KEY: ${{ secrets.BITRUE_API_KEY }}
+          BITRUE_SECRET: ${{ secrets.BITRUE_SECRET }}
+        run: |
+          python rebalancer.py
+
+      - name: Run live trader
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET: ${{ secrets.OKX_SECRET }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          MEXC_API_KEY: ${{ secrets.MEXC_API_KEY }}
+          MEXC_SECRET: ${{ secrets.MEXC_SECRET }}
+          BITRUE_API_KEY: ${{ secrets.BITRUE_API_KEY }}
+          BITRUE_SECRET: ${{ secrets.BITRUE_SECRET }}
+        run: |
+          python live_trader.py
