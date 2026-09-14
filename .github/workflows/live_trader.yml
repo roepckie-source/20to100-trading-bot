@@ -35,11 +35,14 @@ jobs:
       - name: Run live trader
         env:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET: ${{ secrets.OKX_SECRET }}
-          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+
           MEXC_API_KEY: ${{ secrets.MEXC_API_KEY }}
-          MEXC_SECRET: ${{ secrets.MEXC_SECRET }}
+          MEXC_API_SECRET: ${{ secrets.MEXC_API_SECRET }}
+
           BITRUE_API_KEY: ${{ secrets.BITRUE_API_KEY }}
-          BITRUE_SECRET: ${{ secrets.BITRUE_SECRET }}
+          BITRUE_API_SECRET: ${{ secrets.BITRUE_API_SECRET }}
+
         run: |
           python live_trader.py
