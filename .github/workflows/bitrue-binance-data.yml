@@ -1,1 +1,60 @@
+name: Bitrue Binance Historical Data
 
+on:
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests
+
+      - name: Download 365 days BTCUSDT 5m
+        env:
+          BITRUE_DAYS: "365"
+        run: |
+          python bitrue/download_binance_data.py
+
+      - name: Show dataset
+        run: |
+          echo "======================================"
+          echo "FILE"
+          echo "======================================"
+          ls -lh BTCUSDT_5m.csv
+
+          echo
+          echo "======================================"
+          echo "LINES"
+          echo "======================================"
+          wc -l BTCUSDT_5m.csv
+
+          echo
+          echo "======================================"
+          echo "FIRST ROWS"
+          echo "======================================"
+          head -5 BTCUSDT_5m.csv
+
+          echo
+          echo "======================================"
+          echo "LAST ROWS"
+          echo "======================================"
+          tail -5 BTCUSDT_5m.csv
+
+      - name: Upload dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: BTCUSDT-5m-365d
+          path: BTCUSDT_5m.csv
+          if-no-files-found: error
