@@ -30,6 +30,10 @@ CHANNEL = f"market_{SYMBOL}_kline_{INTERVAL}"
 
 PAGE_SIZE = 300
 
+# Default: 1 day
+# Can be overridden by GitHub Actions:
+# BITRUE_DAYS=1
+# BITRUE_DAYS=365
 DAYS = int(os.getenv("BITRUE_DAYS", "1"))
 
 OUTPUT_FILE = os.getenv(
@@ -38,19 +42,24 @@ OUTPUT_FILE = os.getenv(
 )
 
 REQUEST_TIMEOUT = 30
+
+# Small pause between historical requests
 REQUEST_DELAY = 0.15
 
+# 5-minute candles
 CANDLE_SECONDS = 5 * 60
 
 
 # ============================================================
-# HELPERS
+# MESSAGE DECODER
 # ============================================================
 
 def decode_message(message):
     """
-    Bitrue sends market-data messages gzip-compressed
-    binary, except heartbeat messages.
+    Bitrue market-data messages can arrive as
+    gzip-compressed binary data.
+
+    Heartbeat messages may arrive as plain text.
     """
 
     if isinstance(message, bytes):
@@ -59,7 +68,7 @@ def decode_message(message):
             message = gzip.decompress(message)
 
         except OSError:
-            # Some messages may already be plain bytes
+            # Message may already be plain bytes
             pass
 
         message = message.decode("utf-8")
@@ -67,8 +76,14 @@ def decode_message(message):
     return json.loads(message)
 
 
+# ============================================================
+# UTC TIME
+# ============================================================
+
 def utc_string(timestamp):
-    """Unix seconds -> UTC string."""
+    """
+    Convert Unix timestamp in seconds to UTC string.
+    """
 
     return datetime.fromtimestamp(
         int(timestamp),
@@ -76,16 +91,61 @@ def utc_string(timestamp):
     ).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def send_pong(ws, value):
+# ============================================================
+# HEARTBEAT / PONG
+# ============================================================
+
+def send_pong(ws, data):
     """
-    Bitrue heartbeat response.
+    Respond to Bitrue heartbeat messages.
+
+    Supported formats:
+
+        {"ping": "..."} 
+
+    and
+
+        {"event": "ping", "ts": "..."}
     """
 
-    pong = {
-        "pong": value
-    }
+    # --------------------------------------------------------
+    # FORMAT 1
+    # {"ping": "..."}
+    # --------------------------------------------------------
 
-    ws.send(json.dumps(pong))
+    if isinstance(data, dict) and "ping" in data:
+
+        pong = {
+            "pong": data["ping"]
+        }
+
+        ws.send(json.dumps(pong))
+
+        print("  HEARTBEAT: pong sent")
+
+        return
+
+
+    # --------------------------------------------------------
+    # FORMAT 2
+    # {"event": "ping", "ts": "..."}
+    # --------------------------------------------------------
+
+    if (
+        isinstance(data, dict)
+        and data.get("event") == "ping"
+    ):
+
+        pong = {
+            "event": "pong",
+            "ts": data.get("ts")
+        }
+
+        ws.send(json.dumps(pong))
+
+        print("  HEARTBEAT: event pong sent")
+
+        return
 
 
 # ============================================================
@@ -104,6 +164,9 @@ def request_page(ws, end_idx):
         }
     }
 
+    print()
+    print("  Sending historical request...")
+
     ws.send(json.dumps(request))
 
     deadline = time.time() + REQUEST_TIMEOUT
@@ -111,68 +174,108 @@ def request_page(ws, end_idx):
     while time.time() < deadline:
 
         try:
+
             message = ws.recv()
 
         except websocket.WebSocketTimeoutException:
+
             continue
+
+        except websocket.WebSocketConnectionClosedException:
+
+            raise RuntimeError(
+                "Bitrue WebSocket connection was closed "
+                "while waiting for historical data."
+            )
 
         if not message:
             continue
 
+        # ----------------------------------------------------
+        # DECODE
+        # ----------------------------------------------------
+
         try:
+
             data = decode_message(message)
 
         except Exception as exc:
+
             print(
-                f"WARNING: Could not decode message: {exc}"
+                f"  WARNING: Could not decode message: {exc}"
             )
+
             continue
+
 
         # ----------------------------------------------------
         # HEARTBEAT
         # ----------------------------------------------------
 
-        if isinstance(data, dict) and "ping" in data:
+        if isinstance(data, dict):
 
-            send_pong(ws, data["ping"])
-            continue
+            # {"ping": "..."}
+            if "ping" in data:
+
+                send_pong(ws, data)
+
+                continue
+
+            # {"event": "ping", ...}
+            if data.get("event") == "ping":
+
+                send_pong(ws, data)
+
+                continue
+
 
         # ----------------------------------------------------
         # HISTORICAL RESPONSE
         # ----------------------------------------------------
 
         if not isinstance(data, dict):
+
             continue
+
 
         if data.get("event_rep") != "rep":
+
             continue
 
+
         if data.get("channel") != CHANNEL:
+
             continue
+
 
         status = data.get("status")
 
         if status != "ok":
+
             raise RuntimeError(
                 f"Bitrue returned status={status}: {data}"
             )
 
+
         rows = data.get("data")
 
         if not isinstance(rows, list):
+
             raise RuntimeError(
-                f"Unexpected response: {data}"
+                f"Unexpected Bitrue response: {data}"
             )
+
 
         return rows
 
+
     raise TimeoutError(
-        "Timeout waiting for Bitrue historical data"
+        "Timeout waiting for Bitrue historical data."
     )
 
 
 # ============================================================
-# MAIN DOWNLOAD
+# DOWNLOAD HISTORY
 # ============================================================
 
 def download_history():
@@ -182,51 +285,110 @@ def download_history():
     print("=" * 70)
 
     print()
+
     print("Mode:")
     print("  PAPER / BACKTEST DATA ONLY")
     print("  NO API KEY")
     print("  NO LIVE TRADING")
     print("  NO ORDERS")
+
     print()
 
     print(f"WebSocket: {WS_URL}")
     print(f"Channel:   {CHANNEL}")
     print(f"Days:      {DAYS}")
     print(f"Page size: {PAGE_SIZE}")
+
     print()
+
+    # --------------------------------------------------------
+    # EXPECTED CANDLES
+    # --------------------------------------------------------
 
     target_candles = DAYS * 24 * 60 // 5
 
-    print(f"Expected candles: approximately {target_candles}")
+    print(
+        f"Expected candles: approximately {target_candles}"
+    )
+
     print()
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # CONNECT
-    # --------------------------------------------------------
+    # ========================================================
 
     print("Connecting to Bitrue WebSocket...")
 
-    ws = websocket.create_connection(
-        WS_URL,
-        timeout=REQUEST_TIMEOUT
-    )
+    try:
+
+        ws = websocket.create_connection(
+            WS_URL,
+            timeout=REQUEST_TIMEOUT
+        )
+
+    except Exception as exc:
+
+        raise RuntimeError(
+            f"Could not connect to Bitrue WebSocket: {exc}"
+        )
+
 
     print("CONNECTED")
+
     print()
+
+
+    # --------------------------------------------------------
+    # INITIAL PONG
+    # --------------------------------------------------------
+
+    try:
+
+        ws.send(
+            json.dumps(
+                {
+                    "pong": int(time.time())
+                }
+            )
+        )
+
+        print("Initial PONG sent")
+
+    except Exception as exc:
+
+        print(
+            f"WARNING: Initial PONG failed: {exc}"
+        )
+
+    print()
+
+
+    # ========================================================
+    # STORAGE
+    # ========================================================
 
     all_rows = {}
 
-    # Start from current Unix timestamp in SECONDS.
+
+    # --------------------------------------------------------
+    # START AT CURRENT TIME
     #
-    # Important:
-    # Bitrue WebSocket historical Klines use Unix seconds
-    # for endIdx / id.
+    # IMPORTANT:
+    # WebSocket historical API uses Unix SECONDS.
     #
+    # --------------------------------------------------------
+
     end_idx = int(time.time())
 
     page = 0
 
+
     try:
+
+        # ====================================================
+        # PAGINATION LOOP
+        # ====================================================
 
         while len(all_rows) < target_candles:
 
@@ -238,15 +400,29 @@ def download_history():
                 f"candles={len(all_rows)}"
             )
 
+
+            # ------------------------------------------------
+            # REQUEST
+            # ------------------------------------------------
+
             rows = request_page(
                 ws,
                 end_idx
             )
 
+
+            # ------------------------------------------------
+            # NO DATA
+            # ------------------------------------------------
+
             if not rows:
 
-                print("No more historical data returned.")
+                print(
+                    "No more historical data returned."
+                )
+
                 break
+
 
             # ------------------------------------------------
             # STORE CANDLES
@@ -254,17 +430,41 @@ def download_history():
 
             for row in rows:
 
+                if "id" not in row:
+
+                    continue
+
                 candle_id = int(row["id"])
 
-                all_rows[candle_id] = {
-                    "timestamp": utc_string(candle_id),
-                    "timestamp_unix": candle_id,
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                    "volume": float(row["vol"])
-                }
+
+                try:
+
+                    candle = {
+                        "timestamp": utc_string(candle_id),
+                        "timestamp_unix": candle_id,
+                        "open": float(row["open"]),
+                        "high": float(row["high"]),
+                        "low": float(row["low"]),
+                        "close": float(row["close"]),
+                        "volume": float(row["vol"])
+                    }
+
+                except (KeyError, TypeError, ValueError) as exc:
+
+                    print(
+                        f"  WARNING: Invalid candle: "
+                        f"{row} ({exc})"
+                    )
+
+                    continue
+
+
+                all_rows[candle_id] = candle
+
+
+            # ------------------------------------------------
+            # IDS
+            # ------------------------------------------------
 
             ids = [
                 int(row["id"])
@@ -272,36 +472,46 @@ def download_history():
                 if "id" in row
             ]
 
+
             if not ids:
+
                 raise RuntimeError(
-                    "Response contained no candle IDs."
+                    "Bitrue response contained no candle IDs."
                 )
+
 
             oldest_id = min(ids)
 
             newest_id = max(ids)
+
+
+            # ------------------------------------------------
+            # STATUS
+            # ------------------------------------------------
 
             print(
                 f"  received: {len(rows)}"
             )
 
             print(
-                f"  oldest:  {utc_string(oldest_id)}"
+                f"  oldest:  {utc_string(oldest_id)} UTC"
             )
 
             print(
-                f"  newest:  {utc_string(newest_id)}"
+                f"  newest:  {utc_string(newest_id)} UTC"
             )
 
             print(
                 f"  total:   {len(all_rows)}"
             )
 
+
             # ------------------------------------------------
-            # MOVE BACKWARD
+            # PAGINATION SAFETY CHECK
             # ------------------------------------------------
 
             next_end_idx = oldest_id - 1
+
 
             if next_end_idx >= end_idx:
 
@@ -309,17 +519,27 @@ def download_history():
                     "Pagination did not move backwards."
                 )
 
+
+            # ------------------------------------------------
+            # MOVE BACKWARD
+            # ------------------------------------------------
+
             end_idx = next_end_idx
 
+
             time.sleep(REQUEST_DELAY)
+
 
     finally:
 
         try:
+
             ws.close()
 
         except Exception:
+
             pass
+
 
     # ========================================================
     # SORT
@@ -330,19 +550,24 @@ def download_history():
         key=lambda x: x["timestamp_unix"]
     )
 
-    # Only keep requested number of candles if we received
-    # slightly more than necessary.
+
+    # --------------------------------------------------------
+    # KEEP TARGET SIZE
+    # --------------------------------------------------------
 
     if len(rows) > target_candles:
 
         rows = rows[-target_candles:]
+
 
     # ========================================================
     # WRITE CSV
     # ========================================================
 
     print()
+
     print("Writing CSV...")
+
 
     with open(
         OUTPUT_FILE,
@@ -353,36 +578,48 @@ def download_history():
 
         writer = csv.writer(f)
 
-        writer.writerow([
-            "timestamp",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume"
-        ])
+
+        writer.writerow(
+            [
+                "timestamp",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume"
+            ]
+        )
+
 
         for row in rows:
 
-            writer.writerow([
-                row["timestamp"],
-                row["open"],
-                row["high"],
-                row["low"],
-                row["close"],
-                row["volume"]
-            ])
+            writer.writerow(
+                [
+                    row["timestamp"],
+                    row["open"],
+                    row["high"],
+                    row["low"],
+                    row["close"],
+                    row["volume"]
+                ]
+            )
+
 
     # ========================================================
     # VALIDATION
     # ========================================================
 
     print()
+
     print("=" * 70)
     print("DATA VALIDATION")
     print("=" * 70)
 
-    print(f"Rows:       {len(rows)}")
+
+    print(
+        f"Rows:       {len(rows)}"
+    )
+
 
     if rows:
 
@@ -394,24 +631,35 @@ def download_history():
             f"Last:       {rows[-1]['timestamp']} UTC"
         )
 
-    # --------------------------------------------------------
+
+    # ========================================================
     # DUPLICATES
-    # --------------------------------------------------------
+    # ========================================================
 
     timestamps = [
         row["timestamp_unix"]
         for row in rows
     ]
 
-    duplicates = len(timestamps) - len(set(timestamps))
 
-    print(f"Duplicates: {duplicates}")
+    duplicates = (
+        len(timestamps)
+        -
+        len(set(timestamps))
+    )
 
-    # --------------------------------------------------------
+
+    print(
+        f"Duplicates: {duplicates}"
+    )
+
+
+    # ========================================================
     # GAPS
-    # --------------------------------------------------------
+    # ========================================================
 
     gaps = 0
+
 
     for previous, current in zip(
         timestamps,
@@ -420,45 +668,85 @@ def download_history():
 
         delta = current - previous
 
+
         if delta != CANDLE_SECONDS:
 
             gaps += 1
 
-    print(f"Gaps:       {gaps}")
+
+    print(
+        f"Gaps:       {gaps}"
+    )
+
+
+    # ========================================================
+    # RESULT
+    # ========================================================
 
     print()
+
     print("=" * 70)
     print("DOWNLOAD COMPLETE")
     print("=" * 70)
 
     print()
-    print(f"CSV: {OUTPUT_FILE}")
-    print(f"Candles: {len(rows)}")
+
+    print(
+        f"CSV:      {OUTPUT_FILE}"
+    )
+
+    print(
+        f"Candles:  {len(rows)}"
+    )
+
     print()
+
+
+    # --------------------------------------------------------
+    # QUALITY CHECK
+    # --------------------------------------------------------
 
     if len(rows) < target_candles * 0.95:
 
         print(
-            "WARNING: Fewer candles than expected."
+            "DATA QUALITY: WARNING"
         )
+
+        print(
+            "Fewer candles than expected."
+        )
+
 
     elif duplicates > 0:
 
         print(
-            "WARNING: Duplicate timestamps detected."
+            "DATA QUALITY: WARNING"
         )
+
+        print(
+            "Duplicate timestamps detected."
+        )
+
 
     elif gaps > 0:
 
         print(
-            "WARNING: Timestamp gaps detected."
+            "DATA QUALITY: WARNING"
         )
+
+        print(
+            "Timestamp gaps detected."
+        )
+
 
     else:
 
         print(
             "DATA QUALITY: PASS"
         )
+
+
+    print()
 
 
 # ============================================================
