@@ -1,188 +1,158 @@
 """
-Bitrue BTC/USDT 5m Historical Data Downloader
-
-Downloads public Bitrue Futures Kline data.
+Bitrue BTC/USDT Futures 5m Historical Data Downloader
 
 PAPER / BACKTEST ONLY
 NO API KEY
 NO ORDERS
 NO WALLET
+NO LIVE TRADING
 """
 
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
-import requests
 import pandas as pd
+import requests
 
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-SYMBOL = "BTCUSDT"
+BASE_URL = "https://fapi.bitrue.com"
+ENDPOINT = "/fapi/v1/klines"
 
-INTERVAL = "5m"
+CONTRACT_NAME = "E-BTC-USDT"
+INTERVAL = "5min"
 
-# 12 months
-DAYS = 365
+LIMIT = 300
+DAYS = int(os.getenv("BITRUE_DAYS", "1"))
 
 OUTPUT_FILE = "BTCUSDT_5m.csv"
 
-# Bitrue historical endpoint
-BASE_URL = (
-    "https://openapi.bitrue.com"
-)
-
-ENDPOINT = (
-    "/futures/v2/public/candlestick"
-)
-
-# Conservative request size
-LIMIT = 300
-
 REQUEST_DELAY = 0.25
+MAX_RETRIES = 5
 
-TIMEOUT = 20
+
+# ============================================================
+# HEADER
+# ============================================================
+
+print("=" * 60)
+print("BITRUE BTC/USDT FUTURES 5M DATA DOWNLOADER")
+print("=" * 60)
+print()
+print("PUBLIC MARKET DATA ONLY")
+print("NO API KEY")
+print("NO ORDERS")
+print("NO WALLET")
+print()
+print(f"Contract: {CONTRACT_NAME}")
+print(f"Interval: {INTERVAL}")
+print(f"Days: {DAYS}")
+print()
 
 
 # ============================================================
 # API REQUEST
 # ============================================================
 
-def get_klines(
-    start_time_ms: int,
-    end_time_ms: int,
-):
-    """
-    Download one batch of Bitrue Futures candles.
-    """
+def get_klines():
+
+    url = BASE_URL + ENDPOINT
 
     params = {
-        "symbol": SYMBOL,
+        "contractName": CONTRACT_NAME,
         "interval": INTERVAL,
-        "startTime": start_time_ms,
-        "endTime": end_time_ms,
         "limit": LIMIT,
     }
 
-    response = requests.get(
-        BASE_URL + ENDPOINT,
-        params=params,
-        timeout=TIMEOUT,
-    )
+    for attempt in range(1, MAX_RETRIES + 1):
 
-    response.raise_for_status()
+        print(f"Request attempt {attempt}/{MAX_RETRIES}")
 
-    payload = response.json()
+        try:
 
-    # --------------------------------------------------------
-    # Basic response handling
-    # --------------------------------------------------------
-
-    if isinstance(payload, dict):
-
-        if "data" in payload:
-            data = payload["data"]
-
-        elif "result" in payload:
-            data = payload["result"]
-
-        else:
-            raise RuntimeError(
-                f"Unexpected API response: {payload}"
+            response = requests.get(
+                url,
+                params=params,
+                timeout=20,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "Bitrue-BTC-5m-Paper-Downloader/1.0",
+                },
             )
 
-    elif isinstance(payload, list):
+            print(f"HTTP status: {response.status_code}")
 
-        data = payload
+            response.raise_for_status()
 
-    else:
+            data = response.json()
 
-        raise RuntimeError(
-            f"Unexpected API response type: "
-            f"{type(payload)}"
-        )
+            if not isinstance(data, list):
+                raise RuntimeError(
+                    f"Unexpected API response type: {type(data).__name__}"
+                )
 
-    if not data:
-        return []
+            print(f"Received candles: {len(data)}")
 
-    return data
+            return data
+
+        except Exception as exc:
+
+            print(f"ERROR: {exc}")
+
+            if attempt < MAX_RETRIES:
+                print("Retrying in 5 seconds...")
+                time.sleep(5)
+            else:
+                raise
 
 
 # ============================================================
-# CANDLE PARSER
+# PARSE KLINES
 # ============================================================
 
-def parse_candle(candle):
-    """
-    Convert Bitrue candle into standard OHLCV format.
+def parse_klines(data):
 
-    Bitrue API formats may differ between API versions,
-    therefore common list/dict structures are supported.
-    """
+    rows = []
 
-    # --------------------------------------------------------
-    # Dictionary response
-    # --------------------------------------------------------
+    for candle in data:
 
-    if isinstance(candle, dict):
+        if not isinstance(candle, dict):
+            continue
 
-        timestamp = (
-            candle.get("openTime")
-            or candle.get("timestamp")
-            or candle.get("time")
-        )
+        try:
 
-        open_price = candle.get("open")
-        high_price = candle.get("high")
-        low_price = candle.get("low")
-        close_price = candle.get("close")
+            timestamp = candle["idx"]
 
-        volume = (
-            candle.get("volume")
-            or candle.get("vol")
-        )
+            # Bitrue documentation specifies milliseconds,
+            # but accept seconds defensively as well.
+            timestamp = int(timestamp)
 
-        if timestamp is None:
-            raise ValueError(
-                f"Cannot find timestamp: {candle}"
+            if timestamp < 10_000_000_000:
+                timestamp *= 1000
+
+            rows.append(
+                {
+                    "timestamp": pd.to_datetime(
+                        timestamp,
+                        unit="ms",
+                        utc=True,
+                    ),
+                    "open": float(candle["open"]),
+                    "high": float(candle["high"]),
+                    "low": float(candle["low"]),
+                    "close": float(candle["close"]),
+                    "volume": float(candle["vol"]),
+                }
             )
 
-        return {
-            "timestamp": int(timestamp),
-            "open": float(open_price),
-            "high": float(high_price),
-            "low": float(low_price),
-            "close": float(close_price),
-            "volume": float(volume),
-        }
+        except (KeyError, TypeError, ValueError):
+            continue
 
-    # --------------------------------------------------------
-    # List response
-    # --------------------------------------------------------
-
-    if isinstance(candle, list):
-
-        if len(candle) < 6:
-
-            raise ValueError(
-                f"Unexpected candle format: {candle}"
-            )
-
-        return {
-            "timestamp": int(candle[0]),
-            "open": float(candle[1]),
-            "high": float(candle[2]),
-            "low": float(candle[3]),
-            "close": float(candle[4]),
-            "volume": float(candle[5]),
-        }
-
-    raise ValueError(
-        f"Unsupported candle type: "
-        f"{type(candle)}"
-    )
+    return rows
 
 
 # ============================================================
@@ -191,248 +161,73 @@ def parse_candle(candle):
 
 def download_history():
 
-    print("=" * 60)
-    print("BITRUE BTC/USDT 5M DATA DOWNLOADER")
-    print("=" * 60)
+    end_time = datetime.now(timezone.utc)
+    start_time = end_time - timedelta(days=DAYS)
 
-    print()
-
-    print("PUBLIC MARKET DATA ONLY")
-    print("NO API KEY")
-    print("NO ORDERS")
-    print("NO WALLET")
-
-    print()
-
-    end_time = datetime.now(
-        timezone.utc
-    )
-
-    start_time = (
-        end_time
-        - timedelta(days=DAYS)
-    )
-
-    print(
-        f"Start: {start_time}"
-    )
-
-    print(
-        f"End:   {end_time}"
-    )
-
+    print(f"Start: {start_time}")
+    print(f"End:   {end_time}")
     print()
 
     # --------------------------------------------------------
-    # Convert to milliseconds
+    # IMPORTANT:
+    # The public Kline endpoint returns the newest candles.
+    # We first perform a connectivity/data-shape test.
     # --------------------------------------------------------
 
-    cursor = int(
-        start_time.timestamp() * 1000
-    )
+    raw_data = get_klines()
 
-    final_time = int(
-        end_time.timestamp() * 1000
-    )
+    rows = parse_klines(raw_data)
 
-    all_rows = []
+    if not rows:
+        raise RuntimeError("Bitrue returned no valid candles.")
 
-    candle_duration_ms = (
-        5 * 60 * 1000
-    )
+    df = pd.DataFrame(rows)
 
-    request_count = 0
+    df = df.drop_duplicates(subset=["timestamp"])
+
+    df = df.sort_values("timestamp")
 
     # --------------------------------------------------------
-    # DOWNLOAD LOOP
-    # --------------------------------------------------------
-
-    while cursor < final_time:
-
-        # Maximum time represented by 300 candles
-        batch_end = min(
-            cursor
-            + candle_duration_ms * LIMIT,
-            final_time,
-        )
-
-        request_count += 1
-
-        print(
-            f"Request {request_count:4d} | "
-            f"{datetime.fromtimestamp(cursor / 1000, tz=timezone.utc)}"
-        )
-
-        try:
-
-            candles = get_klines(
-                cursor,
-                batch_end,
-            )
-
-        except Exception as exc:
-
-            print()
-            print(
-                "ERROR:"
-            )
-
-            print(exc)
-
-            print()
-
-            print(
-                "Retrying in 5 seconds..."
-            )
-
-            time.sleep(5)
-
-            continue
-
-        if not candles:
-
-            print(
-                "No candles returned."
-            )
-
-            cursor = batch_end
-
-            time.sleep(
-                REQUEST_DELAY
-            )
-
-            continue
-
-        parsed = []
-
-        for candle in candles:
-
-            try:
-
-                parsed.append(
-                    parse_candle(candle)
-                )
-
-            except Exception as exc:
-
-                print(
-                    f"Skipping invalid candle: "
-                    f"{exc}"
-                )
-
-        all_rows.extend(
-            parsed
-        )
-
-        # ----------------------------------------------------
-        # Determine newest timestamp
-        # ----------------------------------------------------
-
-        timestamps = [
-            row["timestamp"]
-            for row in parsed
-        ]
-
-        if timestamps:
-
-            newest_timestamp = max(
-                timestamps
-            )
-
-            next_cursor = (
-                newest_timestamp
-                + candle_duration_ms
-            )
-
-            # Safety against infinite loop
-            if next_cursor <= cursor:
-
-                next_cursor = batch_end
-
-            cursor = next_cursor
-
-        else:
-
-            cursor = batch_end
-
-        print(
-            f"  Candles received: "
-            f"{len(parsed)}"
-        )
-
-        print(
-            f"  Total candles:     "
-            f"{len(all_rows)}"
-        )
-
-        time.sleep(
-            REQUEST_DELAY
-        )
-
-    # ========================================================
-    # DATAFRAME
-    # ========================================================
-
-    if not all_rows:
-
-        raise RuntimeError(
-            "No market data downloaded."
-        )
-
-    df = pd.DataFrame(
-        all_rows
-    )
-
-    # --------------------------------------------------------
-    # Remove duplicates
-    # --------------------------------------------------------
-
-    df = df.drop_duplicates(
-        subset=["timestamp"]
-    )
-
-    # --------------------------------------------------------
-    # Convert timestamp
-    # --------------------------------------------------------
-
-    df["timestamp"] = pd.to_datetime(
-        df["timestamp"],
-        unit="ms",
-        utc=True,
-    )
-
-    # --------------------------------------------------------
-    # Sort
-    # --------------------------------------------------------
-
-    df = df.sort_values(
-        "timestamp"
-    )
-
-    # --------------------------------------------------------
-    # Keep standard columns
+    # Filter requested period
     # --------------------------------------------------------
 
     df = df[
-        [
-            "timestamp",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-        ]
-    ]
-
-    # --------------------------------------------------------
-    # Validate
-    # --------------------------------------------------------
+        (df["timestamp"] >= pd.Timestamp(start_time))
+        & (df["timestamp"] <= pd.Timestamp(end_time))
+    ].copy()
 
     if df.empty:
-
         raise RuntimeError(
-            "Downloaded DataFrame is empty."
+            "Bitrue returned candles, but none are inside the requested period."
         )
+
+    # --------------------------------------------------------
+    # Validate OHLCV
+    # --------------------------------------------------------
+
+    numeric_columns = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    ]
+
+    for column in numeric_columns:
+
+        if df[column].isna().any():
+            raise RuntimeError(
+                f"Invalid NaN values found in column: {column}"
+            )
+
+    if (df["high"] < df["low"]).any():
+        raise RuntimeError("Invalid candle data: high < low.")
+
+    if (df["open"] <= 0).any():
+        raise RuntimeError("Invalid candle data: open <= 0.")
+
+    if (df["close"] <= 0).any():
+        raise RuntimeError("Invalid candle data: close <= 0.")
 
     # --------------------------------------------------------
     # Save
@@ -443,70 +238,20 @@ def download_history():
         index=False,
     )
 
-    # ========================================================
-    # REPORT
-    # ========================================================
-
     print()
     print("=" * 60)
-    print("DOWNLOAD COMPLETE")
+    print("DOWNLOAD SUCCESS")
     print("=" * 60)
-
     print()
-
-    print(
-        f"File:        {OUTPUT_FILE}"
-    )
-
-    print(
-        f"Candles:     {len(df):,}"
-    )
-
-    print(
-        f"First:       {df['timestamp'].iloc[0]}"
-    )
-
-    print(
-        f"Last:        {df['timestamp'].iloc[-1]}"
-    )
-
+    print(f"Rows:       {len(df)}")
+    print(f"First:      {df['timestamp'].iloc[0]}")
+    print(f"Last:       {df['timestamp'].iloc[-1]}")
+    print(f"Output:     {OUTPUT_FILE}")
     print()
-
-    print(
-        f"BTC first:   "
-        f"${df['open'].iloc[0]:,.2f}"
-    )
-
-    print(
-        f"BTC last:    "
-        f"${df['close'].iloc[-1]:,.2f}"
-    )
-
+    print(df.head())
     print()
-
-    print(
-        "DATA ONLY"
-    )
-
-    print(
-        "NO REAL TRADING"
-    )
-
-    print(
-        "NO API KEY"
-    )
-
-    print(
-        "NO ORDERS"
-    )
-
-    print(
-        "NO WALLET"
-    )
-
+    print(df.tail())
     print()
-
-    print("=" * 60)
 
 
 # ============================================================
