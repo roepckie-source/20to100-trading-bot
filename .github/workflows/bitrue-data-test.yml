@@ -1,1 +1,48 @@
+name: Bitrue Data Test
 
+on:
+  workflow_dispatch:
+
+jobs:
+  download-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas
+
+      - name: Download 1 day of BTC/USDT 5m data
+        env:
+          BITRUE_DAYS: "1"
+        run: |
+          python bitrue/download_data.py
+
+      - name: Show downloaded file
+        run: |
+          ls -lh BTCUSDT_5m.csv
+          echo "Number of lines:"
+          wc -l BTCUSDT_5m.csv
+
+      - name: Show first rows
+        run: |
+          head -5 BTCUSDT_5m.csv
+
+      - name: Show last rows
+        run: |
+          tail -5 BTCUSDT_5m.csv
+
+      - name: Upload test data
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-btcusdt-5m-test
+          path: BTCUSDT_5m.csv
