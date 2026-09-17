@@ -1,1 +1,26 @@
+name: Bitrue WebSocket Diagnostic
 
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install websocket client
+        run: |
+          python -m pip install --upgrade pip
+          pip install websocket-client
+
+      - name: Run Bitrue WebSocket diagnostic
+        run: |
+          python bitrue/test_ws_diagnostic.py
