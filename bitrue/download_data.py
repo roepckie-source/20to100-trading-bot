@@ -27,7 +27,10 @@ CONTRACT_NAME = "E-BTC-USDT"
 INTERVAL = "5min"
 
 LIMIT = 300
-DAYS = int(os.getenv("BITRUE_DAYS", "1"))
+
+# Can be overridden by GitHub Actions:
+# BITRUE_DAYS=1
+DAYS = int(os.getenv("BITRUE_DAYS", "365"))
 
 OUTPUT_FILE = "BTCUSDT_5m.csv"
 
@@ -47,6 +50,7 @@ print("PUBLIC MARKET DATA ONLY")
 print("NO API KEY")
 print("NO ORDERS")
 print("NO WALLET")
+print("NO LIVE TRADING")
 print()
 print(f"Contract: {CONTRACT_NAME}")
 print(f"Interval: {INTERVAL}")
@@ -58,13 +62,18 @@ print()
 # API REQUEST
 # ============================================================
 
-def get_klines():
+def get_klines(start_time_ms, end_time_ms):
+    """
+    Download one historical block of candles.
+    """
 
     url = BASE_URL + ENDPOINT
 
     params = {
         "contractName": CONTRACT_NAME,
         "interval": INTERVAL,
+        "startTime": start_time_ms,
+        "endTime": end_time_ms,
         "limit": LIMIT,
     }
 
@@ -92,10 +101,9 @@ def get_klines():
 
             if not isinstance(data, list):
                 raise RuntimeError(
-                    f"Unexpected API response type: {type(data).__name__}"
+                    f"Unexpected API response type: "
+                    f"{type(data).__name__}"
                 )
-
-            print(f"Received candles: {len(data)}")
 
             return data
 
@@ -111,10 +119,13 @@ def get_klines():
 
 
 # ============================================================
-# PARSE KLINES
+# PARSE
 # ============================================================
 
 def parse_klines(data):
+    """
+    Convert Bitrue candle objects into normalized rows.
+    """
 
     rows = []
 
@@ -125,12 +136,10 @@ def parse_klines(data):
 
         try:
 
-            timestamp = candle["idx"]
+            timestamp = int(candle["idx"])
 
-            # Bitrue documentation specifies milliseconds,
-            # but accept seconds defensively as well.
-            timestamp = int(timestamp)
-
+            # Defensive handling:
+            # seconds -> milliseconds
             if timestamp < 10_000_000_000:
                 timestamp *= 1000
 
@@ -156,7 +165,7 @@ def parse_klines(data):
 
 
 # ============================================================
-# DOWNLOAD
+# DOWNLOAD HISTORY
 # ============================================================
 
 def download_history():
@@ -168,29 +177,97 @@ def download_history():
     print(f"End:   {end_time}")
     print()
 
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # The public Kline endpoint returns the newest candles.
-    # We first perform a connectivity/data-shape test.
-    # --------------------------------------------------------
-
-    raw_data = get_klines()
-
-    rows = parse_klines(raw_data)
-
-    if not rows:
-        raise RuntimeError("Bitrue returned no valid candles.")
-
-    df = pd.DataFrame(rows)
-
-    df = df.drop_duplicates(subset=["timestamp"])
-
-    df = df.sort_values("timestamp")
+    all_rows = []
 
     # --------------------------------------------------------
-    # Filter requested period
+    # Bitrue returns up to 300 candles.
+    #
+    # 300 x 5 minutes = 1500 minutes
+    #                = 25 hours
+    #
+    # We therefore move through the requested period
+    # block by block.
     # --------------------------------------------------------
 
+    block_duration = timedelta(
+        minutes=5 * LIMIT
+    )
+
+    current_start = start_time
+
+    request_number = 0
+
+    while current_start < end_time:
+
+        current_end = min(
+            current_start + block_duration,
+            end_time,
+        )
+
+        start_ms = int(
+            current_start.timestamp() * 1000
+        )
+
+        end_ms = int(
+            current_end.timestamp() * 1000
+        )
+
+        request_number += 1
+
+        print("=" * 60)
+        print(f"REQUEST {request_number}")
+        print(f"Start: {current_start}")
+        print(f"End:   {current_end}")
+        print("=" * 60)
+
+        data = get_klines(
+            start_ms,
+            end_ms,
+        )
+
+        rows = parse_klines(data)
+
+        print(f"Received raw candles: {len(data)}")
+        print(f"Valid candles:        {len(rows)}")
+
+        if rows:
+            all_rows.extend(rows)
+
+        # ----------------------------------------------------
+        # Move forward.
+        #
+        # Do NOT rely only on returned candle count because
+        # exchanges can occasionally return fewer candles.
+        # ----------------------------------------------------
+
+        current_start = current_end
+
+        time.sleep(REQUEST_DELAY)
+
+    # ========================================================
+    # DATAFRAME
+    # ========================================================
+
+    if not all_rows:
+        raise RuntimeError(
+            "No valid Bitrue candles were downloaded."
+        )
+
+    df = pd.DataFrame(all_rows)
+
+    # ========================================================
+    # CLEANUP
+    # ========================================================
+
+    df = df.drop_duplicates(
+        subset=["timestamp"]
+    )
+
+    df = df.sort_values(
+        "timestamp"
+    ).reset_index(drop=True)
+
+    # Exact requested time range
     df = df[
         (df["timestamp"] >= pd.Timestamp(start_time))
         & (df["timestamp"] <= pd.Timestamp(end_time))
@@ -198,12 +275,12 @@ def download_history():
 
     if df.empty:
         raise RuntimeError(
-            "Bitrue returned candles, but none are inside the requested period."
+            "No candles remain after time filtering."
         )
 
-    # --------------------------------------------------------
-    # Validate OHLCV
-    # --------------------------------------------------------
+    # ========================================================
+    # VALIDATION
+    # ========================================================
 
     numeric_columns = [
         "open",
@@ -217,40 +294,122 @@ def download_history():
 
         if df[column].isna().any():
             raise RuntimeError(
-                f"Invalid NaN values found in column: {column}"
+                f"NaN values found in column: {column}"
             )
 
-    if (df["high"] < df["low"]).any():
-        raise RuntimeError("Invalid candle data: high < low.")
-
     if (df["open"] <= 0).any():
-        raise RuntimeError("Invalid candle data: open <= 0.")
+        raise RuntimeError(
+            "Invalid data: open <= 0."
+        )
+
+    if (df["high"] <= 0).any():
+        raise RuntimeError(
+            "Invalid data: high <= 0."
+        )
+
+    if (df["low"] <= 0).any():
+        raise RuntimeError(
+            "Invalid data: low <= 0."
+        )
 
     if (df["close"] <= 0).any():
-        raise RuntimeError("Invalid candle data: close <= 0.")
+        raise RuntimeError(
+            "Invalid data: close <= 0."
+        )
 
-    # --------------------------------------------------------
-    # Save
-    # --------------------------------------------------------
+    if (df["high"] < df["low"]).any():
+        raise RuntimeError(
+            "Invalid data: high < low."
+        )
+
+    if (df["volume"] < 0).any():
+        raise RuntimeError(
+            "Invalid data: negative volume."
+        )
+
+    # ========================================================
+    # CHECK TIMESTAMP GAPS
+    # ========================================================
+
+    df["time_diff"] = (
+        df["timestamp"].diff()
+    )
+
+    expected_interval = pd.Timedelta(
+        minutes=5
+    )
+
+    gaps = df[
+        df["time_diff"] > expected_interval
+    ]
+
+    print()
+    print("=" * 60)
+    print("DATA QUALITY")
+    print("=" * 60)
+    print()
+
+    print(f"Total candles: {len(df)}")
+    print(f"Expected approximately: {DAYS * 24 * 12}")
+    print(f"Timestamp gaps: {len(gaps)}")
+
+    if len(gaps) > 0:
+
+        print()
+        print("WARNING: Timestamp gaps detected.")
+
+        print(
+            gaps[
+                [
+                    "timestamp",
+                    "time_diff",
+                ]
+            ].head(10)
+        )
+
+    # Remove helper column before saving
+    df = df.drop(
+        columns=["time_diff"]
+    )
+
+    # ========================================================
+    # SAVE
+    # ========================================================
 
     df.to_csv(
         OUTPUT_FILE,
         index=False,
     )
 
+    # ========================================================
+    # FINAL REPORT
+    # ========================================================
+
     print()
     print("=" * 60)
     print("DOWNLOAD SUCCESS")
     print("=" * 60)
     print()
-    print(f"Rows:       {len(df)}")
-    print(f"First:      {df['timestamp'].iloc[0]}")
-    print(f"Last:       {df['timestamp'].iloc[-1]}")
-    print(f"Output:     {OUTPUT_FILE}")
+
+    print(f"Rows:   {len(df)}")
+    print(
+        f"First:  {df['timestamp'].iloc[0]}"
+    )
+    print(
+        f"Last:   {df['timestamp'].iloc[-1]}"
+    )
+    print(
+        f"File:   {OUTPUT_FILE}"
+    )
+
     print()
+    print("FIRST 5 ROWS")
     print(df.head())
+
     print()
+    print("LAST 5 ROWS")
     print(df.tail())
+
     print()
 
 
