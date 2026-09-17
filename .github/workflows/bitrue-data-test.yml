@@ -23,7 +23,7 @@ jobs:
 
       - name: Download 1 day of BTC/USDT 5m data
         env:
-          BITRUE_DAYS: "1"
+          BITRUE_DAYS: "365"
         run: |
           python bitrue/download_data.py
 
