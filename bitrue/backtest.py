@@ -31,11 +31,11 @@ from config import (
     TAKER_FEE,
     SLIPPAGE,
     MAX_DAILY_LOSS,
+    STOP_LOSS_PCT,
+    TAKE_PROFIT_PCT,
 )
 
-from strategy_v1 import (
-    evaluate,
-)
+from strategy_v1 import evaluate
 
 
 # ============================================================
@@ -78,7 +78,6 @@ class Backtester:
     ):
 
         self.starting_capital = starting_capital
-
         self.balance = starting_capital
 
         self.equity_curve = []
@@ -88,13 +87,10 @@ class Backtester:
         self.open_trade = None
 
         self.daily_start_balance = starting_capital
-
         self.current_day = None
 
         self.max_equity = starting_capital
-
         self.max_drawdown = 0.0
-
 
     # ========================================================
     # DAILY LOSS CHECK
@@ -110,9 +106,7 @@ class Backtester:
         if self.current_day != day:
 
             self.current_day = day
-
             self.daily_start_balance = self.balance
-
 
     def daily_loss_limit_reached(self) -> bool:
 
@@ -130,7 +124,6 @@ class Backtester:
         )
 
         return daily_loss_pct >= MAX_DAILY_LOSS
-
 
     # ========================================================
     # ENTRY SLIPPAGE
@@ -152,7 +145,6 @@ class Backtester:
             1 - SLIPPAGE
         )
 
-
     # ========================================================
     # EXIT SLIPPAGE
     # ========================================================
@@ -172,7 +164,6 @@ class Backtester:
         return price * (
             1 + SLIPPAGE
         )
-
 
     # ========================================================
     # OPEN TRADE
@@ -205,7 +196,6 @@ class Backtester:
             "position_size": position_size,
         }
 
-
     # ========================================================
     # EXIT CHECK
     # ========================================================
@@ -228,8 +218,6 @@ class Backtester:
         high = float(row["high"])
         low = float(row["low"])
 
-        position_size = trade["position_size"]
-
         # ----------------------------------------------------
         # LONG
         # ----------------------------------------------------
@@ -238,12 +226,12 @@ class Backtester:
 
             stop_price = (
                 entry_price
-                * (1 - 0.003)
+                * (1 - STOP_LOSS_PCT / 100)
             )
 
             target_price = (
                 entry_price
-                * (1 + 0.006)
+                * (1 + TAKE_PROFIT_PCT / 100)
             )
 
             stop_hit = low <= stop_price
@@ -252,7 +240,7 @@ class Backtester:
             if stop_hit and target_hit:
 
                 # Conservative assumption:
-                # stop is hit first
+                # stop is hit first.
                 exit_price = stop_price
                 reason = "STOP_LOSS"
 
@@ -278,12 +266,12 @@ class Backtester:
 
             stop_price = (
                 entry_price
-                * (1 + 0.003)
+                * (1 + STOP_LOSS_PCT / 100)
             )
 
             target_price = (
                 entry_price
-                * (1 - 0.006)
+                * (1 - TAKE_PROFIT_PCT / 100)
             )
 
             stop_hit = high >= stop_price
@@ -292,7 +280,7 @@ class Backtester:
             if stop_hit and target_hit:
 
                 # Conservative assumption:
-                # stop is hit first
+                # stop is hit first.
                 exit_price = stop_price
                 reason = "STOP_LOSS"
 
@@ -315,7 +303,6 @@ class Backtester:
             exit_price,
             reason,
         )
-
 
     # ========================================================
     # CLOSE TRADE
@@ -455,7 +442,6 @@ class Backtester:
 
         self.open_trade = None
 
-
     # ========================================================
     # EQUITY
     # ========================================================
@@ -476,18 +462,19 @@ class Backtester:
 
             self.max_equity = self.balance
 
-        drawdown = (
-            self.max_equity
-            - self.balance
-        ) / self.max_equity
+        if self.max_equity > 0:
 
-        if drawdown > self.max_drawdown:
+            drawdown = (
+                self.max_equity
+                - self.balance
+            ) / self.max_equity
 
-            self.max_drawdown = drawdown
+            if drawdown > self.max_drawdown:
 
+                self.max_drawdown = drawdown
 
     # ========================================================
-    # RUN
+    # RUN BACKTEST
     # ========================================================
 
     def run(
@@ -524,7 +511,7 @@ class Backtester:
         data = df.copy()
 
         # ----------------------------------------------------
-        # Ensure datetime index
+        # DATETIME INDEX
         # ----------------------------------------------------
 
         if not isinstance(
@@ -553,7 +540,7 @@ class Backtester:
         data = data.sort_index()
 
         # ----------------------------------------------------
-        # Main loop
+        # MAIN LOOP
         # ----------------------------------------------------
 
         for timestamp, row in data.iterrows():
@@ -563,7 +550,7 @@ class Backtester:
             )
 
             # ------------------------------------------------
-            # First manage existing position
+            # MANAGE EXISTING POSITION FIRST
             # ------------------------------------------------
 
             if self.open_trade is not None:
@@ -574,7 +561,7 @@ class Backtester:
                 )
 
             # ------------------------------------------------
-            # New entry
+            # NEW ENTRY
             # ------------------------------------------------
 
             if (
@@ -600,7 +587,7 @@ class Backtester:
                     )
 
             # ------------------------------------------------
-            # Equity
+            # EQUITY
             # ------------------------------------------------
 
             self.update_equity(
@@ -608,7 +595,7 @@ class Backtester:
             )
 
         # ----------------------------------------------------
-        # Close remaining position
+        # CLOSE REMAINING POSITION
         # ----------------------------------------------------
 
         if self.open_trade is not None:
@@ -675,6 +662,7 @@ def calculate_statistics(
             "profit_factor": 0.0,
             "max_drawdown": max_drawdown,
             "total_fees": 0.0,
+            "total_slippage": 0.0,
         }
 
     wins = trades[
@@ -733,6 +721,7 @@ def calculate_statistics(
         "profit_factor": profit_factor,
         "max_drawdown": max_drawdown,
         "total_fees": trades["fees"].sum(),
+        "total_slippage": trades["slippage_cost"].sum(),
     }
 
 
@@ -747,7 +736,7 @@ def load_csv(
     df = pd.read_csv(filename)
 
     # --------------------------------------------------------
-    # Normalize column names
+    # NORMALIZE COLUMN NAMES
     # --------------------------------------------------------
 
     df.columns = [
@@ -756,7 +745,7 @@ def load_csv(
     ]
 
     # --------------------------------------------------------
-    # Common timestamp names
+    # TIMESTAMP
     # --------------------------------------------------------
 
     timestamp_candidates = [
@@ -792,7 +781,7 @@ def load_csv(
     )
 
     # --------------------------------------------------------
-    # Numeric columns
+    # NUMERIC DATA
     # --------------------------------------------------------
 
     for column in [
@@ -909,7 +898,7 @@ def print_report(
     print()
 
     print("-" * 60)
-    print("RISK")
+    print("RISK / COSTS")
     print("-" * 60)
 
     print(
@@ -920,6 +909,11 @@ def print_report(
     print(
         f"Total Fees:           "
         f"${statistics['total_fees']:.4f}"
+    )
+
+    print(
+        f"Total Slippage:       "
+        f"${statistics['total_slippage']:.4f}"
     )
 
     print()
@@ -949,7 +943,34 @@ if __name__ == "__main__":
     print("NO LIVE TRADING")
     print("NO ORDERS")
     print("NO API KEYS")
+
     print()
+
+    print(
+        f"Stop Loss:            "
+        f"{STOP_LOSS_PCT:.2f}%"
+    )
+
+    print(
+        f"Take Profit:          "
+        f"{TAKE_PROFIT_PCT:.2f}%"
+    )
+
+    print(
+        f"Taker Fee:            "
+        f"{TAKER_FEE * 100:.4f}%"
+    )
+
+    print(
+        f"Slippage:             "
+        f"{SLIPPAGE * 100:.4f}%"
+    )
+
+    print()
+
+    # --------------------------------------------------------
+    # INPUT CHECK
+    # --------------------------------------------------------
 
     if len(sys.argv) < 2:
 
@@ -980,6 +1001,10 @@ if __name__ == "__main__":
 
     print()
 
+    # --------------------------------------------------------
+    # LOAD DATA
+    # --------------------------------------------------------
+
     df = load_csv(
         filename
     )
@@ -998,6 +1023,10 @@ if __name__ == "__main__":
 
     print()
 
+    # --------------------------------------------------------
+    # RUN
+    # --------------------------------------------------------
+
     backtester = Backtester(
         STARTING_CAPITAL
     )
@@ -1005,6 +1034,10 @@ if __name__ == "__main__":
     trades = backtester.run(
         df
     )
+
+    # --------------------------------------------------------
+    # STATISTICS
+    # --------------------------------------------------------
 
     statistics = calculate_statistics(
         trades=trades,
@@ -1019,12 +1052,16 @@ if __name__ == "__main__":
         ),
     )
 
+    # --------------------------------------------------------
+    # REPORT
+    # --------------------------------------------------------
+
     print_report(
         statistics
     )
 
     # --------------------------------------------------------
-    # Save trade log
+    # TRADE LOG
     # --------------------------------------------------------
 
     if not trades.empty:
