@@ -9,17 +9,17 @@ jobs:
 
     steps:
 
-      # ============================================================
-      # 1. REPOSITORY
-      # ============================================================
+      # =========================================================
+      # CHECKOUT
+      # =========================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # ============================================================
-      # 2. PYTHON
-      # ============================================================
+      # =========================================================
+      # PYTHON
+      # =========================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -27,9 +27,9 @@ jobs:
           python-version: "3.12"
 
 
-      # ============================================================
-      # 3. DEPENDENCIES
-      # ============================================================
+      # =========================================================
+      # DEPENDENCIES
+      # =========================================================
 
       - name: Install dependencies
         run: |
@@ -37,9 +37,9 @@ jobs:
           pip install pandas requests
 
 
-      # ============================================================
-      # 4. DOWNLOAD 365 DAYS BTCUSDT 5m
-      # ============================================================
+      # =========================================================
+      # DOWNLOAD HISTORICAL DATA
+      # =========================================================
 
       - name: Download 365 days BTCUSDT 5m
         env:
@@ -48,13 +48,14 @@ jobs:
           echo "======================================"
           echo "DOWNLOAD BTCUSDT 5m"
           echo "======================================"
+          echo
 
           python bitrue/download_binance_data.py
 
 
-      # ============================================================
-      # 5. CHECK DATASET
-      # ============================================================
+      # =========================================================
+      # DATASET CHECK
+      # =========================================================
 
       - name: Show dataset
         run: |
@@ -62,6 +63,7 @@ jobs:
           echo "======================================"
           echo "DATASET"
           echo "======================================"
+          echo
 
           ls -lh BTCUSDT_5m.csv
 
@@ -87,9 +89,9 @@ jobs:
           tail -5 BTCUSDT_5m.csv
 
 
-      # ============================================================
-      # 6. RUN BITRUE STRATEGY V1 BACKTEST
-      # ============================================================
+      # =========================================================
+      # V1 BACKTEST
+      # =========================================================
 
       - name: Run Bitrue Strategy V1 Backtest
         run: |
@@ -97,8 +99,8 @@ jobs:
           echo "======================================"
           echo "BITRUE STRATEGY V1 BACKTEST"
           echo "======================================"
-
           echo
+
           echo "Startkapital:       100 USD"
           echo "Risk pro Trade:     1%"
           echo "Max Position:       25 USD"
@@ -106,15 +108,36 @@ jobs:
           echo "Stop Loss:          0.30%"
           echo "Bitrue Fee:         0.06%"
           echo "Slippage:           0.02%"
+
           echo
           echo "======================================"
 
           python bitrue/backtest.py BTCUSDT_5m.csv
 
 
-      # ============================================================
-      # 7. CHECK BACKTEST RESULT
-      # ============================================================
+      # =========================================================
+      # V1 DIAGNOSE
+      # =========================================================
+
+      - name: Analyze Bitrue V1
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE V1 DIAGNOSE"
+          echo "============================================================"
+          echo
+
+          if [ ! -f bitrue_v1_trade_log.csv ]; then
+            echo "ERROR: bitrue_v1_trade_log.csv wurde nicht erzeugt."
+            exit 1
+          fi
+
+          python bitrue/analyze_v1.py bitrue_v1_trade_log.csv
+
+
+      # =========================================================
+      # SHOW BACKTEST RESULTS
+      # =========================================================
 
       - name: Show backtest results
         run: |
@@ -153,9 +176,9 @@ jobs:
           tail -n +2 bitrue_v1_trade_log.csv | wc -l
 
 
-      # ============================================================
-      # 8. UPLOAD HISTORICAL DATA
-      # ============================================================
+      # =========================================================
+      # UPLOAD HISTORICAL DATA
+      # =========================================================
 
       - name: Upload historical dataset
         uses: actions/upload-artifact@v4
@@ -165,9 +188,9 @@ jobs:
           if-no-files-found: error
 
 
-      # ============================================================
-      # 9. UPLOAD BACKTEST RESULT
-      # ============================================================
+      # =========================================================
+      # UPLOAD V1 TRADE LOG
+      # =========================================================
 
       - name: Upload Bitrue V1 backtest results
         uses: actions/upload-artifact@v4
@@ -177,32 +200,74 @@ jobs:
           if-no-files-found: error
 
 
-      # ============================================================
-      # 10. FINAL SUMMARY
-      # ============================================================
+      # =========================================================
+      # UPLOAD V1 DIAGNOSIS
+      # =========================================================
+
+      - name: Save V1 diagnosis
+        run: |
+          python bitrue/analyze_v1.py bitrue_v1_trade_log.csv > bitrue_v1_diagnosis.txt
+
+          echo
+          echo "======================================"
+          echo "V1 DIAGNOSIS SAVED"
+          echo "======================================"
+
+          ls -lh bitrue_v1_diagnosis.txt
+
+      - name: Upload V1 diagnosis
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-v1-diagnosis
+          path: bitrue_v1_diagnosis.txt
+          if-no-files-found: error
+
+
+      # =========================================================
+      # FINAL SUMMARY
+      # =========================================================
 
       - name: Final summary
         run: |
           echo
           echo "============================================================"
-          echo "BITRUE V1 BACKTEST ABGESCHLOSSEN"
+          echo "BITRUE V1 BACKTEST + DIAGNOSE ABGESCHLOSSEN"
           echo "============================================================"
           echo
+
           echo "Historische Daten:"
           echo "  BTCUSDT"
           echo "  5 Minuten"
           echo "  365 Tage"
+
           echo
           echo "Strategie:"
           echo "  Bitrue Strategy V1"
+
           echo
-          echo "Backtest:"
+          echo "Analyse:"
+          echo "  Long / Short"
+          echo "  Take Profit / Stop Loss"
+          echo "  Monatliche Ergebnisse"
+          echo "  Einstiegsstunden"
+          echo "  Haltedauer"
+          echo "  Verlustserien"
+          echo "  Gebühren"
+          echo "  Slippage"
+          echo "  Brutto / Netto P&L"
+
+          echo
+          echo "Sicherheit:"
           echo "  PAPER ONLY"
           echo "  KEIN API KEY"
           echo "  KEIN LIVE TRADING"
-          echo "  KEINE ORDERS"
+          echo "  KEINE REALEN ORDERS"
+
           echo
-          echo "Ergebnisse wurden als GitHub Actions"
-          echo "Artifacts gespeichert."
+          echo "Artifacts:"
+          echo "  BTCUSDT-5m-365d"
+          echo "  bitrue-v1-backtest-results"
+          echo "  bitrue-v1-diagnosis"
+
           echo
           echo "============================================================"
