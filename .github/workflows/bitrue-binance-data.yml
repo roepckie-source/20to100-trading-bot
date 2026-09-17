@@ -4,57 +4,205 @@ on:
   workflow_dispatch:
 
 jobs:
-  download:
+  download-and-backtest:
     runs-on: ubuntu-latest
 
     steps:
+
+      # ============================================================
+      # 1. REPOSITORY
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
+
+      # ============================================================
+      # 2. PYTHON
+      # ============================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+
+      # ============================================================
+      # 3. DEPENDENCIES
+      # ============================================================
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas requests
 
+
+      # ============================================================
+      # 4. DOWNLOAD 365 DAYS BTCUSDT 5m
+      # ============================================================
+
       - name: Download 365 days BTCUSDT 5m
         env:
           BITRUE_DAYS: "365"
         run: |
+          echo "======================================"
+          echo "DOWNLOAD BTCUSDT 5m"
+          echo "======================================"
+
           python bitrue/download_binance_data.py
+
+
+      # ============================================================
+      # 5. CHECK DATASET
+      # ============================================================
 
       - name: Show dataset
         run: |
+          echo
           echo "======================================"
-          echo "FILE"
+          echo "DATASET"
           echo "======================================"
+
           ls -lh BTCUSDT_5m.csv
 
           echo
           echo "======================================"
           echo "LINES"
           echo "======================================"
+
           wc -l BTCUSDT_5m.csv
 
           echo
           echo "======================================"
-          echo "FIRST ROWS"
+          echo "FIRST 5 ROWS"
           echo "======================================"
+
           head -5 BTCUSDT_5m.csv
 
           echo
           echo "======================================"
-          echo "LAST ROWS"
+          echo "LAST 5 ROWS"
           echo "======================================"
+
           tail -5 BTCUSDT_5m.csv
 
-      - name: Upload dataset
+
+      # ============================================================
+      # 6. RUN BITRUE STRATEGY V1 BACKTEST
+      # ============================================================
+
+      - name: Run Bitrue Strategy V1 Backtest
+        run: |
+          echo
+          echo "======================================"
+          echo "BITRUE STRATEGY V1 BACKTEST"
+          echo "======================================"
+
+          echo
+          echo "Startkapital:       100 USD"
+          echo "Risk pro Trade:     1%"
+          echo "Max Position:       25 USD"
+          echo "Take Profit:        0.60%"
+          echo "Stop Loss:          0.30%"
+          echo "Bitrue Fee:         0.06%"
+          echo "Slippage:           0.02%"
+          echo
+          echo "======================================"
+
+          python bitrue/backtest.py BTCUSDT_5m.csv
+
+
+      # ============================================================
+      # 7. CHECK BACKTEST RESULT
+      # ============================================================
+
+      - name: Show backtest results
+        run: |
+          echo
+          echo "======================================"
+          echo "BACKTEST RESULT"
+          echo "======================================"
+
+          if [ ! -f bitrue_v1_trade_log.csv ]; then
+            echo "ERROR: bitrue_v1_trade_log.csv wurde nicht erzeugt."
+            exit 1
+          fi
+
+          ls -lh bitrue_v1_trade_log.csv
+
+          echo
+          echo "======================================"
+          echo "TRADE LOG - FIRST 10"
+          echo "======================================"
+
+          head -11 bitrue_v1_trade_log.csv
+
+          echo
+          echo "======================================"
+          echo "TRADE LOG - LAST 10"
+          echo "======================================"
+
+          tail -10 bitrue_v1_trade_log.csv
+
+          echo
+          echo "======================================"
+          echo "NUMBER OF TRADES"
+          echo "======================================"
+
+          echo "Trades:"
+          tail -n +2 bitrue_v1_trade_log.csv | wc -l
+
+
+      # ============================================================
+      # 8. UPLOAD HISTORICAL DATA
+      # ============================================================
+
+      - name: Upload historical dataset
         uses: actions/upload-artifact@v4
         with:
           name: BTCUSDT-5m-365d
           path: BTCUSDT_5m.csv
           if-no-files-found: error
+
+
+      # ============================================================
+      # 9. UPLOAD BACKTEST RESULT
+      # ============================================================
+
+      - name: Upload Bitrue V1 backtest results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-v1-backtest-results
+          path: bitrue_v1_trade_log.csv
+          if-no-files-found: error
+
+
+      # ============================================================
+      # 10. FINAL SUMMARY
+      # ============================================================
+
+      - name: Final summary
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE V1 BACKTEST ABGESCHLOSSEN"
+          echo "============================================================"
+          echo
+          echo "Historische Daten:"
+          echo "  BTCUSDT"
+          echo "  5 Minuten"
+          echo "  365 Tage"
+          echo
+          echo "Strategie:"
+          echo "  Bitrue Strategy V1"
+          echo
+          echo "Backtest:"
+          echo "  PAPER ONLY"
+          echo "  KEIN API KEY"
+          echo "  KEIN LIVE TRADING"
+          echo "  KEINE ORDERS"
+          echo
+          echo "Ergebnisse wurden als GitHub Actions"
+          echo "Artifacts gespeichert."
+          echo
+          echo "============================================================"
