@@ -21,7 +21,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests pandas
 
-      - name: Download 1 day of BTC/USDT 5m data
+      - name: Download 365 days of BTC/USDT 5m data
         env:
           BITRUE_DAYS: "365"
         run: |
@@ -35,14 +35,22 @@ jobs:
 
       - name: Show first rows
         run: |
+          echo "===== FIRST 5 ROWS ====="
           head -5 BTCUSDT_5m.csv
 
       - name: Show last rows
         run: |
+          echo "===== LAST 5 ROWS ====="
           tail -5 BTCUSDT_5m.csv
 
-      - name: Upload test data
+      - name: Check CSV structure
+        run: |
+          echo "===== CSV HEADER ====="
+          head -1 BTCUSDT_5m.csv
+
+      - name: Upload 365 day dataset
         uses: actions/upload-artifact@v4
         with:
-          name: bitrue-btcusdt-5m-test
+          name: bitrue-btcusdt-5m-365d
           path: BTCUSDT_5m.csv
+          if-no-files-found: error
