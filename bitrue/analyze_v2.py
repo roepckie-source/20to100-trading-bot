@@ -5,20 +5,6 @@ PAPER / BACKTEST ONLY
 NO LIVE TRADING
 NO API KEYS
 NO REAL ORDERS
-
-Analysiert:
-- Long / Short
-- Take Profit / Stop Loss
-- Monate
-- Einstiegssunden
-- Haltedauer
-- Momentum
-- ATR
-- Volume Ratio
-- EMA Spread
-- Verlustserien
-- Gebühren
-- Slippage
 """
 
 import sys
@@ -43,15 +29,45 @@ else:
 
 if not FILE.exists():
     print("=" * 70)
-    print("FEHLER")
+    print("FEHLER: V2 Trade-Log nicht gefunden")
     print("=" * 70)
-    print()
-    print(f"Trade-Log nicht gefunden:")
-    print(f"  {FILE}")
-    print()
+    print(f"Datei: {FILE}")
     sys.exit(1)
 
+
 df = pd.read_csv(FILE)
+
+
+# ============================================================
+# VALIDIERUNG
+# ============================================================
+
+required = [
+    "entry_time",
+    "exit_time",
+    "side",
+    "gross_pnl",
+    "fees",
+    "slippage_cost",
+    "net_pnl",
+    "duration_min",
+    "momentum_pct",
+    "atr_pct",
+    "volume_ratio",
+    "ema_spread_pct",
+    "exit_reason",
+]
+
+missing = [
+    column
+    for column in required
+    if column not in df.columns
+]
+
+if missing:
+    print("FEHLER: Fehlende Spalten:")
+    print(missing)
+    sys.exit(1)
 
 
 # ============================================================
@@ -75,13 +91,15 @@ df["exit_time"] = pd.to_datetime(
 # BERECHNUNGEN
 # ============================================================
 
-df["duration_min"] = (
-    df["exit_time"] - df["entry_time"]
-).dt.total_seconds() / 60.0
+df["month"] = (
+    df["entry_time"]
+    .dt.strftime("%Y-%m")
+)
 
-df["month"] = df["entry_time"].dt.strftime("%Y-%m")
-
-df["hour"] = df["entry_time"].dt.hour
+df["hour"] = (
+    df["entry_time"]
+    .dt.hour
+)
 
 
 # ============================================================
@@ -93,16 +111,17 @@ def summary(group: pd.DataFrame) -> dict:
     trades = len(group)
 
     if trades == 0:
+
         return {
             "trades": 0,
             "wins": 0,
             "losses": 0,
-            "win_rate_pct": 0.0,
-            "gross_pnl": 0.0,
+            "win_rate": 0.0,
+            "gross": 0.0,
             "fees": 0.0,
             "slippage": 0.0,
-            "net_pnl": 0.0,
-            "avg_net_trade": 0.0,
+            "net": 0.0,
+            "avg": 0.0,
         }
 
     wins = int(
@@ -117,19 +136,83 @@ def summary(group: pd.DataFrame) -> dict:
         "trades": trades,
         "wins": wins,
         "losses": losses,
-        "win_rate_pct":
-            wins / trades * 100.0,
-        "gross_pnl":
-            group["gross_pnl"].sum(),
-        "fees":
-            group["fees"].sum(),
-        "slippage":
-            group["slippage_cost"].sum(),
-        "net_pnl":
-            group["net_pnl"].sum(),
-        "avg_net_trade":
-            group["net_pnl"].mean(),
+        "win_rate": (
+            wins / trades * 100.0
+        ),
+        "gross": (
+            group["gross_pnl"].sum()
+        ),
+        "fees": (
+            group["fees"].sum()
+        ),
+        "slippage": (
+            group["slippage_cost"].sum()
+        ),
+        "net": (
+            group["net_pnl"].sum()
+        ),
+        "avg": (
+            group["net_pnl"].mean()
+        ),
     }
+
+
+def print_summary(
+    title: str,
+    group: pd.DataFrame,
+) -> None:
+
+    result = summary(group)
+
+    print(title)
+    print("-" * 60)
+
+    print(
+        f"Trades:              "
+        f"{result['trades']}"
+    )
+
+    print(
+        f"Gewinner:            "
+        f"{result['wins']}"
+    )
+
+    print(
+        f"Verlierer:           "
+        f"{result['losses']}"
+    )
+
+    print(
+        f"Win Rate:            "
+        f"{result['win_rate']:.2f}%"
+    )
+
+    print(
+        f"Brutto P&L:          "
+        f"${result['gross']:.4f}"
+    )
+
+    print(
+        f"Gebühren:            "
+        f"${result['fees']:.4f}"
+    )
+
+    print(
+        f"Slippage:            "
+        f"${result['slippage']:.4f}"
+    )
+
+    print(
+        f"Netto P&L:           "
+        f"${result['net']:.4f}"
+    )
+
+    print(
+        f"Ø Trade:             "
+        f"${result['avg']:.6f}"
+    )
+
+    print()
 
 
 # ============================================================
@@ -142,8 +225,13 @@ print("BITRUE STRATEGY V2 - DIAGNOSE")
 print("=" * 70)
 print()
 
-print(f"Trade-Log: {FILE}")
-print(f"Trades:    {len(df)}")
+print(
+    f"Trade-Log: {FILE}"
+)
+
+print(
+    f"Trades:    {len(df)}"
+)
 
 if not df.empty:
 
@@ -165,45 +253,10 @@ print("=" * 70)
 print("1. GESAMT")
 print("=" * 70)
 
-total = summary(df)
-
-print(
-    f"Trades:               {total['trades']}"
+print_summary(
+    "Gesamt",
+    df,
 )
-
-print(
-    f"Gewinner:             {total['wins']}"
-)
-
-print(
-    f"Verlierer:            {total['losses']}"
-)
-
-print(
-    f"Win Rate:             {total['win_rate_pct']:.2f}%"
-)
-
-print(
-    f"Brutto P&L:           ${total['gross_pnl']:.4f}"
-)
-
-print(
-    f"Gebühren:             ${total['fees']:.4f}"
-)
-
-print(
-    f"Slippage:             ${total['slippage']:.4f}"
-)
-
-print(
-    f"Netto P&L:            ${total['net_pnl']:.4f}"
-)
-
-print(
-    f"Ø Trade:              ${total['avg_net_trade']:.6f}"
-)
-
-print()
 
 
 # ============================================================
@@ -216,96 +269,36 @@ print("=" * 70)
 
 for side, group in df.groupby("side"):
 
-    result = summary(group)
-
     print()
-    print(str(side).upper())
-    print("-" * 50)
 
-    print(
-        f"Trades:               {result['trades']}"
+    print_summary(
+        str(side).upper(),
+        group,
     )
-
-    print(
-        f"Gewinner:             {result['wins']}"
-    )
-
-    print(
-        f"Verlierer:            {result['losses']}"
-    )
-
-    print(
-        f"Win Rate:             {result['win_rate_pct']:.2f}%"
-    )
-
-    print(
-        f"Brutto P&L:           ${result['gross_pnl']:.4f}"
-    )
-
-    print(
-        f"Netto P&L:            ${result['net_pnl']:.4f}"
-    )
-
-    print(
-        f"Ø Trade:              ${result['avg_net_trade']:.6f}"
-    )
-
-print()
 
 
 # ============================================================
-# 3. EXIT REASON
+# 3. TAKE PROFIT / STOP LOSS
 # ============================================================
 
 print("=" * 70)
 print("3. TAKE PROFIT vs STOP LOSS")
 print("=" * 70)
 
-for reason, group in df.groupby("exit_reason"):
-
-    result = summary(group)
+for reason, group in df.groupby(
+    "exit_reason"
+):
 
     print()
-    print(str(reason).upper())
-    print("-" * 50)
 
-    print(
-        f"Trades:               {result['trades']}"
+    print_summary(
+        str(reason).upper(),
+        group,
     )
-
-    print(
-        f"Gewinner:             {result['wins']}"
-    )
-
-    print(
-        f"Verlierer:            {result['losses']}"
-    )
-
-    print(
-        f"Win Rate:             {result['win_rate_pct']:.2f}%"
-    )
-
-    print(
-        f"Brutto P&L:           ${result['gross_pnl']:.4f}"
-    )
-
-    print(
-        f"Gebühren:             ${result['fees']:.4f}"
-    )
-
-    print(
-        f"Slippage:             ${result['slippage']:.4f}"
-    )
-
-    print(
-        f"Netto P&L:            ${result['net_pnl']:.4f}"
-    )
-
-print()
 
 
 # ============================================================
-# 4. MONAT
+# 4. MONATLICHE ENTWICKLUNG
 # ============================================================
 
 print("=" * 70)
@@ -314,36 +307,43 @@ print("=" * 70)
 
 monthly_rows = []
 
-for month, group in df.groupby("month"):
+for month, group in df.groupby(
+    "month"
+):
 
     result = summary(group)
 
-    monthly_rows.append({
-        "month": month,
-        **result,
-    })
+    monthly_rows.append(
+        [
+            month,
+            result["trades"],
+            result["win_rate"],
+            result["gross"],
+            result["net"],
+            result["avg"],
+        ]
+    )
 
-monthly_df = pd.DataFrame(
-    monthly_rows
-)
 
-if not monthly_df.empty:
+if monthly_rows:
+
+    monthly_df = pd.DataFrame(
+        monthly_rows,
+        columns=[
+            "Monat",
+            "Trades",
+            "WinRate_%",
+            "Brutto_$",
+            "Netto_$",
+            "ØTrade_$",
+        ],
+    )
 
     print(
-        monthly_df[
-            [
-                "month",
-                "trades",
-                "win_rate_pct",
-                "gross_pnl",
-                "fees",
-                "slippage",
-                "net_pnl",
-                "avg_net_trade",
-            ]
-        ].to_string(
+        monthly_df.to_string(
             index=False,
-            float_format=lambda x: f"{x:.4f}",
+            float_format=lambda x:
+                f"{x:.4f}",
         )
     )
 
@@ -351,55 +351,11 @@ print()
 
 
 # ============================================================
-# 5. EINSTIEGSSTUNDE
+# 5. HALTEDAUER
 # ============================================================
 
 print("=" * 70)
-print("5. PERFORMANCE NACH EINSTIEGSSTUNDE UTC")
-print("=" * 70)
-
-hour_rows = []
-
-for hour, group in df.groupby("hour"):
-
-    result = summary(group)
-
-    hour_rows.append({
-        "hour_utc": int(hour),
-        **result,
-    })
-
-hour_df = pd.DataFrame(
-    hour_rows
-)
-
-if not hour_df.empty:
-
-    print(
-        hour_df[
-            [
-                "hour_utc",
-                "trades",
-                "win_rate_pct",
-                "gross_pnl",
-                "net_pnl",
-                "avg_net_trade",
-            ]
-        ].to_string(
-            index=False,
-            float_format=lambda x: f"{x:.4f}",
-        )
-    )
-
-print()
-
-
-# ============================================================
-# 6. HALTEDAUER
-# ============================================================
-
-print("=" * 70)
-print("6. PERFORMANCE NACH HALTEDAUER")
+print("5. PERFORMANCE NACH HALTEDAUER")
 print("=" * 70)
 
 duration_bins = [
@@ -436,32 +392,35 @@ for bucket, group in df.groupby(
 
     result = summary(group)
 
-    duration_rows.append({
-        "duration": str(bucket),
-        **result,
-    })
+    duration_rows.append(
+        [
+            str(bucket),
+            result["trades"],
+            result["win_rate"],
+            result["net"],
+            result["avg"],
+        ]
+    )
 
-duration_df = pd.DataFrame(
-    duration_rows
-)
 
-if not duration_df.empty:
+if duration_rows:
+
+    duration_df = pd.DataFrame(
+        duration_rows,
+        columns=[
+            "Haltedauer",
+            "Trades",
+            "WinRate_%",
+            "Netto_$",
+            "ØTrade_$",
+        ],
+    )
 
     print(
-        duration_df[
-            [
-                "duration",
-                "trades",
-                "win_rate_pct",
-                "gross_pnl",
-                "fees",
-                "slippage",
-                "net_pnl",
-                "avg_net_trade",
-            ]
-        ].to_string(
+        duration_df.to_string(
             index=False,
-            float_format=lambda x: f"{x:.4f}",
+            float_format=lambda x:
+                f"{x:.4f}",
         )
     )
 
@@ -469,11 +428,254 @@ print()
 
 
 # ============================================================
-# 7. MOMENTUM
+# GENERISCHE BUCKET-AUSWERTUNG
+# ============================================================
+
+def bucket_report(
+    title,
+    series,
+    bins,
+    labels,
+):
+
+    print("=" * 70)
+    print(title)
+    print("=" * 70)
+
+    column_name = (
+        title
+        .lower()
+        .replace(" ", "_")
+    )
+
+    temp = df.copy()
+
+    temp[column_name] = pd.cut(
+        series,
+        bins=bins,
+        labels=labels,
+    )
+
+    rows = []
+
+    for bucket, group in temp.groupby(
+        column_name,
+        observed=True,
+    ):
+
+        result = summary(group)
+
+        rows.append(
+            [
+                str(bucket),
+                result["trades"],
+                result["win_rate"],
+                result["net"],
+                result["avg"],
+            ]
+        )
+
+    if rows:
+
+        result_df = pd.DataFrame(
+            rows,
+            columns=[
+                "Bereich",
+                "Trades",
+                "WinRate_%",
+                "Netto_$",
+                "ØTrade_$",
+            ],
+        )
+
+        print(
+            result_df.to_string(
+                index=False,
+                float_format=lambda x:
+                    f"{x:.4f}",
+            )
+        )
+
+    print()
+
+
+# ============================================================
+# 6. MOMENTUM
+# ============================================================
+
+bucket_report(
+    "6. MOMENTUM",
+    df["momentum_pct"],
+    [
+        -float("inf"),
+        -0.50,
+        -0.30,
+        -0.20,
+        -0.15,
+        0.15,
+        0.20,
+        0.30,
+        0.50,
+        float("inf"),
+    ],
+    [
+        "<=-0.50%",
+        "-0.50..-0.30",
+        "-0.30..-0.20",
+        "-0.20..-0.15",
+        "-0.15..+0.15",
+        "+0.15..+0.20",
+        "+0.20..+0.30",
+        "+0.30..+0.50",
+        ">+0.50%",
+    ],
+)
+
+
+# ============================================================
+# 7. ATR
+# ============================================================
+
+bucket_report(
+    "7. ATR",
+    df["atr_pct"],
+    [
+        -float("inf"),
+        0.05,
+        0.075,
+        0.10,
+        0.15,
+        0.20,
+        0.30,
+        float("inf"),
+    ],
+    [
+        "<0.05",
+        "0.05-0.075",
+        "0.075-0.10",
+        "0.10-0.15",
+        "0.15-0.20",
+        "0.20-0.30",
+        ">0.30",
+    ],
+)
+
+
+# ============================================================
+# 8. VOLUME RATIO
+# ============================================================
+
+bucket_report(
+    "8. VOLUME RATIO",
+    df["volume_ratio"],
+    [
+        -float("inf"),
+        1.20,
+        1.50,
+        2.00,
+        3.00,
+        5.00,
+        10.00,
+        float("inf"),
+    ],
+    [
+        "<1.20",
+        "1.20-1.50",
+        "1.50-2.00",
+        "2.00-3.00",
+        "3.00-5.00",
+        "5.00-10.00",
+        ">10.00",
+    ],
+)
+
+
+# ============================================================
+# 9. EMA SPREAD
+# ============================================================
+
+bucket_report(
+    "9. EMA SPREAD",
+    df["ema_spread_pct"],
+    [
+        -float("inf"),
+        0.03,
+        0.05,
+        0.075,
+        0.10,
+        0.15,
+        0.25,
+        float("inf"),
+    ],
+    [
+        "<0.03",
+        "0.03-0.05",
+        "0.05-0.075",
+        "0.075-0.10",
+        "0.10-0.15",
+        "0.15-0.25",
+        ">0.25",
+    ],
+)
+
+
+# ============================================================
+# 10. EINSTIEGSSTUNDE UTC
 # ============================================================
 
 print("=" * 70)
-print("7. PERFORMANCE NACH MOMENTUM")
+print("10. PERFORMANCE NACH EINSTIEGSSTUNDE UTC")
+print("=" * 70)
+
+hour_rows = []
+
+for hour, group in df.groupby(
+    "hour"
+):
+
+    result = summary(group)
+
+    hour_rows.append(
+        [
+            int(hour),
+            result["trades"],
+            result["win_rate"],
+            result["net"],
+            result["avg"],
+        ]
+    )
+
+
+if hour_rows:
+
+    hour_df = pd.DataFrame(
+        hour_rows,
+        columns=[
+            "UTC-Stunde",
+            "Trades",
+            "WinRate_%",
+            "Netto_$",
+            "ØTrade_$",
+        ],
+    )
+
+    print(
+        hour_df.to_string(
+            index=False,
+            float_format=lambda x:
+                f"{x:.4f}",
+        )
+    )
+
+print()
+
+
+# ============================================================
+# 11. LONG / SHORT NACH MOMENTUM
+# ============================================================
+
+print("=" * 70)
+print("11. LONG / SHORT NACH MOMENTUM")
 print("=" * 70)
 
 momentum_bins = [
@@ -490,15 +692,15 @@ momentum_bins = [
 ]
 
 momentum_labels = [
-    "<=-0.50%",
-    "-0.50 bis -0.30%",
-    "-0.30 bis -0.20%",
-    "-0.20 bis -0.15%",
-    "-0.15 bis +0.15%",
-    "+0.15 bis +0.20%",
-    "+0.20 bis +0.30%",
-    "+0.30 bis +0.50%",
-    ">+0.50%",
+    "<=-0.50",
+    "-0.50..-0.30",
+    "-0.30..-0.20",
+    "-0.20..-0.15",
+    "-0.15..+0.15",
+    "+0.15..+0.20",
+    "+0.20..+0.30",
+    "+0.30..+0.50",
+    ">+0.50",
 ]
 
 df["momentum_bucket"] = pd.cut(
@@ -507,196 +709,39 @@ df["momentum_bucket"] = pd.cut(
     labels=momentum_labels,
 )
 
-momentum_rows = []
-
-for bucket, group in df.groupby(
-    "momentum_bucket",
-    observed=True,
+for side, group_side in df.groupby(
+    "side"
 ):
 
-    result = summary(group)
+    print()
+    print(str(side).upper())
 
-    momentum_rows.append({
-        "momentum": str(bucket),
-        **result,
-    })
+    for bucket, group in group_side.groupby(
+        "momentum_bucket",
+        observed=True,
+    ):
 
-momentum_df = pd.DataFrame(
-    momentum_rows
-)
+        result = summary(group)
 
-if not momentum_df.empty:
+        if result["trades"] == 0:
+            continue
 
-    print(
-        momentum_df[
-            [
-                "momentum",
-                "trades",
-                "win_rate_pct",
-                "net_pnl",
-                "avg_net_trade",
-            ]
-        ].to_string(
-            index=False,
-            float_format=lambda x: f"{x:.4f}",
+        print(
+            f"{str(bucket):18s} "
+            f"Trades={result['trades']:4d} "
+            f"WinRate={result['win_rate']:6.2f}% "
+            f"Net=${result['net']:8.4f}"
         )
-    )
 
 print()
 
 
 # ============================================================
-# 8. ATR
+# 12. LONG / SHORT NACH EMA SPREAD
 # ============================================================
 
 print("=" * 70)
-print("8. PERFORMANCE NACH ATR")
-print("=" * 70)
-
-atr_bins = [
-    -float("inf"),
-    0.05,
-    0.075,
-    0.10,
-    0.15,
-    0.20,
-    0.30,
-    float("inf"),
-]
-
-atr_labels = [
-    "<0.05%",
-    "0.05-0.075%",
-    "0.075-0.10%",
-    "0.10-0.15%",
-    "0.15-0.20%",
-    "0.20-0.30%",
-    ">0.30%",
-]
-
-df["atr_bucket"] = pd.cut(
-    df["atr_pct"],
-    bins=atr_bins,
-    labels=atr_labels,
-)
-
-atr_rows = []
-
-for bucket, group in df.groupby(
-    "atr_bucket",
-    observed=True,
-):
-
-    result = summary(group)
-
-    atr_rows.append({
-        "atr": str(bucket),
-        **result,
-    })
-
-atr_df = pd.DataFrame(
-    atr_rows
-)
-
-if not atr_df.empty:
-
-    print(
-        atr_df[
-            [
-                "atr",
-                "trades",
-                "win_rate_pct",
-                "net_pnl",
-                "avg_net_trade",
-            ]
-        ].to_string(
-            index=False,
-            float_format=lambda x: f"{x:.4f}",
-        )
-    )
-
-print()
-
-
-# ============================================================
-# 9. VOLUME RATIO
-# ============================================================
-
-print("=" * 70)
-print("9. PERFORMANCE NACH VOLUME RATIO")
-print("=" * 70)
-
-volume_bins = [
-    -float("inf"),
-    1.20,
-    1.50,
-    2.00,
-    3.00,
-    5.00,
-    10.00,
-    float("inf"),
-]
-
-volume_labels = [
-    "<1.20",
-    "1.20-1.50",
-    "1.50-2.00",
-    "2.00-3.00",
-    "3.00-5.00",
-    "5.00-10.00",
-    ">10.00",
-]
-
-df["volume_bucket"] = pd.cut(
-    df["volume_ratio"],
-    bins=volume_bins,
-    labels=volume_labels,
-)
-
-volume_rows = []
-
-for bucket, group in df.groupby(
-    "volume_bucket",
-    observed=True,
-):
-
-    result = summary(group)
-
-    volume_rows.append({
-        "volume_ratio": str(bucket),
-        **result,
-    })
-
-volume_df = pd.DataFrame(
-    volume_rows
-)
-
-if not volume_df.empty:
-
-    print(
-        volume_df[
-            [
-                "volume_ratio",
-                "trades",
-                "win_rate_pct",
-                "net_pnl",
-                "avg_net_trade",
-            ]
-        ].to_string(
-            index=False,
-            float_format=lambda x: f"{x:.4f}",
-        )
-    )
-
-print()
-
-
-# ============================================================
-# 10. EMA SPREAD
-# ============================================================
-
-print("=" * 70)
-print("10. PERFORMANCE NACH EMA-SPREAD")
+print("12. LONG / SHORT NACH EMA SPREAD")
 print("=" * 70)
 
 spread_bins = [
@@ -711,13 +756,13 @@ spread_bins = [
 ]
 
 spread_labels = [
-    "<0.03%",
-    "0.03-0.05%",
-    "0.05-0.075%",
-    "0.075-0.10%",
-    "0.10-0.15%",
-    "0.15-0.25%",
-    ">0.25%",
+    "<0.03",
+    "0.03-0.05",
+    "0.05-0.075",
+    "0.075-0.10",
+    "0.10-0.15",
+    "0.15-0.25",
+    ">0.25",
 ]
 
 df["spread_bucket"] = pd.cut(
@@ -726,93 +771,14 @@ df["spread_bucket"] = pd.cut(
     labels=spread_labels,
 )
 
-spread_rows = []
-
-for bucket, group in df.groupby(
-    "spread_bucket",
-    observed=True,
+for side, group_side in df.groupby(
+    "side"
 ):
 
-    result = summary(group)
-
-    spread_rows.append({
-        "ema_spread": str(bucket),
-        **result,
-    })
-
-spread_df = pd.DataFrame(
-    spread_rows
-)
-
-if not spread_df.empty:
-
-    print(
-        spread_df[
-            [
-                "ema_spread",
-                "trades",
-                "win_rate_pct",
-                "net_pnl",
-                "avg_net_trade",
-            ]
-        ].to_string(
-            index=False,
-            float_format=lambda x: f"{x:.4f}",
-        )
-    )
-
-print()
-
-
-# ============================================================
-# 11. LONG + SHORT x MOMENTUM
-# ============================================================
-
-print("=" * 70)
-print("11. LONG / SHORT NACH MOMENTUM")
-print("=" * 70)
-
-for side, side_group in df.groupby("side"):
-
     print()
-    print(f"{str(side).upper()}")
-    print("-" * 50)
+    print(str(side).upper())
 
-    for bucket, group in side_group.groupby(
-        "momentum_bucket",
-        observed=True,
-    ):
-
-        result = summary(group)
-
-        if result["trades"] == 0:
-            continue
-
-        print(
-            f"{str(bucket):25s} "
-            f"Trades={result['trades']:4d} "
-            f"WinRate={result['win_rate_pct']:6.2f}% "
-            f"Net=${result['net_pnl']:8.4f}"
-        )
-
-print()
-
-
-# ============================================================
-# 12. LONG + SHORT x EMA SPREAD
-# ============================================================
-
-print("=" * 70)
-print("12. LONG / SHORT NACH EMA-SPREAD")
-print("=" * 70)
-
-for side, side_group in df.groupby("side"):
-
-    print()
-    print(f"{str(side).upper()}")
-    print("-" * 50)
-
-    for bucket, group in side_group.groupby(
+    for bucket, group in group_side.groupby(
         "spread_bucket",
         observed=True,
     ):
@@ -823,17 +789,17 @@ for side, side_group in df.groupby("side"):
             continue
 
         print(
-            f"{str(bucket):25s} "
+            f"{str(bucket):18s} "
             f"Trades={result['trades']:4d} "
-            f"WinRate={result['win_rate_pct']:6.2f}% "
-            f"Net=${result['net_pnl']:8.4f}"
+            f"WinRate={result['win_rate']:6.2f}% "
+            f"Net=${result['net']:8.4f}"
         )
 
 print()
 
 
 # ============================================================
-# 13. VERLUSTSERIE
+# 13. VERLUSTSERIEN
 # ============================================================
 
 print("=" * 70)
@@ -858,8 +824,9 @@ for pnl in df["net_pnl"]:
 
         current_streak = 0
 
+
 print(
-    f"Längste Serie nicht-positiver Trades: "
+    "Längste nicht-positive Serie: "
     f"{max_streak}"
 )
 
@@ -875,98 +842,81 @@ print("14. HANDELSFREQUENZ")
 print("=" * 70)
 
 days = (
-    df["entry_time"].dt.date.nunique()
-    if not df.empty
-    else 0
+    df["entry_time"]
+    .dt.date
+    .nunique()
+)
+
+print(
+    f"Handelstage: {days}"
+)
+
+print(
+    f"Trades:       {len(df)}"
 )
 
 if days > 0:
-    trades_per_day = (
-        len(df) / days
-    )
-else:
-    trades_per_day = 0.0
-
-print(
-    f"Handelstage:     {days}"
-)
-
-print(
-    f"Trades gesamt:   {len(df)}"
-)
-
-print(
-    f"Trades / Tag:    {trades_per_day:.2f}"
-)
-
-print()
-
-
-# ============================================================
-# 15. AUTOMATISCHE DIAGNOSE
-# ============================================================
-
-print("=" * 70)
-print("15. AUTOMATISCHE DIAGNOSE")
-print("=" * 70)
-
-print()
-
-if total["net_pnl"] < 0:
 
     print(
-        "❌ V2 ist im getesteten Zeitraum "
+        f"Trades/Tag:   "
+        f"{len(df) / days:.2f}"
+    )
+
+else:
+
+    print(
+        "Trades/Tag:   0.00"
+    )
+
+print()
+
+
+# ============================================================
+# 15. AUTOMATISCHE EINORDNUNG
+# ============================================================
+
+print("=" * 70)
+print("15. AUTOMATISCHE EINORDNUNG")
+print("=" * 70)
+
+total = summary(df)
+
+if total["net"] < 0:
+
+    print(
+        "V2 ist im getesteten Zeitraum "
         "netto negativ."
     )
 
-else:
+if total["gross"] < 0:
 
     print(
-        "✅ V2 ist im getesteten Zeitraum "
-        "netto positiv."
+        "V2 ist bereits vor Gebühren negativ."
     )
-
-
-if total["gross_pnl"] < 0:
-
-    print(
-        "❌ V2 ist bereits vor Gebühren negativ."
-    )
-
-else:
-
-    print(
-        "⚠️ Brutto ist positiv; Kosten werden "
-        "separat bewertet."
-    )
-
 
 print(
-    f"Trefferquote: "
-    f"{total['win_rate_pct']:.2f}%"
+    f"Win Rate: "
+    f"{total['win_rate']:.2f}%"
 )
 
-if total["win_rate_pct"] < 40:
-
-    print(
-        "⚠️ Trefferquote weiterhin relativ niedrig."
-    )
-
-
-if trades_per_day > 10:
-
-    print(
-        f"⚠️ Handelsfrequenz weiterhin hoch: "
-        f"{trades_per_day:.2f} Trades/Tag."
-    )
-
+print(
+    f"Netto P&L: "
+    f"${total['net']:.4f}"
+)
 
 print()
+
+print(
+    "V2 wurde NICHT verändert."
+)
+
+print(
+    "Analyse basiert ausschließlich "
+    "auf dem vorhandenen V2-Trade-Log."
+)
+
+print()
+
 print("=" * 70)
 print("DIAGNOSE ABGESCHLOSSEN")
 print("=" * 70)
-print()
-
-print("V2 wurde NICHT verändert.")
-print("Dieser Analyzer liest ausschließlich den Trade-Log.")
-print()
