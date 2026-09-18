@@ -1,1 +1,635 @@
+name: Bitrue V1 vs V2 vs V3
 
+on:
+  workflow_dispatch:
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # =========================================================
+      # CHECKOUT
+      # =========================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # =========================================================
+      # PYTHON
+      # =========================================================
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      # =========================================================
+      # DEPENDENCIES
+      # =========================================================
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests
+
+
+      # =========================================================
+      # DOWNLOAD 365 DAYS
+      # =========================================================
+
+      - name: Download 365 days BTCUSDT 5m
+        env:
+          BITRUE_DAYS: "365"
+        run: |
+          echo
+          echo "============================================================"
+          echo "DOWNLOAD BTCUSDT 5m"
+          echo "============================================================"
+          echo
+
+          python bitrue/download_binance_data.py
+
+
+      # =========================================================
+      # DATASET VALIDATION
+      # =========================================================
+
+      - name: Validate dataset
+        run: |
+          echo
+          echo "============================================================"
+          echo "DATASET"
+          echo "============================================================"
+          echo
+
+          ls -lh BTCUSDT_5m.csv
+
+          echo
+          echo "Zeilen:"
+          wc -l BTCUSDT_5m.csv
+
+          echo
+          echo "Erste 5 Zeilen:"
+          head -5 BTCUSDT_5m.csv
+
+          echo
+          echo "Letzte 5 Zeilen:"
+          tail -5 BTCUSDT_5m.csv
+
+
+      # =========================================================
+      # V1
+      # =========================================================
+
+      - name: Run Bitrue Strategy V1
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE STRATEGY V1"
+          echo "============================================================"
+          echo
+
+          python bitrue/backtest.py BTCUSDT_5m.csv
+
+
+      # =========================================================
+      # V1 DIAGNOSE
+      # =========================================================
+
+      - name: Analyze V1
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE V1 DIAGNOSE"
+          echo "============================================================"
+          echo
+
+          if [ ! -f bitrue_v1_trade_log.csv ]; then
+            echo "ERROR: bitrue_v1_trade_log.csv fehlt."
+            exit 1
+          fi
+
+          python bitrue/analyze_v1.py bitrue_v1_trade_log.csv
+
+
+      # =========================================================
+      # V2
+      # =========================================================
+
+      - name: Run Bitrue Strategy V2
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE STRATEGY V2"
+          echo "============================================================"
+          echo
+
+          echo "V2 Filter:"
+          echo "  Momentum:       0.15%"
+          echo "  ATR:            0.05%"
+          echo "  Volume Ratio:   1.20"
+          echo "  EMA Spread:     0.03%"
+          echo "  Cooldown:       30 Minuten"
+          echo
+
+          python bitrue/backtest_v2.py BTCUSDT_5m.csv
+
+
+      # =========================================================
+      # V2 DIAGNOSE
+      # =========================================================
+
+      - name: Analyze V2
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE V2 DIAGNOSE"
+          echo "============================================================"
+          echo
+
+          if [ ! -f bitrue_v2_trade_log.csv ]; then
+            echo "ERROR: bitrue_v2_trade_log.csv fehlt."
+            exit 1
+          fi
+
+          python bitrue/analyze_v2.py bitrue_v2_trade_log.csv
+
+
+      # =========================================================
+      # V3
+      # =========================================================
+
+      - name: Run Bitrue Strategy V3
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE STRATEGY V3"
+          echo "============================================================"
+          echo
+
+          echo "V3:"
+          echo "  EMA:             9 / 21 / 55"
+          echo "  Momentum:        >= 0.15%"
+          echo "  ATR:             0.075% - 0.20%"
+          echo "  Volume Ratio:    >= 1.20"
+          echo "  EMA Spread:      >= 0.15%"
+          echo "  Higher TF:       1H EMA20 / EMA50"
+          echo "  Stop Loss:       1.20 x ATR"
+          echo "  Take Profit:     2.00 x ATR"
+          echo "  Cooldown:        30 Minuten"
+          echo
+          echo "  TRAIN:           70%"
+          echo "  OOS:             30%"
+          echo
+
+          python bitrue/backtest_v3.py BTCUSDT_5m.csv
+
+
+      # =========================================================
+      # SHOW V3 RESULT
+      # =========================================================
+
+      - name: Show V3 results
+        run: |
+          echo
+          echo "============================================================"
+          echo "V3 TRADE LOG"
+          echo "============================================================"
+          echo
+
+          if [ ! -f bitrue_v3_trade_log.csv ]; then
+            echo "ERROR: bitrue_v3_trade_log.csv fehlt."
+            exit 1
+          fi
+
+          ls -lh bitrue_v3_trade_log.csv
+
+          echo
+          echo "Erste 10 Trades:"
+          head -11 bitrue_v3_trade_log.csv
+
+          echo
+          echo "Letzte 10 Trades:"
+          tail -10 bitrue_v3_trade_log.csv
+
+          echo
+          echo "Anzahl Trades:"
+          tail -n +2 bitrue_v3_trade_log.csv | wc -l
+
+
+      # =========================================================
+      # V1 VS V2 VS V3
+      # =========================================================
+
+      - name: Compare V1 V2 V3
+        run: |
+          echo
+          echo "============================================================"
+          echo "V1 vs V2 vs V3"
+          echo "============================================================"
+          echo
+
+          python - <<'PY'
+          import pandas as pd
+
+          START = 100.0
+
+          files = {
+              "V1": "bitrue_v1_trade_log.csv",
+              "V2": "bitrue_v2_trade_log.csv",
+              "V3": "bitrue_v3_trade_log.csv",
+          }
+
+          def stats(df):
+
+              trades = len(df)
+
+              wins = int(
+                  (df["net_pnl"] > 0).sum()
+              )
+
+              losses = int(
+                  (df["net_pnl"] <= 0).sum()
+              )
+
+              win_rate = (
+                  wins / trades * 100
+                  if trades
+                  else 0.0
+              )
+
+              gross = df["gross_pnl"].sum()
+              fees = df["fees"].sum()
+              slippage = df["slippage_cost"].sum()
+              net = df["net_pnl"].sum()
+
+              return {
+                  "trades": trades,
+                  "wins": wins,
+                  "losses": losses,
+                  "win_rate": win_rate,
+                  "gross": gross,
+                  "fees": fees,
+                  "slippage": slippage,
+                  "net": net,
+                  "return_pct": net / START * 100,
+                  "avg_trade": df["net_pnl"].mean(),
+              }
+
+          results = {}
+
+          for name, filename in files.items():
+              df = pd.read_csv(filename)
+              results[name] = stats(df)
+
+          print(
+              "STRATEGIE         V1          V2          V3"
+          )
+          print("-" * 60)
+
+          print(
+              f"Trades            "
+              f"{results['V1']['trades']:>8}   "
+              f"{results['V2']['trades']:>8}   "
+              f"{results['V3']['trades']:>8}"
+          )
+
+          print(
+              f"Gewinner          "
+              f"{results['V1']['wins']:>8}   "
+              f"{results['V2']['wins']:>8}   "
+              f"{results['V3']['wins']:>8}"
+          )
+
+          print(
+              f"Verlierer         "
+              f"{results['V1']['losses']:>8}   "
+              f"{results['V2']['losses']:>8}   "
+              f"{results['V3']['losses']:>8}"
+          )
+
+          print(
+              f"Win Rate          "
+              f"{results['V1']['win_rate']:>7.2f}%   "
+              f"{results['V2']['win_rate']:>7.2f}%   "
+              f"{results['V3']['win_rate']:>7.2f}%"
+          )
+
+          print(
+              f"Brutto P&L        "
+              f"${results['V1']['gross']:>7.2f}   "
+              f"${results['V2']['gross']:>7.2f}   "
+              f"${results['V3']['gross']:>7.2f}"
+          )
+
+          print(
+              f"Gebühren          "
+              f"${results['V1']['fees']:>7.2f}   "
+              f"${results['V2']['fees']:>7.2f}   "
+              f"${results['V3']['fees']:>7.2f}"
+          )
+
+          print(
+              f"Slippage          "
+              f"${results['V1']['slippage']:>7.2f}   "
+              f"${results['V2']['slippage']:>7.2f}   "
+              f"${results['V3']['slippage']:>7.2f}"
+          )
+
+          print(
+              f"Netto P&L         "
+              f"${results['V1']['net']:>7.2f}   "
+              f"${results['V2']['net']:>7.2f}   "
+              f"${results['V3']['net']:>7.2f}"
+          )
+
+          print(
+              f"Rendite           "
+              f"{results['V1']['return_pct']:>7.2f}%   "
+              f"{results['V2']['return_pct']:>7.2f}%   "
+              f"{results['V3']['return_pct']:>7.2f}%"
+          )
+
+          print(
+              f"Ø Trade           "
+              f"${results['V1']['avg_trade']:>7.5f}   "
+              f"${results['V2']['avg_trade']:>7.5f}   "
+              f"${results['V3']['avg_trade']:>7.5f}"
+          )
+
+          print()
+          print("V3 OOS wird separat im V3-Backtest ausgewertet.")
+          print("Wichtig: Dieser Vergleich ist nur für die")
+          print("Strategieentwicklung und kein Live-Trading.")
+          PY
+
+
+      # =========================================================
+      # V3 OOS DETAIL
+      # =========================================================
+
+      - name: V3 OOS detail
+        run: |
+          echo
+          echo "============================================================"
+          echo "V3 OOS DETAIL"
+          echo "============================================================"
+          echo
+
+          python - <<'PY'
+          import pandas as pd
+
+          df = pd.read_csv(
+              "bitrue_v3_trade_log.csv"
+          )
+
+          for period in ["TRAIN", "OOS"]:
+
+              part = df[
+                  df["period"] == period
+              ]
+
+              if part.empty:
+                  print()
+                  print(period)
+                  print("-" * 50)
+                  print("Keine Trades.")
+                  continue
+
+              trades = len(part)
+
+              wins = (
+                  part["net_pnl"] > 0
+              ).sum()
+
+              win_rate = (
+                  wins / trades * 100
+              )
+
+              net = (
+                  part["net_pnl"].sum()
+              )
+
+              gross = (
+                  part["gross_pnl"].sum()
+              )
+
+              fees = (
+                  part["fees"].sum()
+              )
+
+              slippage = (
+                  part["slippage_cost"].sum()
+              )
+
+              print()
+              print(period)
+              print("-" * 50)
+              print(
+                  f"Trades:       {trades}"
+              )
+              print(
+                  f"Win Rate:     {win_rate:.2f}%"
+              )
+              print(
+                  f"Brutto P&L:   ${gross:.4f}"
+              )
+              print(
+                  f"Gebühren:     ${fees:.4f}"
+              )
+              print(
+                  f"Slippage:     ${slippage:.4f}"
+              )
+              print(
+                  f"Netto P&L:    ${net:.4f}"
+              )
+
+          print()
+          PY
+
+
+      # =========================================================
+      # UPLOAD DATASET
+      # =========================================================
+
+      - name: Upload historical dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: BTCUSDT-5m-365d-v1-v2-v3
+          path: BTCUSDT_5m.csv
+          if-no-files-found: error
+
+
+      # =========================================================
+      # UPLOAD V1
+      # =========================================================
+
+      - name: Upload V1 trade log
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-v1-results
+          path: bitrue_v1_trade_log.csv
+          if-no-files-found: error
+
+
+      # =========================================================
+      # UPLOAD V2
+      # =========================================================
+
+      - name: Upload V2 trade log
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-v2-results
+          path: bitrue_v2_trade_log.csv
+          if-no-files-found: error
+
+
+      # =========================================================
+      # UPLOAD V3
+      # =========================================================
+
+      - name: Upload V3 trade log
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-v3-results
+          path: bitrue_v3_trade_log.csv
+          if-no-files-found: error
+
+
+      # =========================================================
+      # SAVE V3 SUMMARY
+      # =========================================================
+
+      - name: Save V3 summary
+        run: |
+          python - <<'PY' > bitrue_v3_summary.txt
+          import pandas as pd
+
+          df = pd.read_csv(
+              "bitrue_v3_trade_log.csv"
+          )
+
+          print("=" * 70)
+          print("BITRUE V3 SUMMARY")
+          print("=" * 70)
+
+          print()
+          print("GESAMT")
+          print("-" * 50)
+          print(f"Trades: {len(df)}")
+          print(
+              f"Netto P&L: "
+              f"${df['net_pnl'].sum():.4f}"
+          )
+
+          for period in ["TRAIN", "OOS"]:
+
+              part = df[
+                  df["period"] == period
+              ]
+
+              print()
+              print(period)
+              print("-" * 50)
+
+              if part.empty:
+                  print("Keine Trades.")
+                  continue
+
+              wins = (
+                  part["net_pnl"] > 0
+              ).sum()
+
+              win_rate = (
+                  wins / len(part) * 100
+              )
+
+              print(
+                  f"Trades: {len(part)}"
+              )
+
+              print(
+                  f"Win Rate: {win_rate:.2f}%"
+              )
+
+              print(
+                  f"Brutto P&L: "
+                  f"${part['gross_pnl'].sum():.4f}"
+              )
+
+              print(
+                  f"Gebühren: "
+                  f"${part['fees'].sum():.4f}"
+              )
+
+              print(
+                  f"Slippage: "
+                  f"${part['slippage_cost'].sum():.4f}"
+              )
+
+              print(
+                  f"Netto P&L: "
+                  f"${part['net_pnl'].sum():.4f}"
+              )
+
+          print()
+          print("=" * 70)
+          PY
+
+
+      - name: Upload V3 summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-v3-summary
+          path: bitrue_v3_summary.txt
+          if-no-files-found: error
+
+
+      # =========================================================
+      # FINAL
+      # =========================================================
+
+      - name: Final summary
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE V1 vs V2 vs V3 ABGESCHLOSSEN"
+          echo "============================================================"
+          echo
+
+          echo "Daten:"
+          echo "  BTCUSDT"
+          echo "  5 Minuten"
+          echo "  365 Tage"
+
+          echo
+          echo "Strategien:"
+          echo "  V1"
+          echo "  V2"
+          echo "  V3"
+
+          echo
+          echo "V3:"
+          echo "  ATR-Regime"
+          echo "  Higher-Timeframe Trend"
+          echo "  ATR-basierter Stop"
+          echo "  ATR-basiertes Target"
+
+          echo
+          echo "V3-Test:"
+          echo "  TRAIN = 70%"
+          echo "  OOS   = 30%"
+
+          echo
+          echo "SICHERHEIT:"
+          echo "  PAPER ONLY"
+          echo "  KEIN API KEY"
+          echo "  KEIN LIVE TRADING"
+          echo "  KEINE REALEN ORDERS"
+
+          echo
+          echo "============================================================"
