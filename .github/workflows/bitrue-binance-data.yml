@@ -1,10 +1,10 @@
-name: Bitrue Binance Historical Data
+name: Bitrue V1 vs V2 Backtest
 
 on:
   workflow_dispatch:
 
 jobs:
-  download-and-backtest:
+  backtest:
     runs-on: ubuntu-latest
 
     steps:
@@ -45,47 +45,38 @@ jobs:
         env:
           BITRUE_DAYS: "365"
         run: |
-          echo "======================================"
+          echo "============================================================"
           echo "DOWNLOAD BTCUSDT 5m"
-          echo "======================================"
+          echo "============================================================"
           echo
 
           python bitrue/download_binance_data.py
 
 
       # =========================================================
-      # DATASET CHECK
+      # DATASET
       # =========================================================
 
-      - name: Show dataset
+      - name: Validate dataset
         run: |
           echo
-          echo "======================================"
+          echo "============================================================"
           echo "DATASET"
-          echo "======================================"
+          echo "============================================================"
           echo
 
           ls -lh BTCUSDT_5m.csv
 
           echo
-          echo "======================================"
-          echo "LINES"
-          echo "======================================"
-
+          echo "Zeilen:"
           wc -l BTCUSDT_5m.csv
 
           echo
-          echo "======================================"
-          echo "FIRST 5 ROWS"
-          echo "======================================"
-
+          echo "Erste Zeilen:"
           head -5 BTCUSDT_5m.csv
 
           echo
-          echo "======================================"
-          echo "LAST 5 ROWS"
-          echo "======================================"
-
+          echo "Letzte Zeilen:"
           tail -5 BTCUSDT_5m.csv
 
 
@@ -93,24 +84,13 @@ jobs:
       # V1 BACKTEST
       # =========================================================
 
-      - name: Run Bitrue Strategy V1 Backtest
+      - name: Run Bitrue Strategy V1
         run: |
           echo
-          echo "======================================"
-          echo "BITRUE STRATEGY V1 BACKTEST"
-          echo "======================================"
+          echo "============================================================"
+          echo "BITRUE STRATEGY V1"
+          echo "============================================================"
           echo
-
-          echo "Startkapital:       100 USD"
-          echo "Risk pro Trade:     1%"
-          echo "Max Position:       25 USD"
-          echo "Take Profit:        0.60%"
-          echo "Stop Loss:          0.30%"
-          echo "Bitrue Fee:         0.06%"
-          echo "Slippage:           0.02%"
-
-          echo
-          echo "======================================"
 
           python bitrue/backtest.py BTCUSDT_5m.csv
 
@@ -128,7 +108,7 @@ jobs:
           echo
 
           if [ ! -f bitrue_v1_trade_log.csv ]; then
-            echo "ERROR: bitrue_v1_trade_log.csv wurde nicht erzeugt."
+            echo "ERROR: bitrue_v1_trade_log.csv fehlt."
             exit 1
           fi
 
@@ -136,44 +116,205 @@ jobs:
 
 
       # =========================================================
-      # SHOW BACKTEST RESULTS
+      # V2 BACKTEST
       # =========================================================
 
-      - name: Show backtest results
+      - name: Run Bitrue Strategy V2
         run: |
           echo
-          echo "======================================"
-          echo "BACKTEST RESULT"
-          echo "======================================"
+          echo "============================================================"
+          echo "BITRUE STRATEGY V2"
+          echo "============================================================"
+          echo
 
-          if [ ! -f bitrue_v1_trade_log.csv ]; then
-            echo "ERROR: bitrue_v1_trade_log.csv wurde nicht erzeugt."
+          echo "V2 Filter:"
+          echo "  Momentum:       0.15%"
+          echo "  ATR:            0.05%"
+          echo "  Volume Ratio:   1.20"
+          echo "  EMA Spread:     0.03%"
+          echo "  Cooldown:       30 Minuten"
+          echo
+
+          python bitrue/backtest_v2.py BTCUSDT_5m.csv
+
+
+      # =========================================================
+      # SHOW V2 RESULTS
+      # =========================================================
+
+      - name: Show V2 results
+        run: |
+          echo
+          echo "============================================================"
+          echo "V2 BACKTEST RESULT"
+          echo "============================================================"
+          echo
+
+          if [ ! -f bitrue_v2_trade_log.csv ]; then
+            echo "ERROR: bitrue_v2_trade_log.csv fehlt."
             exit 1
           fi
 
-          ls -lh bitrue_v1_trade_log.csv
+          ls -lh bitrue_v2_trade_log.csv
 
           echo
-          echo "======================================"
-          echo "TRADE LOG - FIRST 10"
-          echo "======================================"
-
-          head -11 bitrue_v1_trade_log.csv
+          echo "Erste 10 Trades:"
+          head -11 bitrue_v2_trade_log.csv
 
           echo
-          echo "======================================"
-          echo "TRADE LOG - LAST 10"
-          echo "======================================"
-
-          tail -10 bitrue_v1_trade_log.csv
+          echo "Letzte 10 Trades:"
+          tail -10 bitrue_v2_trade_log.csv
 
           echo
-          echo "======================================"
-          echo "NUMBER OF TRADES"
-          echo "======================================"
+          echo "Anzahl Trades:"
+          tail -n +2 bitrue_v2_trade_log.csv | wc -l
 
-          echo "Trades:"
-          tail -n +2 bitrue_v1_trade_log.csv | wc -l
+
+      # =========================================================
+      # V1 VS V2 SUMMARY
+      # =========================================================
+
+      - name: Compare V1 vs V2
+        run: |
+          echo
+          echo "============================================================"
+          echo "V1 vs V2"
+          echo "============================================================"
+          echo
+
+          python - <<'PY'
+          import pandas as pd
+
+          v1 = pd.read_csv("bitrue_v1_trade_log.csv")
+          v2 = pd.read_csv("bitrue_v2_trade_log.csv")
+
+          START = 100.0
+
+          def stats(df):
+              trades = len(df)
+
+              wins = int((df["net_pnl"] > 0).sum())
+              losses = int((df["net_pnl"] <= 0).sum())
+
+              win_rate = (
+                  wins / trades * 100
+                  if trades
+                  else 0.0
+              )
+
+              gross = df["gross_pnl"].sum()
+              fees = df["fees"].sum()
+              slippage = df["slippage_cost"].sum()
+              net = df["net_pnl"].sum()
+
+              return {
+                  "trades": trades,
+                  "wins": wins,
+                  "losses": losses,
+                  "win_rate": win_rate,
+                  "gross": gross,
+                  "fees": fees,
+                  "slippage": slippage,
+                  "net": net,
+                  "return_pct": net / START * 100,
+                  "avg_trade": df["net_pnl"].mean(),
+              }
+
+          s1 = stats(v1)
+          s2 = stats(v2)
+
+          print("STRATEGIE         V1              V2")
+          print("-" * 55)
+
+          print(
+              f"Trades            "
+              f"{s1['trades']:>10}      "
+              f"{s2['trades']:>10}"
+          )
+
+          print(
+              f"Gewinner          "
+              f"{s1['wins']:>10}      "
+              f"{s2['wins']:>10}"
+          )
+
+          print(
+              f"Verlierer         "
+              f"{s1['losses']:>10}      "
+              f"{s2['losses']:>10}"
+          )
+
+          print(
+              f"Win Rate          "
+              f"{s1['win_rate']:>9.2f}%     "
+              f"{s2['win_rate']:>9.2f}%"
+          )
+
+          print(
+              f"Brutto P&L        "
+              f"${s1['gross']:>9.2f}     "
+              f"${s2['gross']:>9.2f}"
+          )
+
+          print(
+              f"Gebühren          "
+              f"${s1['fees']:>9.2f}     "
+              f"${s2['fees']:>9.2f}"
+          )
+
+          print(
+              f"Slippage          "
+              f"${s1['slippage']:>9.2f}     "
+              f"${s2['slippage']:>9.2f}"
+          )
+
+          print(
+              f"Netto P&L         "
+              f"${s1['net']:>9.2f}     "
+              f"${s2['net']:>9.2f}"
+          )
+
+          print(
+              f"Rendite           "
+              f"{s1['return_pct']:>9.2f}%     "
+              f"{s2['return_pct']:>9.2f}%"
+          )
+
+          print(
+              f"Ø Trade           "
+              f"${s1['avg_trade']:>9.5f}     "
+              f"${s2['avg_trade']:>9.5f}"
+          )
+
+          print()
+          print("DIFFERENZ V2 - V1")
+          print("-" * 55)
+
+          print(
+              f"Trades:           "
+              f"{s2['trades'] - s1['trades']:+d}"
+          )
+
+          print(
+              f"Win Rate:         "
+              f"{s2['win_rate'] - s1['win_rate']:+.2f} %-Punkte"
+          )
+
+          print(
+              f"Netto P&L:        "
+              f"${s2['net'] - s1['net']:+.4f}"
+          )
+
+          print(
+              f"Rendite:          "
+              f"{s2['return_pct'] - s1['return_pct']:+.2f} %-Punkte"
+          )
+
+          print()
+          print("WICHTIG:")
+          print("Dieser Vergleich dient ausschließlich der")
+          print("Strategieentwicklung und ist kein Live-Trading.")
+          PY
 
 
       # =========================================================
@@ -189,10 +330,10 @@ jobs:
 
 
       # =========================================================
-      # UPLOAD V1 TRADE LOG
+      # UPLOAD V1
       # =========================================================
 
-      - name: Upload Bitrue V1 backtest results
+      - name: Upload V1 trade log
         uses: actions/upload-artifact@v4
         with:
           name: bitrue-v1-backtest-results
@@ -201,19 +342,26 @@ jobs:
 
 
       # =========================================================
-      # UPLOAD V1 DIAGNOSIS
+      # UPLOAD V2
+      # =========================================================
+
+      - name: Upload V2 trade log
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-v2-backtest-results
+          path: bitrue_v2_trade_log.csv
+          if-no-files-found: error
+
+
+      # =========================================================
+      # V1 DIAGNOSIS
       # =========================================================
 
       - name: Save V1 diagnosis
         run: |
-          python bitrue/analyze_v1.py bitrue_v1_trade_log.csv > bitrue_v1_diagnosis.txt
+          python bitrue/analyze_v1.py bitrue_v1_trade_log.csv \
+            > bitrue_v1_diagnosis.txt
 
-          echo
-          echo "======================================"
-          echo "V1 DIAGNOSIS SAVED"
-          echo "======================================"
-
-          ls -lh bitrue_v1_diagnosis.txt
 
       - name: Upload V1 diagnosis
         uses: actions/upload-artifact@v4
@@ -224,50 +372,36 @@ jobs:
 
 
       # =========================================================
-      # FINAL SUMMARY
+      # FINAL
       # =========================================================
 
       - name: Final summary
         run: |
           echo
           echo "============================================================"
-          echo "BITRUE V1 BACKTEST + DIAGNOSE ABGESCHLOSSEN"
+          echo "BITRUE V1 vs V2 BACKTEST ABGESCHLOSSEN"
           echo "============================================================"
           echo
-
-          echo "Historische Daten:"
+          echo "Daten:"
           echo "  BTCUSDT"
           echo "  5 Minuten"
           echo "  365 Tage"
-
           echo
-          echo "Strategie:"
-          echo "  Bitrue Strategy V1"
-
+          echo "Strategien:"
+          echo "  V1"
+          echo "  V2"
           echo
-          echo "Analyse:"
-          echo "  Long / Short"
-          echo "  Take Profit / Stop Loss"
-          echo "  Monatliche Ergebnisse"
-          echo "  Einstiegsstunden"
-          echo "  Haltedauer"
-          echo "  Verlustserien"
-          echo "  Gebühren"
-          echo "  Slippage"
-          echo "  Brutto / Netto P&L"
-
+          echo "V2 Filter:"
+          echo "  Momentum >= 0.15%"
+          echo "  ATR >= 0.05%"
+          echo "  Volume Ratio >= 1.20"
+          echo "  EMA Spread >= 0.03%"
+          echo "  Cooldown = 30 Minuten"
           echo
-          echo "Sicherheit:"
+          echo "SICHERHEIT:"
           echo "  PAPER ONLY"
           echo "  KEIN API KEY"
           echo "  KEIN LIVE TRADING"
           echo "  KEINE REALEN ORDERS"
-
-          echo
-          echo "Artifacts:"
-          echo "  BTCUSDT-5m-365d"
-          echo "  bitrue-v1-backtest-results"
-          echo "  bitrue-v1-diagnosis"
-
           echo
           echo "============================================================"
