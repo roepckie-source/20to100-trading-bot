@@ -1,4 +1,4 @@
-name: Bitrue V1 vs V2 vs V3
+name: Bitrue V1 V2 V3 - V3 Diagnose
 
 on:
   workflow_dispatch:
