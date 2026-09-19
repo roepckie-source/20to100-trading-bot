@@ -1,0 +1,280 @@
+name: Bitrue V8 - FINAL Pullback Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  v8:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ============================================================
+      # PYTHON
+      # ============================================================
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      # ============================================================
+      # DEPENDENCIES
+      # ============================================================
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests
+
+
+      # ============================================================
+      # DATA
+      # ============================================================
+
+      - name: Download 365 days BTCUSDT 5m
+        env:
+          BITRUE_DAYS: "365"
+        run: |
+          echo "============================================================"
+          echo "DOWNLOAD BTCUSDT 5m"
+          echo "============================================================"
+
+          python bitrue/download_binance_data.py
+
+
+      # ============================================================
+      # VALIDATE DATA
+      # ============================================================
+
+      - name: Validate dataset
+        run: |
+          echo "============================================================"
+          echo "VALIDATE DATASET"
+          echo "============================================================"
+
+          if [ ! -f BTCUSDT_5m.csv ]; then
+            echo "ERROR: BTCUSDT_5m.csv missing"
+            exit 1
+          fi
+
+          echo
+          echo "FILE:"
+          ls -lh BTCUSDT_5m.csv
+
+          echo
+          echo "LINES:"
+          wc -l BTCUSDT_5m.csv
+
+          echo
+          echo "FIRST:"
+          head -5 BTCUSDT_5m.csv
+
+          echo
+          echo "LAST:"
+          tail -5 BTCUSDT_5m.csv
+
+
+      # ============================================================
+      # V8 BACKTEST
+      # ============================================================
+
+      - name: Run V8 Final Backtest
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE V8"
+          echo "FINAL PULLBACK LONG / SHORT TEST"
+          echo "============================================================"
+          echo
+
+          echo "STRATEGY:"
+          echo "  1H TREND"
+          echo "  5M TREND"
+          echo "  PULLBACK"
+          echo "  TREND RESUMPTION"
+          echo
+
+          echo "DIRECTIONS:"
+          echo "  LONG"
+          echo "  SHORT"
+          echo
+
+          echo "NO PARAMETER SWEEP"
+          echo "NO OPTIMIZATION"
+          echo
+
+          echo "PAPER ONLY"
+          echo "NO LIVE TRADING"
+          echo "NO API KEYS"
+          echo "NO WALLET"
+          echo "NO REAL ORDERS"
+          echo
+
+          python bitrue/backtest_v8.py
+
+
+      # ============================================================
+      # VERIFY
+      # ============================================================
+
+      - name: Verify V8 results
+        run: |
+          echo
+          echo "============================================================"
+          echo "VERIFY V8 RESULTS"
+          echo "============================================================"
+
+          if [ ! -f bitrue_v8_report.txt ]; then
+            echo "ERROR: bitrue_v8_report.txt missing"
+            exit 1
+          fi
+
+          if [ ! -f bitrue_v8_trade_log.csv ]; then
+            echo "ERROR: bitrue_v8_trade_log.csv missing"
+            exit 1
+          fi
+
+          echo
+          echo "REPORT:"
+          ls -lh bitrue_v8_report.txt
+
+          echo
+          echo "TRADE LOG:"
+          ls -lh bitrue_v8_trade_log.csv
+
+          echo
+          echo "TRADE COUNT:"
+          wc -l bitrue_v8_trade_log.csv
+
+
+      # ============================================================
+      # SHOW REPORT
+      # ============================================================
+
+      - name: Show V8 report
+        run: |
+          echo
+          echo "============================================================"
+          echo "V8 FINAL REPORT"
+          echo "============================================================"
+          echo
+
+          cat bitrue_v8_report.txt
+
+
+      # ============================================================
+      # OOS SUMMARY
+      # ============================================================
+
+      - name: Show OOS summary
+        run: |
+          echo
+          echo "============================================================"
+          echo "V8 OOS SUMMARY"
+          echo "============================================================"
+
+          python - <<'PY'
+          import pandas as pd
+
+          file = "bitrue_v8_trade_log.csv"
+
+          df = pd.read_csv(file)
+
+          oos = df[df["period"] == "OOS"]
+
+          print()
+          print(f"OOS TRADES: {len(oos)}")
+          print()
+
+          if not oos.empty:
+
+              print(
+                  oos.groupby("side")["net_pnl"]
+                  .agg(["count", "sum", "mean"])
+              )
+
+              print()
+
+              print(
+                  "OOS NET:",
+                  round(oos["net_pnl"].sum(), 6)
+              )
+
+              print(
+                  "OOS WINS:",
+                  int((oos["net_pnl"] > 0).sum())
+              )
+
+              print(
+                  "OOS LOSSES:",
+                  int((oos["net_pnl"] <= 0).sum())
+              )
+
+              print()
+
+              print(
+                  "EXIT DISTRIBUTION:"
+              )
+
+              print(
+                  oos["exit_reason"]
+                  .value_counts()
+              )
+
+          else:
+
+              print(
+                  "NO OOS TRADES"
+              )
+          PY
+
+
+      # ============================================================
+      # UPLOAD
+      # ============================================================
+
+      - name: Upload V8 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-v8-final-results
+          path: |
+            BTCUSDT_5m.csv
+            bitrue_v8_report.txt
+            bitrue_v8_trade_log.csv
+          if-no-files-found: error
+
+
+      # ============================================================
+      # FINAL
+      # ============================================================
+
+      - name: Final status
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE V8 FINAL TEST COMPLETE"
+          echo "============================================================"
+          echo
+
+          echo "V8 = FINAL STRATEGY EXPERIMENT"
+          echo
+          echo "NO V9"
+          echo "NO V10"
+          echo "NO FURTHER PARAMETER OPTIMIZATION"
+          echo
+          echo "PAPER ONLY"
+          echo "NO LIVE TRADING"
+          echo "NO API KEYS"
+          echo "NO WALLET"
+          echo "NO REAL ORDERS"
+          echo
