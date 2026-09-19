@@ -1,0 +1,243 @@
+name: Bitrue V7 - Long Short Regime
+
+on:
+  workflow_dispatch:
+
+jobs:
+  v7:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ============================================================
+      # PYTHON
+      # ============================================================
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      # ============================================================
+      # DEPENDENCIES
+      # ============================================================
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests
+
+
+      # ============================================================
+      # DOWNLOAD DATA
+      # ============================================================
+
+      - name: Download 365 days BTCUSDT 5m
+        env:
+          BITRUE_DAYS: "365"
+        run: |
+          echo "============================================================"
+          echo "DOWNLOAD BTCUSDT 5m DATA"
+          echo "============================================================"
+
+          python bitrue/download_binance_data.py
+
+
+      # ============================================================
+      # VALIDATE DATA
+      # ============================================================
+
+      - name: Validate dataset
+        run: |
+          echo "============================================================"
+          echo "VALIDATE DATASET"
+          echo "============================================================"
+
+          if [ ! -f BTCUSDT_5m.csv ]; then
+            echo "ERROR: BTCUSDT_5m.csv not found"
+            exit 1
+          fi
+
+          ls -lh BTCUSDT_5m.csv
+
+          echo
+          echo "LINES:"
+          wc -l BTCUSDT_5m.csv
+
+          echo
+          echo "FIRST ROWS:"
+          head -5 BTCUSDT_5m.csv
+
+          echo
+          echo "LAST ROWS:"
+          tail -5 BTCUSDT_5m.csv
+
+
+      # ============================================================
+      # RUN V7
+      # ============================================================
+
+      - name: Run V7 Regime Backtest
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE V7"
+          echo "LONG / SHORT REGIME BACKTEST"
+          echo "============================================================"
+          echo
+
+          echo "FIXED STRATEGY"
+          echo
+          echo "BULL REGIME  -> LONG"
+          echo "BEAR REGIME  -> SHORT"
+          echo "NEUTRAL       -> NO TRADE"
+          echo
+
+          echo "NO PARAMETER SWEEP"
+          echo "NO OPTIMIZATION"
+          echo
+
+          echo "PAPER ONLY"
+          echo "NO LIVE TRADING"
+          echo "NO API KEYS"
+          echo "NO WALLET"
+          echo "NO REAL ORDERS"
+          echo
+
+          python bitrue/backtest_v7.py
+
+
+      # ============================================================
+      # CHECK RESULTS
+      # ============================================================
+
+      - name: Check V7 results
+        run: |
+          echo
+          echo "============================================================"
+          echo "CHECK V7 RESULTS"
+          echo "============================================================"
+
+          if [ ! -f bitrue_v7_report.txt ]; then
+            echo "ERROR: bitrue_v7_report.txt missing"
+            exit 1
+          fi
+
+          if [ ! -f bitrue_v7_trade_log.csv ]; then
+            echo "ERROR: bitrue_v7_trade_log.csv missing"
+            exit 1
+          fi
+
+          echo
+          echo "REPORT:"
+          ls -lh bitrue_v7_report.txt
+
+          echo
+          echo "TRADE LOG:"
+          ls -lh bitrue_v7_trade_log.csv
+
+          echo
+          echo "TRADE COUNT:"
+          wc -l bitrue_v7_trade_log.csv
+
+
+      # ============================================================
+      # SHOW REPORT
+      # ============================================================
+
+      - name: Show V7 report
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE V7 REPORT"
+          echo "============================================================"
+          echo
+
+          cat bitrue_v7_report.txt
+
+
+      # ============================================================
+      # SHOW OOS TRADES
+      # ============================================================
+
+      - name: Show OOS trades
+        run: |
+          echo
+          echo "============================================================"
+          echo "V7 OOS TRADE SAMPLE"
+          echo "============================================================"
+          echo
+
+          python - <<'PY'
+          import pandas as pd
+
+          file = "bitrue_v7_trade_log.csv"
+
+          df = pd.read_csv(file)
+
+          oos = df[df["period"] == "OOS"]
+
+          print(f"OOS trades: {len(oos)}")
+          print()
+
+          if not oos.empty:
+              print(oos.tail(20).to_string(index=False))
+          else:
+              print("NO OOS TRADES")
+          PY
+
+
+      # ============================================================
+      # UPLOAD RESULTS
+      # ============================================================
+
+      - name: Upload V7 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-v7-regime-results
+          path: |
+            BTCUSDT_5m.csv
+            bitrue_v7_report.txt
+            bitrue_v7_trade_log.csv
+          if-no-files-found: error
+
+
+      # ============================================================
+      # FINAL
+      # ============================================================
+
+      - name: Final status
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE V7 COMPLETE"
+          echo "============================================================"
+          echo
+
+          echo "V7 tested:"
+          echo
+          echo "  LONG  = bullish regime"
+          echo "  SHORT = bearish regime"
+          echo "  FLAT  = neutral regime"
+          echo
+
+          echo "The strategy was NOT optimized."
+          echo
+
+          echo "Next decision is based on the OOS result."
+          echo
+
+          echo "PAPER ONLY"
+          echo "NO LIVE TRADING"
+          echo "NO API KEYS"
+          echo "NO WALLET"
+          echo "NO REAL ORDERS"
