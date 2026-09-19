@@ -1,0 +1,100 @@
+name: Bitrue V6 - Cost & Edge Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  v6:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas
+
+      - name: Check V5 trade files
+        run: |
+          echo "============================================================"
+          echo "CHECK V5 TRADE FILES"
+          echo "============================================================"
+
+          for file in \
+            bitrue_v5_long_only_trades.csv \
+            bitrue_v5_short_only_trades.csv \
+            bitrue_v5_both_trades.csv
+          do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: Missing $file"
+              exit 1
+            fi
+
+            echo
+            echo "FOUND: $file"
+            wc -l "$file"
+          done
+
+      - name: Run V6 Cost & Edge Test
+        run: |
+          echo "============================================================"
+          echo "BITRUE V6"
+          echo "COST & EDGE TEST"
+          echo "============================================================"
+
+          python bitrue/v6_cost_edge_test.py
+
+      - name: Show V6 summary
+        run: |
+          echo
+          echo "============================================================"
+          echo "V6 SUMMARY"
+          echo "============================================================"
+
+          cat bitrue_v6_cost_edge_summary.csv
+
+          echo
+          echo "============================================================"
+          echo "FEE SENSITIVITY"
+          echo "============================================================"
+
+          cat bitrue_v6_fee_sensitivity.csv
+
+          echo
+          echo "============================================================"
+          echo "SLIPPAGE SENSITIVITY"
+          echo "============================================================"
+
+          cat bitrue_v6_slippage_sensitivity.csv
+
+      - name: Upload V6 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-v6-cost-edge-results
+          path: |
+            bitrue_v6_cost_edge_summary.csv
+            bitrue_v6_fee_sensitivity.csv
+            bitrue_v6_slippage_sensitivity.csv
+            bitrue_v6_combined_cost_sensitivity.csv
+          if-no-files-found: error
+
+      - name: Final
+        run: |
+          echo
+          echo "============================================================"
+          echo "BITRUE V6 COST & EDGE TEST COMPLETE"
+          echo "============================================================"
+          echo
+          echo "PAPER ONLY"
+          echo "NO LIVE TRADING"
+          echo "NO API KEYS"
+          echo "NO WALLET"
+          echo "NO REAL ORDERS"
