@@ -1,1 +1,209 @@
+name: Bitrue V4 Automatic Strategy Sweep
 
+on:
+  workflow_dispatch:
+
+jobs:
+
+  v4-sweep:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # =========================================================
+      # CHECKOUT
+      # =========================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # =========================================================
+      # PYTHON
+      # =========================================================
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      # =========================================================
+      # DEPENDENCIES
+      # =========================================================
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests
+
+
+      # =========================================================
+      # DOWNLOAD DATA
+      # =========================================================
+
+      - name: Download 365 days BTCUSDT 5m
+        env:
+          BITRUE_DAYS: "365"
+        run: |
+
+          echo
+          echo "============================================================"
+          echo "BITRUE V4 - DOWNLOAD"
+          echo "============================================================"
+          echo
+
+          python bitrue/download_binance_data.py
+
+
+      # =========================================================
+      # VALIDATE DATA
+      # =========================================================
+
+      - name: Validate dataset
+        run: |
+
+          echo
+          echo "============================================================"
+          echo "DATASET VALIDATION"
+          echo "============================================================"
+          echo
+
+          test -f BTCUSDT_5m.csv
+
+          ls -lh BTCUSDT_5m.csv
+
+          echo
+          echo "Zeilen:"
+          wc -l BTCUSDT_5m.csv
+
+          echo
+          echo "Erste Zeilen:"
+          head -5 BTCUSDT_5m.csv
+
+          echo
+          echo "Letzte Zeilen:"
+          tail -5 BTCUSDT_5m.csv
+
+
+      # =========================================================
+      # V4 SWEEP
+      # =========================================================
+
+      - name: Run V4 automatic sweep
+        run: |
+
+          echo
+          echo "============================================================"
+          echo "BITRUE V4 AUTOMATIC STRATEGY SWEEP"
+          echo "============================================================"
+          echo
+
+          python bitrue/v4_sweep.py
+
+
+      # =========================================================
+      # SHOW REPORT
+      # =========================================================
+
+      - name: Show V4 report
+        run: |
+
+          echo
+          echo "============================================================"
+          echo "BITRUE V4 REPORT"
+          echo "============================================================"
+          echo
+
+          test -f bitrue_v4_sweep_report.txt
+
+          cat bitrue_v4_sweep_report.txt
+
+
+      # =========================================================
+      # CHECK CANDIDATES
+      # =========================================================
+
+      - name: Check V4 candidates
+        run: |
+
+          echo
+          echo "============================================================"
+          echo "V4 CANDIDATES"
+          echo "============================================================"
+          echo
+
+          test -f bitrue_v4_candidates.csv
+
+          ls -lh bitrue_v4_candidates.csv
+
+          echo
+          echo "Kandidaten:"
+          cat bitrue_v4_candidates.csv
+
+
+      # =========================================================
+      # UPLOAD FULL RESULTS
+      # =========================================================
+
+      - name: Upload V4 sweep results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-v4-sweep-results
+          path: |
+            bitrue_v4_sweep_results.csv
+            bitrue_v4_candidates.csv
+            bitrue_v4_sweep_report.txt
+          if-no-files-found: error
+
+
+      # =========================================================
+      # UPLOAD DATA
+      # =========================================================
+
+      - name: Upload dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitrue-v4-dataset
+          path: BTCUSDT_5m.csv
+          if-no-files-found: error
+
+
+      # =========================================================
+      # FINAL
+      # =========================================================
+
+      - name: Final report
+        run: |
+
+          echo
+          echo "============================================================"
+          echo "BITRUE V4 SWEEP ABGESCHLOSSEN"
+          echo "============================================================"
+          echo
+
+          echo "365 Tage BTCUSDT 5m"
+          echo
+          echo "V4 Parameter-Sweep:"
+          echo "  ATR-Regime"
+          echo "  Volume-Obergrenze"
+          echo "  Stop-Loss ATR"
+          echo "  Take-Profit ATR"
+          echo
+          echo "TRAIN/OOS: 70/30"
+          echo
+          echo "Bewertung:"
+          echo "  OOS priorisiert"
+          echo "  Mindestanzahl OOS Trades"
+          echo "  Profit Factor"
+          echo "  durchschnittlicher OOS Trade"
+          echo "  Drawdown"
+          echo
+          echo "SICHERHEIT:"
+          echo "  PAPER ONLY"
+          echo "  NO API KEYS"
+          echo "  NO LIVE TRADING"
+          echo "  NO REAL ORDERS"
+          echo
+          echo "============================================================"
