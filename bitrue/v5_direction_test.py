@@ -15,13 +15,12 @@ Compare:
 2. SHORT ONLY
 3. LONG + SHORT
 
-using the best V4 parameter region without
-performing another parameter optimization.
+using the V4 parameter region without another parameter optimization.
 
-V4 parameters used:
+V4 parameters:
 
 ATR:        0.175% - 0.200%
-Volume:     <= 3.0x
+Volume:     1.20x - 3.00x
 SL:         1.4x ATR
 TP:         2.5x ATR
 
@@ -39,7 +38,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
-import numpy as np
 
 
 # ============================================================
@@ -61,9 +59,9 @@ TRAIN_RATIO = 0.70
 
 COOLDOWN_MINUTES = 30
 
-# ------------------------------------------------------------
-# V4 BEST REGION
-# ------------------------------------------------------------
+# ============================================================
+# V4 PARAMETER REGION
+# ============================================================
 
 ATR_MIN = 0.175
 ATR_MAX = 0.200
@@ -108,16 +106,18 @@ class Position:
 # LOAD DATA
 # ============================================================
 
-def load_data():
+def load_data(
+    path: Path = DATA_FILE,
+) -> pd.DataFrame:
 
-    if not DATA_FILE.exists():
+    if not path.exists():
 
         raise FileNotFoundError(
-            f"Missing data file: {DATA_FILE}"
+            f"Missing data file: {path}"
         )
 
     df = pd.read_csv(
-        DATA_FILE
+        path
     )
 
     timestamp_candidates = [
@@ -223,6 +223,57 @@ def load_data():
     df = df.reset_index(
         drop=True
     )
+
+    if df.empty:
+
+        raise ValueError(
+            "Dataset is empty after cleaning."
+        )
+
+    if (df["close"] <= 0).any():
+
+        raise ValueError(
+            "Invalid close price detected."
+        )
+
+    if (df["high"] <= 0).any():
+
+        raise ValueError(
+            "Invalid high price detected."
+        )
+
+    if (df["low"] <= 0).any():
+
+        raise ValueError(
+            "Invalid low price detected."
+        )
+
+    print()
+    print("=" * 70)
+    print("DATA")
+    print("=" * 70)
+
+    print(
+        f"Rows:        {len(df):,}"
+    )
+
+    print(
+        f"Start:       {df['timestamp'].iloc[0]}"
+    )
+
+    print(
+        f"End:         {df['timestamp'].iloc[-1]}"
+    )
+
+    print(
+        f"BTC start:   ${df['close'].iloc[0]:,.2f}"
+    )
+
+    print(
+        f"BTC end:     ${df['close'].iloc[-1]:,.2f}"
+    )
+
+    print("=" * 70)
 
     return df
 
@@ -393,11 +444,18 @@ def calculate_indicators(
     )
 
     # --------------------------------------------------------
-    # Prevent lookahead
+    # Shift by one complete 1H candle.
+    #
+    # This prevents lookahead.
     # --------------------------------------------------------
 
-    h1["ema20"] = h1["ema20"].shift(1)
-    h1["ema50"] = h1["ema50"].shift(1)
+    h1["ema20"] = (
+        h1["ema20"].shift(1)
+    )
+
+    h1["ema50"] = (
+        h1["ema50"].shift(1)
+    )
 
     h1 = h1[
         [
@@ -434,7 +492,7 @@ def calculate_indicators(
 # POSITION SIZE
 # ============================================================
 
-def position_size(
+def calculate_position_size(
     balance: float,
 ) -> float:
 
@@ -453,10 +511,10 @@ def position_size(
 
 
 # ============================================================
-# EXECUTION
+# ENTRY / EXIT SLIPPAGE
 # ============================================================
 
-def entry_price(
+def apply_entry_slippage(
     price: float,
     side: str,
 ) -> float:
@@ -472,7 +530,7 @@ def entry_price(
     )
 
 
-def exit_price(
+def apply_exit_slippage(
     price: float,
     side: str,
 ) -> float:
@@ -493,7 +551,7 @@ def exit_price(
 # ============================================================
 
 def get_signal(
-    row,
+    row: pd.Series,
     direction_mode: str,
 ):
 
@@ -537,7 +595,7 @@ def get_signal(
     )
 
     # --------------------------------------------------------
-    # Common filters
+    # ATR filter
     # --------------------------------------------------------
 
     if not (
@@ -548,6 +606,10 @@ def get_signal(
 
         return None
 
+    # --------------------------------------------------------
+    # Volume filter
+    # --------------------------------------------------------
+
     if not (
         VOLUME_MIN
         <= volume_ratio
@@ -556,52 +618,53 @@ def get_signal(
 
         return None
 
+    # --------------------------------------------------------
+    # EMA spread
+    # --------------------------------------------------------
+
     if spread < EMA_SPREAD_MIN:
 
         return None
 
     # --------------------------------------------------------
-    # LONG
+    # LONG signal
     # --------------------------------------------------------
 
     long_signal = (
         momentum >= MOMENTUM_MIN
         and
-        row["ema_fast"]
-        > row["ema_medium"]
-        > row["ema_slow"]
+        float(row["ema_fast"])
+        > float(row["ema_medium"])
+        > float(row["ema_slow"])
         and
         close
-        > row["ema_fast"]
+        > float(row["ema_fast"])
         and
         bool(row["htf_bullish"])
     )
 
     # --------------------------------------------------------
-    # SHORT
+    # SHORT signal
     # --------------------------------------------------------
 
     short_signal = (
         momentum <= -MOMENTUM_MIN
         and
-        row["ema_fast"]
-        < row["ema_medium"]
-        < row["ema_slow"]
+        float(row["ema_fast"])
+        < float(row["ema_medium"])
+        < float(row["ema_slow"])
         and
         close
-        < row["ema_fast"]
+        < float(row["ema_fast"])
         and
         bool(row["htf_bearish"])
     )
 
     # --------------------------------------------------------
-    # Direction control
+    # Direction mode
     # --------------------------------------------------------
 
-    if (
-        direction_mode
-        == "LONG_ONLY"
-    ):
+    if direction_mode == "LONG_ONLY":
 
         if long_signal:
 
@@ -609,10 +672,7 @@ def get_signal(
 
         return None
 
-    if (
-        direction_mode
-        == "SHORT_ONLY"
-    ):
+    if direction_mode == "SHORT_ONLY":
 
         if short_signal:
 
@@ -620,10 +680,7 @@ def get_signal(
 
         return None
 
-    if (
-        direction_mode
-        == "BOTH"
-    ):
+    if direction_mode == "BOTH":
 
         if long_signal:
 
@@ -640,7 +697,7 @@ def get_signal(
 # TRADE RESULT
 # ============================================================
 
-def trade_result(
+def calculate_trade_result(
     position: Position,
     exit_exec: float,
 ):
@@ -664,6 +721,10 @@ def trade_result(
             - exit_exec
         ) * quantity
 
+    # --------------------------------------------------------
+    # Fees
+    # --------------------------------------------------------
+
     entry_notional = (
         position.position_size
     )
@@ -678,8 +739,12 @@ def trade_result(
         + exit_notional
     ) * FEE_RATE
 
-    # Slippage is already reflected
-    # in execution prices.
+    # --------------------------------------------------------
+    # Slippage is already included in the execution prices.
+    #
+    # Therefore it must NOT be deducted a second time.
+    # --------------------------------------------------------
+
     slippage_cost = 0.0
 
     net = (
@@ -702,14 +767,16 @@ def trade_result(
 def run_backtest(
     data: pd.DataFrame,
     direction_mode: str,
-):
+) -> pd.DataFrame:
 
     split_index = int(
         len(data)
         * TRAIN_RATIO
     )
 
-    balance = STARTING_CAPITAL
+    balance = (
+        STARTING_CAPITAL
+    )
 
     position = None
 
@@ -725,10 +792,6 @@ def run_backtest(
 
         timestamp = row.timestamp
 
-        open_price = float(
-            row.open
-        )
-
         high = float(
             row.high
         )
@@ -741,25 +804,34 @@ def run_backtest(
             row.close
         )
 
-        # ----------------------------------------------------
-        # Manage position
-        # ----------------------------------------------------
+        # ====================================================
+        # MANAGE EXISTING POSITION
+        # ====================================================
 
         if position is not None:
 
-            reason = None
-            raw_exit = None
+            exit_reason = None
+            raw_exit_price = None
+
+            # ------------------------------------------------
+            # LONG
+            # ------------------------------------------------
 
             if position.side == "LONG":
 
                 # Conservative:
-                # stop first
+                # STOP before TAKE PROFIT
 
-                if low <= position.stop_loss:
+                if (
+                    low
+                    <= position.stop_loss
+                ):
 
-                    reason = "STOP_LOSS"
+                    exit_reason = (
+                        "STOP_LOSS"
+                    )
 
-                    raw_exit = (
+                    raw_exit_price = (
                         position.stop_loss
                     )
 
@@ -768,22 +840,33 @@ def run_backtest(
                     >= position.take_profit
                 ):
 
-                    reason = "TAKE_PROFIT"
+                    exit_reason = (
+                        "TAKE_PROFIT"
+                    )
 
-                    raw_exit = (
+                    raw_exit_price = (
                         position.take_profit
                     )
 
+            # ------------------------------------------------
+            # SHORT
+            # ------------------------------------------------
+
             else:
+
+                # Conservative:
+                # STOP before TAKE PROFIT
 
                 if (
                     high
                     >= position.stop_loss
                 ):
 
-                    reason = "STOP_LOSS"
+                    exit_reason = (
+                        "STOP_LOSS"
+                    )
 
-                    raw_exit = (
+                    raw_exit_price = (
                         position.stop_loss
                     )
 
@@ -792,17 +875,25 @@ def run_backtest(
                     <= position.take_profit
                 ):
 
-                    reason = "TAKE_PROFIT"
+                    exit_reason = (
+                        "TAKE_PROFIT"
+                    )
 
-                    raw_exit = (
+                    raw_exit_price = (
                         position.take_profit
                     )
 
-            if reason is not None:
+            # ------------------------------------------------
+            # CLOSE POSITION
+            # ------------------------------------------------
 
-                execution = exit_price(
-                    raw_exit,
-                    position.side,
+            if exit_reason is not None:
+
+                execution_price = (
+                    apply_exit_slippage(
+                        raw_exit_price,
+                        position.side,
+                    )
                 )
 
                 (
@@ -810,9 +901,9 @@ def run_backtest(
                     fees,
                     slippage,
                     net,
-                ) = trade_result(
+                ) = calculate_trade_result(
                     position,
-                    execution,
+                    execution_price,
                 )
 
                 balance += net
@@ -842,10 +933,16 @@ def run_backtest(
                             position.entry_price,
 
                         "exit_price":
-                            execution,
+                            execution_price,
 
                         "position_size":
                             position.position_size,
+
+                        "stop_loss":
+                            position.stop_loss,
+
+                        "take_profit":
+                            position.take_profit,
 
                         "gross_pnl":
                             gross,
@@ -868,6 +965,9 @@ def run_backtest(
                         "atr_pct":
                             position.atr_pct,
 
+                        "atr_value":
+                            position.atr_value,
+
                         "volume_ratio":
                             position.volume_ratio,
 
@@ -875,7 +975,7 @@ def run_backtest(
                             position.ema_spread_pct,
 
                         "exit_reason":
-                            reason,
+                            exit_reason,
 
                         "entry_index":
                             position.entry_index,
@@ -885,68 +985,75 @@ def run_backtest(
                     }
                 )
 
-                last_exit_time = timestamp
+                last_exit_time = (
+                    timestamp
+                )
 
                 position = None
 
                 continue
 
-        # ----------------------------------------------------
-        # Cooldown
-        # ----------------------------------------------------
+        # ====================================================
+        # COOLDOWN
+        # ====================================================
 
         if last_exit_time is not None:
 
-            minutes = (
+            elapsed_minutes = (
                 timestamp
                 - last_exit_time
             ).total_seconds() / 60.0
 
-            if minutes < COOLDOWN_MINUTES:
+            if (
+                elapsed_minutes
+                < COOLDOWN_MINUTES
+            ):
 
                 continue
 
-        # ----------------------------------------------------
-        # Signal
-        # ----------------------------------------------------
+        # ====================================================
+        # SIGNAL
+        # ====================================================
+
+        signal_row = pd.Series(
+            {
+                "close":
+                    close,
+
+                "ema_fast":
+                    row.ema_fast,
+
+                "ema_medium":
+                    row.ema_medium,
+
+                "ema_slow":
+                    row.ema_slow,
+
+                "momentum_pct":
+                    row.momentum_pct,
+
+                "atr":
+                    row.atr,
+
+                "atr_pct":
+                    row.atr_pct,
+
+                "volume_ratio":
+                    row.volume_ratio,
+
+                "ema_spread_pct":
+                    row.ema_spread_pct,
+
+                "htf_bullish":
+                    row.htf_bullish,
+
+                "htf_bearish":
+                    row.htf_bearish,
+            }
+        )
 
         signal = get_signal(
-            pd.Series(
-                {
-                    "close":
-                        close,
-
-                    "ema_fast":
-                        row.ema_fast,
-
-                    "ema_medium":
-                        row.ema_medium,
-
-                    "ema_slow":
-                        row.ema_slow,
-
-                    "momentum_pct":
-                        row.momentum_pct,
-
-                    "atr":
-                        row.atr,
-
-                    "atr_pct":
-                        row.atr_pct,
-
-                    "volume_ratio":
-                        row.volume_ratio,
-
-                    "ema_spread_pct":
-                        row.ema_spread_pct,
-
-                    "htf_bullish":
-                        row.htf_bullish,
-
-                    "htf_bearish":
-                        row.htf_bearish,
-                }
-            ),
+            signal_row,
             direction_mode,
         )
 
@@ -954,7 +1061,11 @@ def run_backtest(
 
             continue
 
-        atr = float(
+        # ====================================================
+        # INDICATORS FOR POSITION
+        # ====================================================
+
+        atr_value = float(
             row.atr
         )
 
@@ -962,57 +1073,85 @@ def run_backtest(
             row.atr_pct
         )
 
-        volume_ratio = float(
-            row.volume_ratio
-        )
-
-        spread = float(
-            row.ema_spread_pct
-        )
-
         momentum = float(
             row.momentum_pct
         )
 
-        size = position_size(
-            balance
+        volume_ratio = float(
+            row.volume_ratio
         )
 
-        execution = entry_price(
-            close,
-            signal,
+        ema_spread = float(
+            row.ema_spread_pct
         )
 
-        # ----------------------------------------------------
-        # ATR SL / TP
-        # ----------------------------------------------------
+        # ====================================================
+        # POSITION SIZE
+        # ====================================================
+
+        size = (
+            calculate_position_size(
+                balance
+            )
+        )
+
+        if size <= 0:
+
+            continue
+
+        # ====================================================
+        # ENTRY
+        # ====================================================
+
+        execution_price = (
+            apply_entry_slippage(
+                close,
+                signal,
+            )
+        )
+
+        # ====================================================
+        # STOP / TAKE PROFIT
+        #
+        # IMPORTANT:
+        # ATR VALUE = absolute BTC price distance
+        # ATR_PCT   = percentage used only for filtering
+        # ====================================================
 
         if signal == "LONG":
 
-            stop = (
-                execution
-                - atr
-                * SL_ATR_MULTIPLIER
+            stop_loss = (
+                execution_price
+                - (
+                    atr_value
+                    * SL_ATR_MULTIPLIER
+                )
             )
 
-            target = (
-                execution
-                + atr
-                * TP_ATR_MULTIPLIER
+            take_profit = (
+                execution_price
+                + (
+                    atr_value
+                    * TP_ATR_MULTIPLIER
+                )
             )
 
         else:
 
-            stop = (
-                execution
-                + atr
-                * SL_ATR_MULTIPLIER
+            stop_loss = (
+                execution_price
+                + (
+                    atr_value
+                    * SL_ATR_MULTIPLIER
+                )
             )
 
-            target = (
-                execution
-                - atr
-                * TP_ATR_MULTIPLIER
+            take_profit = (
+                execution_price
+                - (
+                    atr_value
+                    * TP_ATR_MULTIPLIER
+                )
             )
 
         position = Position(
@@ -1022,23 +1161,23 @@ def run_backtest(
 
             entry_index=i,
 
-            entry_price=execution,
+            entry_price=execution_price,
 
             position_size=size,
 
-            stop_loss=stop,
+            stop_loss=stop_loss,
 
-            take_profit=target,
+            take_profit=take_profit,
 
             momentum_pct=momentum,
 
             atr_pct=atr_pct,
 
-            atr_value=atr,
+            atr_value=atr_value,
 
             volume_ratio=volume_ratio,
 
-            ema_spread_pct=spread,
+            ema_spread_pct=ema_spread,
         )
 
     return pd.DataFrame(
@@ -1052,7 +1191,7 @@ def run_backtest(
 
 def calculate_stats(
     trades: pd.DataFrame,
-):
+) -> dict:
 
     if trades.empty:
 
@@ -1084,39 +1223,35 @@ def calculate_stats(
         ).sum()
     )
 
-    count = len(
+    trade_count = len(
         trades
     )
 
     win_rate = (
         wins
-        / count
+        / trade_count
         * 100.0
     )
 
     gross = float(
-        trades["gross_pnl"]
-        .sum()
+        trades["gross_pnl"].sum()
     )
 
     fees = float(
-        trades["fees"]
-        .sum()
+        trades["fees"].sum()
     )
 
     slippage = float(
-        trades["slippage"]
-        .sum()
+        trades["slippage"].sum()
     )
 
     net = float(
-        trades["net_pnl"]
-        .sum()
+        trades["net_pnl"].sum()
     )
 
     avg_trade = (
         net
-        / count
+        / trade_count
     )
 
     positive = float(
@@ -1163,7 +1298,7 @@ def calculate_stats(
     )
 
     return {
-        "trades": count,
+        "trades": trade_count,
         "wins": wins,
         "losses": losses,
         "win_rate": win_rate,
@@ -1178,7 +1313,7 @@ def calculate_stats(
 
 
 # ============================================================
-# REPORT
+# DIRECTION ANALYSIS
 # ============================================================
 
 def analyze_direction(
@@ -1188,7 +1323,21 @@ def analyze_direction(
 
     if trades.empty:
 
-        return None
+        return {
+            "direction": direction,
+
+            "total": calculate_stats(
+                trades
+            ),
+
+            "train": calculate_stats(
+                trades
+            ),
+
+            "oos": calculate_stats(
+                trades
+            ),
+        }
 
     train = trades[
         trades["period"]
@@ -1200,29 +1349,23 @@ def analyze_direction(
         == "OOS"
     ]
 
-    total = calculate_stats(
-        trades
-    )
-
-    train_stats = calculate_stats(
-        train
-    )
-
-    oos_stats = calculate_stats(
-        oos
-    )
-
     return {
         "direction": direction,
 
         "total":
-            total,
+            calculate_stats(
+                trades
+            ),
 
         "train":
-            train_stats,
+            calculate_stats(
+                train
+            ),
 
         "oos":
-            oos_stats,
+            calculate_stats(
+                oos
+            ),
     }
 
 
@@ -1246,8 +1389,10 @@ def main():
 
     print()
     print("V4 PARAMETERS")
+
     print(
-        f"ATR:        {ATR_MIN:.3f}% - "
+        f"ATR:        "
+        f"{ATR_MIN:.3f}% - "
         f"{ATR_MAX:.3f}%"
     )
 
@@ -1267,36 +1412,51 @@ def main():
         f"{TP_ATR_MULTIPLIER:.1f}x ATR"
     )
 
-    # --------------------------------------------------------
-    # Load
-    # --------------------------------------------------------
+    # ========================================================
+    # LOAD DATA
+    # ========================================================
 
     data = load_data(
         DATA_FILE
+    )
+
+    # ========================================================
+    # CALCULATE INDICATORS
+    # ========================================================
+
+    print()
+    print(
+        "Calculating indicators..."
     )
 
     data = calculate_indicators(
         data
     )
 
+    split_index = int(
+        len(data)
+        * TRAIN_RATIO
+    )
+
     print()
     print(
-        f"Candles: {len(data):,}"
+        f"Total candles: "
+        f"{len(data):,}"
     )
 
     print(
-        f"TRAIN:   "
-        f"{int(len(data) * TRAIN_RATIO):,}"
+        f"TRAIN candles: "
+        f"{split_index:,}"
     )
 
     print(
-        f"OOS:     "
-        f"{len(data) - int(len(data) * TRAIN_RATIO):,}"
+        f"OOS candles:   "
+        f"{len(data) - split_index:,}"
     )
 
-    # --------------------------------------------------------
-    # Tests
-    # --------------------------------------------------------
+    # ========================================================
+    # DIRECTION MODES
+    # ========================================================
 
     modes = [
         "LONG_ONLY",
@@ -1304,7 +1464,7 @@ def main():
         "BOTH",
     ]
 
-    all_results = []
+    results = []
 
     report_lines = []
 
@@ -1349,24 +1509,30 @@ def main():
     )
 
     report_lines.append(
-        f"ATR {ATR_MIN:.3f}-{ATR_MAX:.3f}%"
+        f"ATR: {ATR_MIN:.3f}% - "
+        f"{ATR_MAX:.3f}%"
     )
 
     report_lines.append(
-        f"Volume {VOLUME_MIN:.1f}-{VOLUME_MAX:.1f}x"
+        f"Volume: {VOLUME_MIN:.1f}x - "
+        f"{VOLUME_MAX:.1f}x"
     )
 
     report_lines.append(
-        f"SL {SL_ATR_MULTIPLIER:.1f}x ATR"
+        f"SL: {SL_ATR_MULTIPLIER:.1f}x ATR"
     )
 
     report_lines.append(
-        f"TP {TP_ATR_MULTIPLIER:.1f}x ATR"
+        f"TP: {TP_ATR_MULTIPLIER:.1f}x ATR"
     )
 
     report_lines.append(
         ""
     )
+
+    # ========================================================
+    # RUN ALL THREE TESTS
+    # ========================================================
 
     for mode in modes:
 
@@ -1380,38 +1546,32 @@ def main():
             mode,
         )
 
-        if not trades.empty:
+        # ----------------------------------------------------
+        # Save individual trade log
+        # ----------------------------------------------------
 
-            filename = (
-                f"bitrue_v5_"
-                f"{mode.lower()}_trades.csv"
-            )
+        trade_file = Path(
+            f"bitrue_v5_"
+            f"{mode.lower()}_trades.csv"
+        )
 
-            trades.to_csv(
-                filename,
-                index=False,
-            )
+        trades.to_csv(
+            trade_file,
+            index=False,
+        )
 
         result = analyze_direction(
             trades,
             mode,
         )
 
-        all_results.append(
+        results.append(
             result
         )
 
-        if result is None:
-
-            print(
-                "NO TRADES"
-            )
-
-            report_lines.append(
-                f"{mode}: NO TRADES"
-            )
-
-            continue
+        # ----------------------------------------------------
+        # Print statistics
+        # ----------------------------------------------------
 
         for period in [
             "total",
@@ -1429,53 +1589,70 @@ def main():
 
             print()
             print(
-                f"{label}:"
+                f"{label}"
             )
 
             print(
-                f"Trades:       "
+                f"Trades:        "
                 f"{stats['trades']}"
             )
 
             print(
-                f"Win rate:     "
+                f"Wins:          "
+                f"{stats['wins']}"
+            )
+
+            print(
+                f"Losses:        "
+                f"{stats['losses']}"
+            )
+
+            print(
+                f"Win rate:      "
                 f"{stats['win_rate']:.2f}%"
             )
 
             print(
-                f"Gross P&L:    "
+                f"Gross P&L:     "
                 f"${stats['gross']:.4f}"
             )
 
             print(
-                f"Fees:         "
+                f"Fees:          "
                 f"${stats['fees']:.4f}"
             )
 
             print(
-                f"Net P&L:      "
+                f"Slippage:      "
+                f"${stats['slippage']:.4f}"
+            )
+
+            print(
+                f"Net P&L:       "
                 f"${stats['net']:.4f}"
             )
 
             print(
-                f"Avg trade:    "
+                f"Avg trade:     "
                 f"${stats['avg_trade']:.6f}"
             )
 
             print(
-                f"Profit factor:"
-                f" {stats['profit_factor']:.3f}"
+                f"Profit factor: "
+                f"{stats['profit_factor']:.3f}"
             )
 
             print(
-                f"Max DD:       "
+                f"Max drawdown:  "
                 f"${stats['max_drawdown']:.4f}"
             )
 
             report_lines.append(
                 f"{mode} {label}: "
                 f"Trades={stats['trades']} | "
-                f"Win={stats['win_rate']:.2f}% | "
+                f"Wins={stats['wins']} | "
+                f"Losses={stats['losses']} | "
+                f"WinRate={stats['win_rate']:.2f}% | "
                 f"Gross=${stats['gross']:.4f} | "
                 f"Fees=${stats['fees']:.4f} | "
                 f"Net=${stats['net']:.4f} | "
@@ -1484,9 +1661,14 @@ def main():
                 f"DD=${stats['max_drawdown']:.4f}"
             )
 
-    # --------------------------------------------------------
-    # Direction comparison
-    # --------------------------------------------------------
+    # ========================================================
+    # COMPARISON
+    # ========================================================
+
+    print()
+    print("=" * 70)
+    print("V5 OOS COMPARISON")
+    print("=" * 70)
 
     report_lines.append(
         ""
@@ -1497,56 +1679,42 @@ def main():
     )
 
     report_lines.append(
-        "DIRECTION COMPARISON"
+        "V5 OOS COMPARISON"
     )
 
     report_lines.append(
         "=" * 70
     )
 
-    for result in all_results:
+    for result in results:
 
-        if result is None:
+        stats = result[
+            "oos"
+        ]
 
-            continue
-
-        oos = result["oos"]
-
-        report_lines.append(
+        line = (
             f"{result['direction']}: "
-            f"OOS Trades={oos['trades']} | "
-            f"OOS Win={oos['win_rate']:.2f}% | "
-            f"OOS Net=${oos['net']:.4f} | "
-            f"OOS Avg=${oos['avg_trade']:.6f} | "
-            f"OOS PF={oos['profit_factor']:.3f}"
+            f"Trades={stats['trades']} | "
+            f"WinRate={stats['win_rate']:.2f}% | "
+            f"Net=${stats['net']:.4f} | "
+            f"Avg=${stats['avg_trade']:.6f} | "
+            f"PF={stats['profit_factor']:.3f} | "
+            f"DD=${stats['max_drawdown']:.4f}"
         )
 
-    # --------------------------------------------------------
-    # Save report
-    # --------------------------------------------------------
+        print(line)
 
-    report_file = Path(
-        "bitrue_v5_direction_report.txt"
-    )
+        report_lines.append(
+            line
+        )
 
-    report_file.write_text(
-        "\n".join(
-            report_lines
-        ),
-        encoding="utf-8",
-    )
-
-    # --------------------------------------------------------
-    # Combined summary CSV
-    # --------------------------------------------------------
+    # ========================================================
+    # SUMMARY CSV
+    # ========================================================
 
     summary_rows = []
 
-    for result in all_results:
-
-        if result is None:
-
-            continue
+    for result in results:
 
         for period in [
             "total",
@@ -1629,14 +1797,41 @@ def main():
         summary_rows
     )
 
+    summary_file = Path(
+        "bitrue_v5_direction_summary.csv"
+    )
+
     summary.to_csv(
-        "bitrue_v5_direction_summary.csv",
+        summary_file,
         index=False,
     )
 
-    # --------------------------------------------------------
-    # Final
-    # --------------------------------------------------------
+    # ========================================================
+    # REPORT FILE
+    # ========================================================
+
+    report_file = Path(
+        "bitrue_v5_direction_report.txt"
+    )
+
+    report_file.write_text(
+        "\n".join(
+            report_lines
+        ),
+        encoding="utf-8",
+    )
+
+    # Also print complete report
+    print()
+    print(
+        "\n".join(
+            report_lines
+        )
+    )
+
+    # ========================================================
+    # FINAL
+    # ========================================================
 
     print()
     print("=" * 70)
@@ -1676,6 +1871,23 @@ def main():
         "LIVE TRADING = FALSE"
     )
 
+    print(
+        "NO API KEYS"
+    )
+
+    print(
+        "NO WALLET"
+    )
+
+    print(
+        "NO REAL ORDERS"
+    )
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
+
     main()
